@@ -14,7 +14,7 @@ import (
 )
 
 const creditedMinutesForDevice = `-- name: CreditedMinutesForDevice :many
-SELECT minute, project, label, credited, cuts, flags, rules_version
+SELECT minute, project, label, credited, cuts, flags, rules_version, updated_at
 FROM credited_minutes
 WHERE device_id = $1
   AND minute = ANY($2::timestamptz[])
@@ -34,10 +34,11 @@ type CreditedMinutesForDeviceRow struct {
 	Cuts         []string
 	Flags        []string
 	RulesVersion string
+	UpdatedAt    time.Time
 }
 
-// The device's stored rows for the given minutes, for the rewrite-window and
-// 60-second checks.
+// The device's stored rows for the given minutes, for the rewrite-window,
+// project-count and 60-second checks.
 func (q *Queries) CreditedMinutesForDevice(ctx context.Context, arg CreditedMinutesForDeviceParams) ([]CreditedMinutesForDeviceRow, error) {
 	rows, err := q.db.Query(ctx, creditedMinutesForDevice, arg.DeviceID, arg.Minutes)
 	if err != nil {
@@ -55,6 +56,7 @@ func (q *Queries) CreditedMinutesForDevice(ctx context.Context, arg CreditedMinu
 			&i.Cuts,
 			&i.Flags,
 			&i.RulesVersion,
+			&i.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -144,8 +146,8 @@ func (q *Queries) DeviceCountActive(ctx context.Context, userID uuid.UUID) (int6
 
 const deviceInsert = `-- name: DeviceInsert :one
 
-INSERT INTO devices (user_id, name, os, public_key)
-VALUES ($1, $2, $3, $4)
+INSERT INTO devices (user_id, name, os, public_key, created_at)
+VALUES ($1, $2, $3, $4, $5::timestamptz)
 ON CONFLICT (public_key) DO NOTHING
 RETURNING id, user_id, name, os, public_key, created_at, last_seen_at, revoked_at
 `
@@ -155,6 +157,7 @@ type DeviceInsertParams struct {
 	Name      string
 	Os        string
 	PublicKey []byte
+	CreatedAt time.Time
 }
 
 // Queries for internal/server/devices, internal/server/credited and
@@ -162,12 +165,15 @@ type DeviceInsertParams struct {
 // device the caller has already checked belongs to that user.
 // Registers a device. Returns no row when the public key is already
 // registered (to anyone); the caller then reads the existing row.
+// created_at comes from the service clock: uploads are only accepted from
+// the UTC day it falls on.
 func (q *Queries) DeviceInsert(ctx context.Context, arg DeviceInsertParams) (Device, error) {
 	row := q.db.QueryRow(ctx, deviceInsert,
 		arg.UserID,
 		arg.Name,
 		arg.Os,
 		arg.PublicKey,
+		arg.CreatedAt,
 	)
 	var i Device
 	err := row.Scan(
@@ -386,4 +392,39 @@ func (q *Queries) EvidenceDayNeighbours(ctx context.Context, arg EvidenceDayNeig
 	var i EvidenceDayNeighboursRow
 	err := row.Scan(&i.BeforeChainHash, &i.HasAfter, &i.AfterPrevChainHash)
 	return i, err
+}
+
+const evidenceDaysSealed = `-- name: EvidenceDaysSealed :many
+SELECT day FROM evidence_days
+WHERE device_id = $1
+  AND day BETWEEN $2::date AND $3::date
+ORDER BY day
+`
+
+type EvidenceDaysSealedParams struct {
+	DeviceID uuid.UUID
+	FirstDay pgtype.Date
+	LastDay  pgtype.Date
+}
+
+// The device's stored evidence days between first and last (inclusive).
+// Minutes of those days are sealed: no new rows are accepted for them.
+func (q *Queries) EvidenceDaysSealed(ctx context.Context, arg EvidenceDaysSealedParams) ([]pgtype.Date, error) {
+	rows, err := q.db.Query(ctx, evidenceDaysSealed, arg.DeviceID, arg.FirstDay, arg.LastDay)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.Date{}
+	for rows.Next() {
+		var day pgtype.Date
+		if err := rows.Scan(&day); err != nil {
+			return nil, err
+		}
+		items = append(items, day)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }

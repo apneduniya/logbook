@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/apneduniya/logbook/internal/server/store"
 	"github.com/apneduniya/logbook/internal/server/store/db"
@@ -97,14 +98,27 @@ func (s *Service) Upload(ctx context.Context, userID, deviceID uuid.UUID, b Batc
 		if len(valid) == 0 {
 			return nil
 		}
+		minutes := minutesOf(valid)
 		stored, err := q.CreditedMinutesForDevice(ctx, db.CreditedMinutesForDeviceParams{
-			DeviceID: deviceID, Minutes: minutesOf(valid),
+			DeviceID: deviceID, Minutes: minutes,
 		})
 		if err != nil {
 			return fmt.Errorf("reading stored minutes: %w", err)
 		}
+		sealed, err := q.EvidenceDaysSealed(ctx, db.EvidenceDaysSealedParams{
+			DeviceID: deviceID,
+			FirstDay: pgtype.Date{Time: utcDay(minutes[0]), Valid: true},
+			LastDay:  pgtype.Date{Time: utcDay(minutes[len(minutes)-1]), Valid: true},
+		})
+		if err != nil {
+			return fmt.Errorf("reading sealed days: %w", err)
+		}
+		bounds := Bounds{RulesVersion: b.RulesVersion, Now: now, Since: utcDay(dev.CreatedAt)}
+		for _, d := range sealed {
+			bounds.Sealed = append(bounds.Sealed, d.Time)
+		}
 		var more []Rejection
-		write, more = Plan(valid, toStored(stored), b.RulesVersion, now)
+		write, more = Plan(valid, toStored(stored), bounds)
 		rejected = append(rejected, more...)
 		if err := upsert(ctx, q, userID, deviceID, b.RulesVersion, now, write); err != nil {
 			return err
@@ -148,6 +162,7 @@ func toStored(rows []db.CreditedMinutesForDeviceRow) []Stored {
 				Cuts: slices.Compact(cuts), Flags: slices.Compact(flags),
 			},
 			RulesVersion: r.RulesVersion,
+			UpdatedAt:    r.UpdatedAt.UTC(),
 		}
 	}
 	return out

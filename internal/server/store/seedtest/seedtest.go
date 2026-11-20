@@ -110,13 +110,25 @@ func Audit(t testing.TB, st *store.Store, actor uuid.UUID) []AuditEntry {
 	return rows
 }
 
-// Device inserts an active device for userID with a fresh random public key
-// and returns its id.
+// DeviceEpoch is when Device registers devices: early enough that tests
+// with fixed clocks can upload minutes and evidence for any recent day.
+var DeviceEpoch = time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+
+// Device inserts an active device for userID, registered at DeviceEpoch,
+// with a fresh random public key and returns its id.
 func Device(t testing.TB, st *store.Store, userID uuid.UUID, name string) uuid.UUID {
+	t.Helper()
+	return DeviceAt(t, st, userID, name, DeviceEpoch)
+}
+
+// DeviceAt is Device with an explicit registration time.
+func DeviceAt(t testing.TB, st *store.Store, userID uuid.UUID, name string, registered time.Time) uuid.UUID {
 	t.Helper()
 	key := make([]byte, 32)
 	_, _ = rand.Read(key) // crypto/rand.Read never returns an error
-	id, err := st.SeedTestDevice(context.Background(), db.SeedTestDeviceParams{UserID: userID, Name: name, PublicKey: key})
+	id, err := st.SeedTestDevice(context.Background(), db.SeedTestDeviceParams{
+		UserID: userID, Name: name, PublicKey: key, CreatedAt: registered,
+	})
 	if err != nil {
 		t.Fatalf("seeding device %s: %v", name, err)
 	}

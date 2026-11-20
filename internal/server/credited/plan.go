@@ -5,21 +5,27 @@ import (
 	"errors"
 	"regexp"
 	"slices"
-	"strings"
 	"time"
-	"unicode"
 	"unicode/utf8"
 
+	"github.com/apneduniya/logbook/pkg/projectname"
 	"github.com/apneduniya/logbook/pkg/struggle"
 )
 
 // Limits and windows for minute uploads (see the package doc).
 const (
-	MaxBatch          = 1000
-	MaxProjectLen     = 256
-	MaxCodes          = 16
-	MaxCreditedSecs   = 60
-	FinalAfter        = 30 * time.Minute
+	MaxBatch        = 1000
+	MaxProjectLen   = 256
+	MaxCodes        = 16
+	MaxCreditedSecs = 60
+	// MaxProjectsPerMinute bounds the rows one device can store for one
+	// minute, whatever their credit.
+	MaxProjectsPerMinute = 8
+	FinalAfter           = 30 * time.Minute
+	// CatchUpWindow is how long after a final minute's first upload more
+	// of its projects may still arrive, for an offline agent whose catch-up
+	// splits a minute across batches.
+	CatchUpWindow     = 5 * time.Minute
 	MaxFutureSkew     = 2 * time.Minute
 	maxRulesVersionSz = 32
 )
@@ -45,8 +51,9 @@ type RawItem struct {
 	Flags    []string `json:"flags"`
 }
 
-// Item is a validated minute. Cuts and Flags are sorted, without duplicates
-// and never nil.
+// Item is a validated minute. Project is normalised with
+// projectname.Normalize; Cuts and Flags are sorted, without duplicates and
+// never nil.
 type Item struct {
 	Minute   time.Time
 	Project  string
@@ -66,6 +73,23 @@ type Indexed struct {
 type Stored struct {
 	Item
 	RulesVersion string
+	// UpdatedAt is when the row was last written, by the server clock.
+	UpdatedAt time.Time
+}
+
+// Bounds is what Plan needs to know about the request and the device
+// besides its stored rows.
+type Bounds struct {
+	// RulesVersion is the batch's rules version.
+	RulesVersion string
+	// Now is the server clock.
+	Now time.Time
+	// Since is the first minute the device may write: midnight UTC of the
+	// day it was registered.
+	Since time.Time
+	// Sealed lists the UTC days (at midnight) for which the device has
+	// stored an evidence record.
+	Sealed []time.Time
 }
 
 // Rejection says why one item of a batch was not stored.
@@ -77,18 +101,21 @@ type Rejection struct {
 // Item rejection reasons. They are sent to the agent, which drops rejected
 // items instead of retrying them.
 var (
-	errMinuteFormat   = errors.New("minute must be an RFC 3339 UTC time on a whole minute")
-	errMinuteFuture   = errors.New("minute is in the future")
-	errMinuteTooOld   = errors.New("minute is before 2024")
-	errProject        = errors.New("project must be at most 256 bytes of UTF-8 with no control characters")
-	errLabel          = errors.New(`label must be "you", "agent" or "idle"`)
-	errCredited       = errors.New("credited must be 0..60, and 0 unless label is \"you\"")
-	errCodes          = errors.New("cuts and flags must be at most 16 codes like \"rubber_stamp\"")
-	errServerFlag     = errors.New("the multi_device flag is set by the server only")
-	errDuplicate      = errors.New("the same minute and project appear earlier in this batch")
-	errFinal          = errors.New("minute is final: stored minutes can only be changed for 30 minutes")
-	errOverMinuteCap  = errors.New("credited seconds for this minute would exceed 60 across projects")
-	errUnknownVersion = errors.New("unknown rules_version")
+	errMinuteFormat    = errors.New("minute must be an RFC 3339 UTC time on a whole minute")
+	errMinuteFuture    = errors.New("minute is in the future")
+	errMinuteTooOld    = errors.New("minute is before 2024")
+	errProject         = errors.New("project must be at most 256 bytes of UTF-8")
+	errLabel           = errors.New(`label must be "you", "agent" or "idle"`)
+	errCredited        = errors.New("credited must be 0..60, and 0 unless label is \"you\"")
+	errCodes           = errors.New("cuts and flags must be at most 16 codes like \"rubber_stamp\"")
+	errServerFlag      = errors.New("the multi_device flag is set by the server only")
+	errDuplicate       = errors.New("the same minute and project appear earlier in this batch")
+	errBeforeDevice    = errors.New("minute is before the UTC day the device was registered")
+	errSealed          = errors.New("minute is in a UTC day this device has already sealed with an evidence record")
+	errFinal           = errors.New("minute is final: stored minutes can only be changed for 30 minutes")
+	errTooManyProjects = errors.New("a minute can have at most 8 projects per device")
+	errOverMinuteCap   = errors.New("credited seconds for this minute would exceed 60 across projects")
+	errUnknownVersion  = errors.New("unknown rules_version")
 )
 
 // ValidRulesVersion reports whether v is one of KnownRulesVersions.
@@ -127,7 +154,13 @@ func parseItem(r RawItem, now time.Time) (Item, error) {
 	if m.Before(earliestMinute) {
 		return Item{}, errMinuteTooOld
 	}
-	if !validProject(r.Project) {
+	if !utf8.ValidString(r.Project) {
+		return Item{}, errProject
+	}
+	// The same normalisation as heartbeat projects, so credited and raw
+	// totals use the same names ("" means no project).
+	project := projectname.Normalize(r.Project)
+	if len(project) > MaxProjectLen {
 		return Item{}, errProject
 	}
 	switch struggle.Label(r.Label) {
@@ -149,16 +182,7 @@ func parseItem(r RawItem, now time.Time) (Item, error) {
 	if slices.Contains(flags, struggle.FlagMultiDevice) {
 		return Item{}, errServerFlag
 	}
-	return Item{Minute: m, Project: r.Project, Label: r.Label, Credited: r.Credited, Cuts: cuts, Flags: flags}, nil
-}
-
-// validProject allows "" (a minute with no project) and otherwise the same
-// characters a heartbeat project may keep after normalisation.
-func validProject(p string) bool {
-	if len(p) > MaxProjectLen || !utf8.ValidString(p) {
-		return false
-	}
-	return !strings.ContainsFunc(p, unicode.IsControl)
+	return Item{Minute: m, Project: project, Label: r.Label, Credited: r.Credited, Cuts: cuts, Flags: flags}, nil
 }
 
 // normalizeCodes checks codes and returns them sorted and deduplicated.
@@ -183,24 +207,42 @@ type key struct {
 	project string
 }
 
+// minuteState summarises a device's stored rows for one minute.
+type minuteState struct {
+	credited   int       // sum of credited seconds
+	projects   int       // number of rows
+	firstWrite time.Time // earliest updated_at
+}
+
 // Plan decides which validated items to write, given the device's stored
-// rows for the same minutes, the batch's rules version and the server
-// clock. It returns the rows to write, sorted by (minute, project), and the
-// items it rejects, by the rules in the package doc. Items that repeat a
-// stored row exactly are accepted without a write.
-func Plan(items []Indexed, stored []Stored, rulesVersion string, now time.Time) (write []Item, rejected []Rejection) {
+// rows for the same minutes and b. It returns the rows to write, sorted by
+// (minute, project), and the items it rejects, by the rules in the package
+// doc. Items that repeat a stored row exactly are accepted without a write.
+func Plan(items []Indexed, stored []Stored, b Bounds) (write []Item, rejected []Rejection) {
 	existing := make(map[key]Stored, len(stored))
-	total := map[time.Time]int{}
+	minutes := map[time.Time]minuteState{}
 	for _, s := range stored {
 		k := key{s.Minute.UTC(), s.Project}
 		existing[k] = s
-		total[k.minute] += s.Credited
+		st := minutes[k.minute]
+		if st.projects == 0 || s.UpdatedAt.Before(st.firstWrite) {
+			st.firstWrite = s.UpdatedAt
+		}
+		st.credited += s.Credited
+		st.projects++
+		minutes[k.minute] = st
+	}
+	sealed := make(map[time.Time]bool, len(b.Sealed))
+	for _, d := range b.Sealed {
+		sealed[utcDay(d)] = true
 	}
 
-	// First pass, in input order: duplicates, exact repeats and final minutes.
+	// First pass, in input order: duplicates, exact repeats and minutes the
+	// device may no longer write.
 	type change struct {
 		Indexed
 		delta int
+		isNew bool // adds a project to the minute
 	}
 	seen := make(map[key]bool, len(items))
 	byMinute := map[time.Time][]change{}
@@ -212,37 +254,46 @@ func Plan(items []Indexed, stored []Stored, rulesVersion string, now time.Time) 
 		}
 		seen[k] = true
 		cur, ok := existing[k]
-		if ok && cur.RulesVersion == rulesVersion && sameItem(cur.Item, it.Item) {
+		if ok && cur.RulesVersion == b.RulesVersion && sameItem(cur.Item, it.Item) {
 			continue // an exact repeat, typically a retry
 		}
-		if ok && now.Sub(k.minute) >= FinalAfter {
-			rejected = append(rejected, Rejection{Index: it.Index, Error: errFinal.Error()})
+		if err := writable(k.minute, ok, minutes[k.minute], sealed, b); err != nil {
+			rejected = append(rejected, Rejection{Index: it.Index, Error: err.Error()})
 			continue
 		}
-		byMinute[k.minute] = append(byMinute[k.minute], change{Indexed: it, delta: it.Item.Credited - cur.Credited})
+		byMinute[k.minute] = append(byMinute[k.minute], change{Indexed: it, delta: it.Item.Credited - cur.Credited, isNew: !ok})
 	}
 
 	// Second pass, per minute: apply decreases before increases so credit can
-	// move between projects, and reject what would exceed the cap.
-	minutes := make([]time.Time, 0, len(byMinute))
+	// move between projects, and reject what would exceed the caps.
+	order := make([]time.Time, 0, len(byMinute))
 	for m := range byMinute {
-		minutes = append(minutes, m)
+		order = append(order, m)
 	}
-	slices.SortFunc(minutes, time.Time.Compare)
-	for _, m := range minutes {
+	slices.SortFunc(order, time.Time.Compare)
+	for _, m := range order {
 		changes := byMinute[m]
 		raises := func(c change) bool { return c.delta >= 0 }
 		slices.SortFunc(changes, func(a, b change) int {
 			return cmp.Or(compareBool(raises(a), raises(b)), cmp.Compare(a.Index, b.Index))
 		})
+		st := minutes[m]
 		for _, c := range changes {
-			if total[m]+c.delta > MaxCreditedSecs {
+			if c.isNew && st.projects >= MaxProjectsPerMinute {
+				rejected = append(rejected, Rejection{Index: c.Index, Error: errTooManyProjects.Error()})
+				continue
+			}
+			if st.credited+c.delta > MaxCreditedSecs {
 				rejected = append(rejected, Rejection{Index: c.Index, Error: errOverMinuteCap.Error()})
 				continue
 			}
-			total[m] += c.delta
+			st.credited += c.delta
+			if c.isNew {
+				st.projects++
+			}
 			write = append(write, c.Item)
 		}
+		minutes[m] = st
 	}
 
 	slices.SortFunc(write, func(a, b Item) int {
@@ -250,6 +301,39 @@ func Plan(items []Indexed, stored []Stored, rulesVersion string, now time.Time) 
 	})
 	slices.SortFunc(rejected, func(a, b Rejection) int { return cmp.Compare(a.Index, b.Index) })
 	return write, rejected
+}
+
+// writable reports why the device may not write minute m (nil if it may).
+// exists says whether this (minute, project) is stored; st describes all
+// of the minute's stored rows.
+func writable(m time.Time, exists bool, st minuteState, sealed map[time.Time]bool, b Bounds) error {
+	switch {
+	case m.Before(b.Since):
+		return errBeforeDevice
+	case sealed[utcDay(m)]:
+		return errSealed
+	case b.Now.Sub(m) < FinalAfter:
+		return nil // still open
+	case exists:
+		return errFinal
+	case st.projects == 0:
+		return nil // first upload of a final minute: offline catch-up
+	}
+	// A final minute with stored rows takes new projects only while it is
+	// being caught up: every row was first written after the minute became
+	// final, and the first of them less than CatchUpWindow ago. A minute
+	// uploaded while open is closed for good, so idle or agent time can't
+	// turn into "you" time later under another project.
+	if !st.firstWrite.Before(m.Add(FinalAfter)) && b.Now.Sub(st.firstWrite) < CatchUpWindow {
+		return nil
+	}
+	return errFinal
+}
+
+// utcDay returns midnight UTC of t's UTC day.
+func utcDay(t time.Time) time.Time {
+	y, mo, d := t.UTC().Date()
+	return time.Date(y, mo, d, 0, 0, 0, 0, time.UTC)
 }
 
 // compareBool orders false before true.

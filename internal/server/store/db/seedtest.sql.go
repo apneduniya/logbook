@@ -83,8 +83,9 @@ func (q *Queries) SeedTestCreditedMinute(ctx context.Context, arg SeedTestCredit
 }
 
 const seedTestDevice = `-- name: SeedTestDevice :one
-INSERT INTO devices (user_id, name, os, public_key, revoked_at)
-VALUES ($1, $2, 'linux', $3, $4)
+INSERT INTO devices (user_id, name, os, public_key, revoked_at, created_at)
+VALUES ($1, $2, 'linux', $3, $4,
+        $5::timestamptz)
 RETURNING id
 `
 
@@ -93,6 +94,7 @@ type SeedTestDeviceParams struct {
 	Name      string
 	PublicKey []byte
 	RevokedAt *time.Time
+	CreatedAt time.Time
 }
 
 func (q *Queries) SeedTestDevice(ctx context.Context, arg SeedTestDeviceParams) (uuid.UUID, error) {
@@ -101,6 +103,7 @@ func (q *Queries) SeedTestDevice(ctx context.Context, arg SeedTestDeviceParams) 
 		arg.Name,
 		arg.PublicKey,
 		arg.RevokedAt,
+		arg.CreatedAt,
 	)
 	var id uuid.UUID
 	err := row.Scan(&id)

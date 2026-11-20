@@ -22,8 +22,8 @@ type Querier interface {
 	CountActiveAPIKeys(ctx context.Context, userID uuid.UUID) (int64, error)
 	CreateAPIKey(ctx context.Context, arg CreateAPIKeyParams) (ApiKey, error)
 	CreateSession(ctx context.Context, arg CreateSessionParams) error
-	// The device's stored rows for the given minutes, for the rewrite-window and
-	// 60-second checks.
+	// The device's stored rows for the given minutes, for the rewrite-window,
+	// project-count and 60-second checks.
 	CreditedMinutesForDevice(ctx context.Context, arg CreditedMinutesForDeviceParams) ([]CreditedMinutesForDeviceRow, error)
 	// Writes a checked batch in one round trip. rows is a JSON array of objects
 	// with minute (RFC 3339), project, label, credited, cuts and flags. Unchanged
@@ -40,6 +40,8 @@ type Querier interface {
 	// device the caller has already checked belongs to that user.
 	// Registers a device. Returns no row when the public key is already
 	// registered (to anyone); the caller then reads the existing row.
+	// created_at comes from the service clock: uploads are only accepted from
+	// the UTC day it falls on.
 	DeviceInsert(ctx context.Context, arg DeviceInsertParams) (Device, error)
 	// All of a user's devices, revoked ones included, newest first.
 	DeviceList(ctx context.Context, userID uuid.UUID) ([]Device, error)
@@ -59,6 +61,9 @@ type Querier interface {
 	// none), and whether a later day is stored and, if so, the prev_chain_hash
 	// of the earliest one.
 	EvidenceDayNeighbours(ctx context.Context, arg EvidenceDayNeighboursParams) (EvidenceDayNeighboursRow, error)
+	// The device's stored evidence days between first and last (inclusive).
+	// Minutes of those days are sealed: no new rows are accepted for them.
+	EvidenceDaysSealed(ctx context.Context, arg EvidenceDaysSealedParams) ([]pgtype.Date, error)
 	// Marks the import done, unless a relink extended to_date in the meantime.
 	FinishHackatimeImport(ctx context.Context, arg FinishHackatimeImportParams) (int64, error)
 	GetActiveAPIKeyByHash(ctx context.Context, keyHash []byte) (GetActiveAPIKeyByHashRow, error)

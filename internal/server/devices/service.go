@@ -138,7 +138,7 @@ func (s *Service) Register(ctx context.Context, userID uuid.UUID, reg Registrati
 			return ErrTooMany
 		}
 		d, err := q.DeviceInsert(ctx, db.DeviceInsertParams{
-			UserID: userID, Name: reg.Name, Os: reg.OS, PublicKey: reg.PublicKey,
+			UserID: userID, Name: reg.Name, Os: reg.OS, PublicKey: reg.PublicKey, CreatedAt: s.now().UTC(),
 		})
 		if store.IsNotFound(err) {
 			// Another user registered the key between our read and insert.

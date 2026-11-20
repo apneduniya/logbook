@@ -13,8 +13,9 @@
 // For a device that belongs to the caller (404 otherwise) and isn't revoked
 // (403), in one transaction that locks the device row:
 //
-//   - the fields must be well formed and the day not after today (UTC), or
-//     the request is 400;
+//   - the fields must be well formed, the rules version one the server
+//     knows, and the day not after today (UTC) and not before the UTC day
+//     the device was registered, or the request is 400;
 //   - chain_hash must equal evidence.ChainHash of the fields, and the
 //     signature must verify with the device's registered public key, or 400;
 //   - an identical record for the same day is accepted again with 200;

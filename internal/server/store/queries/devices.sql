@@ -5,8 +5,10 @@
 -- name: DeviceInsert :one
 -- Registers a device. Returns no row when the public key is already
 -- registered (to anyone); the caller then reads the existing row.
-INSERT INTO devices (user_id, name, os, public_key)
-VALUES (sqlc.arg(user_id), sqlc.arg(name), sqlc.arg(os), sqlc.arg(public_key))
+-- created_at comes from the service clock: uploads are only accepted from
+-- the UTC day it falls on.
+INSERT INTO devices (user_id, name, os, public_key, created_at)
+VALUES (sqlc.arg(user_id), sqlc.arg(name), sqlc.arg(os), sqlc.arg(public_key), sqlc.arg(created_at)::timestamptz)
 ON CONFLICT (public_key) DO NOTHING
 RETURNING *;
 
@@ -43,9 +45,9 @@ WHERE id = sqlc.arg(id)
   AND (last_seen_at IS NULL OR last_seen_at < sqlc.arg(seen_at)::timestamptz - interval '1 minute');
 
 -- name: CreditedMinutesForDevice :many
--- The device's stored rows for the given minutes, for the rewrite-window and
--- 60-second checks.
-SELECT minute, project, label, credited, cuts, flags, rules_version
+-- The device's stored rows for the given minutes, for the rewrite-window,
+-- project-count and 60-second checks.
+SELECT minute, project, label, credited, cuts, flags, rules_version, updated_at
 FROM credited_minutes
 WHERE device_id = sqlc.arg(device_id)
   AND minute = ANY(sqlc.arg(minutes)::timestamptz[])
@@ -75,6 +77,14 @@ WHERE (credited_minutes.label, credited_minutes.credited, credited_minutes.cuts,
        credited_minutes.flags, credited_minutes.rules_version)
       IS DISTINCT FROM
       (EXCLUDED.label, EXCLUDED.credited, EXCLUDED.cuts, EXCLUDED.flags, EXCLUDED.rules_version);
+
+-- name: EvidenceDaysSealed :many
+-- The device's stored evidence days between first and last (inclusive).
+-- Minutes of those days are sealed: no new rows are accepted for them.
+SELECT day FROM evidence_days
+WHERE device_id = sqlc.arg(device_id)
+  AND day BETWEEN sqlc.arg(first_day)::date AND sqlc.arg(last_day)::date
+ORDER BY day;
 
 -- name: EvidenceDayGet :one
 SELECT * FROM evidence_days WHERE device_id = $1 AND day = $2;

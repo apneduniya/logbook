@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/apneduniya/logbook/internal/server/credited"
 	"github.com/apneduniya/logbook/internal/server/store"
 	"github.com/apneduniya/logbook/internal/server/store/db"
 	"github.com/apneduniya/logbook/pkg/evidence"
@@ -99,6 +100,11 @@ func parse(deviceID uuid.UUID, u Upload, now time.Time) (record, error) {
 	if err := d.Validate(); err != nil {
 		return record{}, fmt.Errorf("%w: %s", ErrInvalid, err.Error())
 	}
+	// Step 5 re-runs the engine at the recorded version, so a day signed
+	// under a version this server doesn't know could never be checked.
+	if !credited.ValidRulesVersion(u.RulesVersion) {
+		return record{}, fmt.Errorf("%w: unknown rules_version", ErrInvalid)
+	}
 	date, _ := time.Parse(time.DateOnly, u.Day) // Validate parsed it already
 	if today := now.UTC().Truncate(24 * time.Hour); date.After(today) {
 		return record{}, fmt.Errorf("%w: day is in the future", ErrInvalid)
@@ -139,6 +145,11 @@ func (s *Service) Put(ctx context.Context, userID, deviceID uuid.UUID, u Upload)
 		}
 		if dev.RevokedAt != nil {
 			return ErrDeviceRevoked
+		}
+		// A new key can't sign history from before it existed. The agent
+		// starts its chain on the registration day too.
+		if y, m, d := dev.CreatedAt.UTC().Date(); rec.date.Before(time.Date(y, m, d, 0, 0, 0, 0, time.UTC)) {
+			return fmt.Errorf("%w: day is before the UTC day the device was registered", ErrInvalid)
 		}
 		if err := evidence.Verify(dev.PublicKey, rec.day, rec.chainHash, rec.signature); err != nil {
 			return fmt.Errorf("%w: %s", ErrInvalid, err.Error())

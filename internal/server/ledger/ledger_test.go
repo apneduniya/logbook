@@ -48,13 +48,21 @@ type device struct {
 	priv ed25519.PrivateKey
 }
 
+// registered is when e.device registers devices, before every test day.
+var registered = time.Date(2026, 11, 1, 9, 30, 0, 0, time.UTC)
+
 func (e *env) device(user uuid.UUID) device {
+	e.t.Helper()
+	return e.deviceAt(user, registered)
+}
+
+func (e *env) deviceAt(user uuid.UUID, at time.Time) device {
 	e.t.Helper()
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		e.t.Fatal(err)
 	}
-	out, err := devices.NewService(e.st).Register(context.Background(), user,
+	out, err := devices.NewService(e.st, devices.WithClock(func() time.Time { return at })).Register(context.Background(), user,
 		devices.Registration{Name: "laptop", OS: "linux", PublicKey: pub})
 	if err != nil {
 		e.t.Fatal(err)
@@ -69,14 +77,18 @@ func contentHash(s string) string {
 
 // day builds a validly signed upload for d.
 func (d device) day(date, prev, content string) ledger.Upload {
-	ev := evidence.Day{DeviceID: d.id.String(), Day: date, PrevChainHash: prev, ContentHash: contentHash(content), RulesVersion: "v1"}
+	return d.dayWithRules(date, prev, content, "v1")
+}
+
+func (d device) dayWithRules(date, prev, content, rules string) ledger.Upload {
+	ev := evidence.Day{DeviceID: d.id.String(), Day: date, PrevChainHash: prev, ContentHash: contentHash(content), RulesVersion: rules}
 	chain, sig, err := evidence.Sign(d.priv, ev)
 	if err != nil {
 		panic(err)
 	}
 	return ledger.Upload{
 		Day: date, PrevChainHash: prev, ContentHash: ev.ContentHash, ChainHash: chain,
-		Signature: base64.StdEncoding.EncodeToString(sig), RulesVersion: "v1",
+		Signature: base64.StdEncoding.EncodeToString(sig), RulesVersion: rules,
 		EventCounts: map[string]int{"activity": 120, "heartbeat": 40},
 	}
 }
@@ -256,5 +268,30 @@ func TestDeviceOwnershipAndRevocation(t *testing.T) {
 	}
 	if code, _ := e.put(uuid.Nil, d.id, up); code != http.StatusUnauthorized {
 		t.Fatalf("no auth = %d, want 401", code)
+	}
+}
+
+// A key can't sign days from before it was registered: a fresh device must
+// not be able to write a whole history for closed days.
+func TestDaysBeforeRegistrationAreRejected(t *testing.T) {
+	e := newEnv(t)
+	alice := seedtest.User(t, e.st, "alice", "UTC", true)
+	d := e.deviceAt(alice, time.Date(2026, 11, 18, 23, 50, 0, 0, time.UTC))
+	for _, day := range []string{"2026-11-17", "2025-06-01"} {
+		if code, body := e.put(alice, d.id, d.day(day, "", "made up")); code != http.StatusBadRequest || !strings.Contains(body, "registered") {
+			t.Fatalf("%s = %d %s, want 400", day, code, body)
+		}
+	}
+	// The registration day itself is fine (the agent starts its chain there).
+	if code, body := e.put(alice, d.id, d.day("2026-11-18", "", "first")); code != http.StatusCreated {
+		t.Fatalf("registration day = %d %s", code, body)
+	}
+}
+
+func TestUnknownRulesVersionIsRejected(t *testing.T) {
+	e := newEnv(t)
+	d := e.device(seedtest.User(t, e.st, "alice", "UTC", true))
+	if code, body := e.put(d.user, d.id, d.dayWithRules("2026-11-16", "", "x", "v9")); code != http.StatusBadRequest || !strings.Contains(body, "rules_version") {
+		t.Fatalf("status = %d %s, want 400", code, body)
 	}
 }

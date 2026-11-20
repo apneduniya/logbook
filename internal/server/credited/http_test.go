@@ -332,6 +332,81 @@ func TestUploadRequestValidation(t *testing.T) {
 	}
 }
 
+// A minute uploaded in real time is closed once final: a later upload can't
+// add 'you' time to it under another project.
+func TestUploadFinalMinuteTakesNoNewProject(t *testing.T) {
+	e := newEnv(t)
+	u := seedtest.User(t, e.st, "alice", "UTC", true)
+	d := seedtest.Device(t, e.st, u, "laptop")
+	if code, res := e.upload(u, d, item{Minute: at(11, 40), Project: "a", Label: "idle"}); code != 200 || res.Accepted != 1 {
+		t.Fatalf("seed upload: %d %+v", code, res)
+	}
+	e.clock.Advance(5 * time.Hour)
+	code, res := e.upload(u, d, you(at(11, 40), "b", 60))
+	if code != http.StatusOK || res.Accepted != 0 || len(res.Rejected) != 1 || !strings.Contains(res.Rejected[0].Error, "final") {
+		t.Fatalf("status %d, %+v", code, res)
+	}
+	if got := fmt.Sprint(e.rows(d)); got != "[11:40 a idle 0]" {
+		t.Fatalf("rows = %s", got)
+	}
+}
+
+// A device can't backfill days before its registration or days it has
+// already sealed with an evidence record.
+func TestUploadBackfillBounds(t *testing.T) {
+	e := newEnv(t)
+	u := seedtest.User(t, e.st, "alice", "UTC", true)
+	// Registered yesterday afternoon.
+	d := seedtest.DeviceAt(t, e.st, u, "laptop", time.Date(2026, 11, 19, 15, 0, 0, 0, time.UTC))
+	if _, err := e.st.Pool.Exec(context.Background(), `
+		INSERT INTO evidence_days (device_id, day, prev_chain_hash, content_hash, chain_hash, signature, rules_version)
+		VALUES ($1, '2026-11-19', '', repeat('a', 64), repeat('b', 64), decode(repeat('00', 64), 'hex'), 'v1')`, d); err != nil {
+		t.Fatal(err)
+	}
+	code, res := e.upload(u, d,
+		you("2026-11-18T23:59:00Z", "logbook", 60), // before the registration day
+		you("2026-11-19T10:00:00Z", "logbook", 60), // in the sealed day
+		you(at(9, 0), "logbook", 60),               // today: fine
+	)
+	if code != http.StatusOK || res.Accepted != 1 || fmt.Sprint(rejectedIndexes(res)) != "[0 1]" {
+		t.Fatalf("status %d, %+v", code, res)
+	}
+	if !strings.Contains(res.Rejected[0].Error, "registered") || !strings.Contains(res.Rejected[1].Error, "sealed") {
+		t.Fatalf("errors = %+v", res.Rejected)
+	}
+}
+
+func TestUploadCapsProjectsPerMinute(t *testing.T) {
+	e := newEnv(t)
+	u := seedtest.User(t, e.st, "alice", "UTC", true)
+	d := seedtest.Device(t, e.st, u, "laptop")
+	items := make([]item, 0, credited.MaxProjectsPerMinute+2)
+	for i := range credited.MaxProjectsPerMinute + 2 {
+		items = append(items, item{Minute: at(11, 50), Project: fmt.Sprintf("p%d", i), Label: "idle"})
+	}
+	code, res := e.upload(u, d, items...)
+	if code != http.StatusOK || res.Accepted != credited.MaxProjectsPerMinute || fmt.Sprint(rejectedIndexes(res)) != "[8 9]" {
+		t.Fatalf("status %d, %+v", code, res)
+	}
+	if n := countRows(t, e.st, `SELECT count(*) FROM credited_minutes WHERE device_id = $1`, d); n != credited.MaxProjectsPerMinute {
+		t.Fatalf("stored %d rows", n)
+	}
+}
+
+// Project names are normalised like heartbeat projects.
+func TestUploadNormalizesProjects(t *testing.T) {
+	e := newEnv(t)
+	u := seedtest.User(t, e.st, "alice", "UTC", true)
+	d := seedtest.Device(t, e.st, u, "laptop")
+	code, res := e.upload(u, d, you(at(11, 50), " logbook ", 30), you(at(11, 51), "<<LAST_PROJECT>>", 30))
+	if code != http.StatusOK || res.Accepted != 2 {
+		t.Fatalf("status %d, %+v", code, res)
+	}
+	if got := fmt.Sprint(e.rows(d)); got != "[11:50 logbook you 30 11:51  you 30]" {
+		t.Fatalf("rows = %q", got)
+	}
+}
+
 func countRows(t *testing.T, st *store.Store, query string, args ...any) int {
 	t.Helper()
 	var n int

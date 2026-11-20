@@ -65,13 +65,16 @@ Each item is then accepted or rejected on its own. `200`:
 | `minute` is RFC 3339 in UTC (`Z` or `+00:00`) on a whole minute | `minute must be an RFC 3339 UTC time on a whole minute` |
 | `minute` is at most 2 minutes ahead of the server clock | `minute is in the future` |
 | `minute` is in 2024 or later | `minute is before 2024` |
-| `project` is at most 256 bytes of UTF-8 with no control characters; `""` means no project | `project must be ...` |
+| `project` is valid UTF-8 and at most 256 bytes after normalisation, which is the same as for heartbeats: control characters are dropped, surrounding space is trimmed and `<<LAST_PROJECT>>` becomes `""` (no project). Two items whose projects normalise to the same name are duplicates. | `project must be ...` |
 | `label` is `you`, `agent` or `idle` | `label must be ...` |
 | `credited` is 0–60, and 0 unless `label` is `you` | `credited must be ...` |
 | `cuts` and `flags` have at most 16 codes each, matching `[a-z][a-z0-9_]{0,31}` (duplicates are dropped) | `cuts and flags must be ...` |
 | `flags` never contains `multi_device`; the server works that out | `the multi_device flag is set by the server only` |
 | The same `(minute, project)` appears only once per request; later copies are rejected | `the same minute and project appear earlier in this batch` |
-| A stored `(minute, project)` can only change while the minute is under 30 minutes old by the server clock. Re-sending exactly the stored values is always accepted. A minute that was never sent can be sent at any time, so an agent that was offline can catch up. | `minute is final: ...` |
+| `minute` is on or after the UTC day the device was registered. A new key can't write history from before it existed. | `minute is before the UTC day the device was registered` |
+| `minute` is not in a UTC day for which this device has stored an evidence record. A sealed day takes no new minutes. | `minute is in a UTC day this device has already sealed ...` |
+| A minute is final once it is 30 minutes old by the server clock. A stored `(minute, project)` can only change while the minute is open. A final minute takes no new projects either, once the device has stored any row for it. Re-sending exactly the stored values is always accepted. A minute that was never sent can be sent at any time, so an agent that was offline can catch up. If its catch-up splits one minute across batches, more projects of that minute are accepted for 5 minutes after its first upload, but only if all of its rows were first uploaded after it was final. | `minute is final: ...` |
+| One minute has at most 8 projects on one device, whatever their credit. | `a minute can have at most 8 projects per device` |
 | Across all projects of one minute on this device, `credited` adds up to at most 60. Items that lower a minute's credit are applied first, then the rest in request order, so moving a minute between projects works in one request. | `credited seconds for this minute would exceed 60 across projects` |
 
 - Writes are idempotent upserts keyed by `(device, minute, project)`.
@@ -94,7 +97,8 @@ Auth: API key. Uploads one link of the device's evidence chain (ADR 0010; format
 }
 ```
 
-- Hex is lowercase. `day` is a UTC date, not after today.
+- Hex is lowercase. `day` is a UTC date, not after today and not before the UTC day the device was registered (`400` otherwise).
+- `rules_version` must be one the server knows (currently only `v1`), as for minutes, because step 5 re-runs the engine at that version (`400` otherwise).
 - `event_counts` has at most 32 keys matching `[a-z][a-z0-9_.]{0,63}`, with counts from 0 to 10^9.
 
 | Status | When |

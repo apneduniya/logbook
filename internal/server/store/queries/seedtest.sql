@@ -19,8 +19,9 @@ WHERE actor_user_id = $1
 ORDER BY id;
 
 -- name: SeedTestDevice :one
-INSERT INTO devices (user_id, name, os, public_key, revoked_at)
-VALUES (sqlc.arg(user_id), sqlc.arg(name), 'linux', sqlc.arg(public_key), sqlc.narg(revoked_at))
+INSERT INTO devices (user_id, name, os, public_key, revoked_at, created_at)
+VALUES (sqlc.arg(user_id), sqlc.arg(name), 'linux', sqlc.arg(public_key), sqlc.narg(revoked_at),
+        sqlc.arg(created_at)::timestamptz)
 RETURNING id;
 
 -- name: SeedTestCreditedMinute :exec
