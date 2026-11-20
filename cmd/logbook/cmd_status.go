@@ -1,0 +1,153 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"io/fs"
+	"net/http"
+	"os"
+	"strings"
+	"time"
+
+	"github.com/apneduniya/logbook/internal/agent/config"
+	"github.com/apneduniya/logbook/internal/agent/localdb"
+	"github.com/apneduniya/logbook/internal/agent/status"
+	"github.com/apneduniya/logbook/internal/agent/version"
+)
+
+func statusCommand() Command {
+	return Command{
+		Name:  "status",
+		Usage: "show whether the agent is running and what it has sent [--json]",
+		Run: func(ctx context.Context, args []string) error {
+			return showStatus(ctx, args, os.Stdout)
+		},
+	}
+}
+
+func showStatus(ctx context.Context, args []string, stdout io.Writer) error {
+	flags := flag.NewFlagSet("status", flag.ContinueOnError)
+	asJSON := flags.Bool("json", false, "print JSON")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	dir, err := config.Dir()
+	if err != nil {
+		return err
+	}
+	cfg, err := config.Load(dir)
+	if err != nil {
+		return err
+	}
+	snap, err := currentStatus(ctx, dir, cfg)
+	if err != nil {
+		return err
+	}
+	if *asJSON {
+		enc := json.NewEncoder(stdout)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(snap); err != nil {
+			return fmt.Errorf("writing status: %w", err)
+		}
+		return nil
+	}
+	var b strings.Builder
+	printStatus(&b, snap, cfg.LocalAddr)
+	if _, err := io.WriteString(stdout, b.String()); err != nil {
+		return fmt.Errorf("writing status: %w", err)
+	}
+	return nil
+}
+
+// currentStatus asks the running daemon, falling back to reading the local
+// database directly when it isn't running.
+func currentStatus(ctx context.Context, dir string, cfg config.Config) (status.Snapshot, error) {
+	if s, err := status.Fetch(ctx, &http.Client{Timeout: 3 * time.Second}, cfg.LocalAddr); err == nil {
+		return s, nil
+	}
+	return offlineStatus(ctx, dir, cfg)
+}
+
+func offlineStatus(ctx context.Context, dir string, cfg config.Config) (status.Snapshot, error) {
+	in := status.Input{Config: cfg, DataDir: dir, Version: version.String(), Now: time.Now()}
+	if _, err := os.Stat(config.DBPath(dir)); errors.Is(err, fs.ErrNotExist) {
+		// Never started: report an empty snapshot rather than creating a database.
+		in.Store = emptyStore{}
+		return status.Collect(ctx, in)
+	}
+	db, err := localdb.Open(ctx, config.DBPath(dir))
+	if err != nil {
+		return status.Snapshot{}, err
+	}
+	defer func() { _ = db.Close() }()
+	in.Store = db
+	return status.Collect(ctx, in)
+}
+
+// emptyStore stands in for a database that doesn't exist yet.
+type emptyStore struct{}
+
+func (emptyStore) Stats(context.Context, localdb.Queue) (localdb.QueueStats, error) {
+	return localdb.QueueStats{}, nil
+}
+
+func (emptyStore) CountSince(context.Context, time.Time) (localdb.Counts, error) {
+	return localdb.Counts{}, nil
+}
+
+func (emptyStore) HeartbeatTimes(context.Context, time.Time) ([]time.Time, error) { return nil, nil }
+
+func (emptyStore) Prefix(context.Context, string) (map[string]string, error) { return nil, nil }
+
+// printStatus formats s into w, an in-memory builder (so writes can't fail).
+func printStatus(w *strings.Builder, s status.Snapshot, addr string) {
+	p := func(format string, a ...any) { fmt.Fprintf(w, format+"\n", a...) }
+	if s.DaemonRunning {
+		p("Agent:      running at http://%s (status page)", addr)
+	} else {
+		p("Agent:      not running; start it with `logbook run`")
+	}
+	signedIn := "no; run `logbook login --key <key>`"
+	if s.SignedIn {
+		signedIn = "yes"
+	}
+	p("Server:     %s (signed in: %s)", s.ServerURL, signedIn)
+	printUploader(p, "Logbook", s.Logbook)
+	if s.MirrorHost != "" {
+		printUploader(p, "Hackatime", s.Hackatime)
+	} else {
+		p("Hackatime:  mirroring off")
+	}
+	p("Today:      %s coding (local estimate), %d heartbeats, %d AI events, %d git events",
+		s.Today.CodingText, s.Today.Heartbeats, s.Today.AIEvents, s.Today.GitEvents)
+	if s.SpoolBytes > 0 {
+		p("Waiting:    %d bytes of hook events in the spool", s.SpoolBytes)
+	}
+	if s.Hooks == nil {
+		p("AI hooks:   unknown")
+	}
+	for _, h := range s.Hooks {
+		p("AI hooks:   %s %s", h.Name, h.State)
+	}
+}
+
+func printUploader(p func(string, ...any), name string, u status.Uploader) {
+	last := "never"
+	if !u.Worker.LastSuccess.IsZero() {
+		last = u.Worker.LastSuccess.Local().Format(time.DateTime)
+	}
+	p("%-11s %d waiting, last upload %s", name+":", u.Queue.Pending, last)
+	if u.Worker.Paused != "" {
+		p("            paused: %s", u.Worker.Paused)
+	}
+	if u.Worker.LastError != "" {
+		p("            last error: %s", u.Worker.LastError)
+	}
+	if u.Queue.Dropped > 0 {
+		p("            %d dropped because the queue was full", u.Queue.Dropped)
+	}
+}
