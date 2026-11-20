@@ -54,6 +54,7 @@ type Client struct {
 // rejects; validate does that.
 func normalize(h wire.Heartbeat, c Client) wire.Heartbeat {
 	h = attribute(h, c)
+	h.TrimDependencies()
 	for _, p := range []*string{
 		&h.Entity, &h.Type, &h.Category, &h.Project, &h.Branch, &h.Language, &h.Editor,
 		&h.Plugin, &h.Machine, &h.OperatingSystem, &h.UserAgent, &h.AIModel, &h.AISession,

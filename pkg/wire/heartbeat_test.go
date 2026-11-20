@@ -3,6 +3,7 @@ package wire
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -23,7 +24,9 @@ func TestValidate(t *testing.T) {
 		{"future", func(h *Heartbeat) { h.Time = float64(now.Add(2 * time.Hour).Unix()) }, true},
 		{"ancient", func(h *Heartbeat) { h.Time = 1 }, true},
 		{"long project", func(h *Heartbeat) { h.Project = string(make([]byte, 300)) }, true},
-		{"too many deps", func(h *Heartbeat) { h.Dependencies = make([]string, 101) }, true},
+		// wakatime-cli can send hundreds of imports; that's valid (Hackatime
+		// accepts it). Storage trims them with TrimDependencies instead.
+		{"many deps are valid", func(h *Heartbeat) { h.Dependencies = make([]string, 500) }, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -62,5 +65,17 @@ func TestTimestamp(t *testing.T) {
 	h := Heartbeat{Time: 1795000000.25}
 	if got := h.Timestamp(); got.Unix() != 1795000000 || got.Nanosecond() != 250_000_000 {
 		t.Fatalf("Timestamp() = %v", got)
+	}
+}
+
+func TestTrimDependencies(t *testing.T) {
+	h := Heartbeat{Dependencies: make([]string, 0, 300)}
+	h.Dependencies = append(h.Dependencies, string(make([]byte, 300))) // too long: dropped
+	for i := range 250 {
+		h.Dependencies = append(h.Dependencies, fmt.Sprint("dep", i))
+	}
+	h.TrimDependencies()
+	if len(h.Dependencies) != MaxDependencies || h.Dependencies[0] != "dep0" || h.Dependencies[99] != "dep99" {
+		t.Fatalf("TrimDependencies() kept %d, first %q", len(h.Dependencies), h.Dependencies[0])
 	}
 }

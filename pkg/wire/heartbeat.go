@@ -17,11 +17,17 @@ import (
 // It matches Hackatime's limit so existing clients behave the same.
 const MaxBulkHeartbeats = 100
 
+// MaxDependencies is how many dependencies the server stores per heartbeat
+// (see TrimDependencies).
+const MaxDependencies = 100
+
 // Limits that keep a single heartbeat bounded in size.
 const (
 	maxEntityLen = 1024
 	maxShortLen  = 256
-	maxDeps      = 100
+	// MaxDependencies is how many dependencies the server keeps per heartbeat.
+	// wakatime-cli sends every import it finds, which can be hundreds; that is
+	// valid input (Hackatime accepts it) and must never make a heartbeat fail.
 )
 
 // earliestTime rejects obviously wrong clocks; nothing older than WakaTime itself.
@@ -60,6 +66,26 @@ type Heartbeat struct {
 	HumanLineChanges *int   `json:"human_line_changes,omitempty"`
 }
 
+// TrimDependencies keeps the first MaxDependencies dependencies, dropping
+// any longer than the short-field limit. Many dependencies are valid input,
+// so this trims rather than rejects; callers that store heartbeats call it
+// before FieldsHash so resends trim and hash identically.
+func (h *Heartbeat) TrimDependencies() {
+	if len(h.Dependencies) == 0 {
+		return
+	}
+	out := make([]string, 0, min(len(h.Dependencies), MaxDependencies))
+	for _, d := range h.Dependencies {
+		if len(out) == MaxDependencies {
+			break
+		}
+		if len(d) <= maxShortLen {
+			out = append(out, d)
+		}
+	}
+	h.Dependencies = out
+}
+
 // ErrInvalidHeartbeat is wrapped by every validation failure.
 var ErrInvalidHeartbeat = errors.New("invalid heartbeat")
 
@@ -79,8 +105,6 @@ func (h Heartbeat) Validate(now time.Time) error {
 		return fmt.Errorf("%w: entity longer than %d bytes", ErrInvalidHeartbeat, maxEntityLen)
 	case math.IsNaN(h.Time) || math.IsInf(h.Time, 0):
 		return fmt.Errorf("%w: time is not a number", ErrInvalidHeartbeat)
-	case len(h.Dependencies) > maxDeps:
-		return fmt.Errorf("%w: more than %d dependencies", ErrInvalidHeartbeat, maxDeps)
 	}
 	ts := h.Timestamp()
 	if ts.Before(earliestTime) || ts.After(now.Add(time.Hour)) {
