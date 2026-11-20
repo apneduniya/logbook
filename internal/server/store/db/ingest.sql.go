@@ -12,6 +12,19 @@ import (
 	"github.com/google/uuid"
 )
 
+const firstHeartbeatTime = `-- name: FirstHeartbeatTime :one
+SELECT time FROM heartbeats WHERE user_id = $1::uuid ORDER BY time LIMIT 1
+`
+
+// The user's earliest heartbeat, or NULL. Reads one row from the oldest
+// non-empty partition via the (user_id, time) primary key.
+func (q *Queries) FirstHeartbeatTime(ctx context.Context, userID uuid.UUID) (time.Time, error) {
+	row := q.db.QueryRow(ctx, firstHeartbeatTime, userID)
+	var time time.Time
+	err := row.Scan(&time)
+	return time, err
+}
+
 const insertHeartbeats = `-- name: InsertHeartbeats :many
 WITH inserted AS (
     INSERT INTO heartbeats (
@@ -80,8 +93,19 @@ func (q *Queries) InsertHeartbeats(ctx context.Context, arg InsertHeartbeatsPara
 	return items, nil
 }
 
+const lastHeartbeatTime = `-- name: LastHeartbeatTime :one
+SELECT time FROM heartbeats WHERE user_id = $1::uuid ORDER BY time DESC LIMIT 1
+`
+
+func (q *Queries) LastHeartbeatTime(ctx context.Context, userID uuid.UUID) (time.Time, error) {
+	row := q.db.QueryRow(ctx, lastHeartbeatTime, userID)
+	var time time.Time
+	err := row.Scan(&time)
+	return time, err
+}
+
 const listRollupHeartbeats = `-- name: ListRollupHeartbeats :many
-SELECT h.time, h.project, h.language, h.editor, h.category
+SELECT h.time, h.fields_hash, h.project, h.language, h.editor, h.category
 FROM (
     -- Two set-returning functions in one SELECT list are zipped row by row.
     SELECT unnest($1::timestamptz[]) AS lo,
@@ -100,7 +124,20 @@ CROSS JOIN LATERAL (
     -- partition "never executed".
     OFFSET 0
 ) h
-ORDER BY h.time, h.fields_hash
+UNION
+SELECT p.time, p.fields_hash, p.project, p.language, p.editor, p.category
+FROM (
+    SELECT unnest($1::timestamptz[]) AS lo
+) r2
+CROSS JOIN LATERAL (
+    SELECT hb.time, hb.fields_hash, hb.project, hb.language, hb.editor, hb.category
+    FROM heartbeats hb
+    WHERE hb.user_id = $3::uuid
+      AND hb.time < r2.lo
+    ORDER BY hb.time DESC, hb.fields_hash DESC
+    LIMIT 1
+) p
+ORDER BY time, fields_hash
 `
 
 type ListRollupHeartbeatsParams struct {
@@ -110,11 +147,12 @@ type ListRollupHeartbeatsParams struct {
 }
 
 type ListRollupHeartbeatsRow struct {
-	Time     time.Time
-	Project  string
-	Language string
-	Editor   string
-	Category string
+	Time       time.Time
+	FieldsHash []byte
+	Project    string
+	Language   string
+	Editor     string
+	Category   string
 }
 
 // Reads the heartbeats a rollup recompute needs. The ranges are inclusive and
@@ -122,6 +160,8 @@ type ListRollupHeartbeatsRow struct {
 // ranges: each one gets its own index range scan on (user_id, time) with
 // runtime partition pruning, so a batch spread over months reads only the
 // few minutes around each heartbeat, not everything in between.
+// The latest heartbeat before each range, so the first heartbeat in a range
+// knows its gap (a long break is credited 2 minutes, a first-ever heartbeat 0).
 func (q *Queries) ListRollupHeartbeats(ctx context.Context, arg ListRollupHeartbeatsParams) ([]ListRollupHeartbeatsRow, error) {
 	rows, err := q.db.Query(ctx, listRollupHeartbeats, arg.RangeStarts, arg.RangeEnds, arg.UserID)
 	if err != nil {
@@ -133,6 +173,7 @@ func (q *Queries) ListRollupHeartbeats(ctx context.Context, arg ListRollupHeartb
 		var i ListRollupHeartbeatsRow
 		if err := rows.Scan(
 			&i.Time,
+			&i.FieldsHash,
 			&i.Project,
 			&i.Language,
 			&i.Editor,
@@ -141,6 +182,30 @@ func (q *Queries) ListRollupHeartbeats(ctx context.Context, arg ListRollupHeartb
 			return nil, err
 		}
 		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listUserIDsWithHeartbeats = `-- name: ListUserIDsWithHeartbeats :many
+SELECT id FROM users u WHERE EXISTS (SELECT 1 FROM heartbeats h WHERE h.user_id = u.id) ORDER BY id
+`
+
+func (q *Queries) ListUserIDsWithHeartbeats(ctx context.Context) ([]uuid.UUID, error) {
+	rows, err := q.db.Query(ctx, listUserIDsWithHeartbeats)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []uuid.UUID{}
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

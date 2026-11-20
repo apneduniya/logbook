@@ -449,9 +449,12 @@ func TestStatusBarToday(t *testing.T) {
 	}
 	yesterdayLocal := time.Date(2026, 11, 18, 17, 0, 0, 0, time.UTC) // 22:30 IST on the 18th
 	post(alice, yesterdayLocal, 5, "old")
-	post(alice, time.Date(2026, 11, 19, 9, 0, 0, 0, time.UTC), 61, "logbook")   // 30 minutes
+	// Raw time follows Hackatime: every gap counts up to 2 minutes, credited to
+	// the later heartbeat. So the first "logbook" heartbeat gets 2 minutes for
+	// the overnight break, and the "" burst gets 2 minutes for its gap.
+	post(alice, time.Date(2026, 11, 19, 9, 0, 0, 0, time.UTC), 61, "logbook")   // 30 minutes + 2
 	post(alice, time.Date(2026, 11, 19, 9, 30, 30, 0, time.UTC), 60, "logbook") // 30 more, joined by a 30s gap
-	post(alice, time.Date(2026, 11, 19, 11, 0, 0, 0, time.UTC), 3, "")          // 1 minute, Unknown
+	post(alice, time.Date(2026, 11, 19, 11, 0, 0, 0, time.UTC), 3, "")          // 1 minute + 2, Unknown
 	post(bob, time.Date(2026, 11, 19, 10, 0, 0, 0, time.UTC), 61, "bobs")
 
 	for _, prefix := range []string{"/api/v1", "/api/hackatime/v1"} {
@@ -464,11 +467,11 @@ func TestStatusBarToday(t *testing.T) {
 			t.Fatal(err)
 		}
 		gt := sb.Data.GrandTotal
-		if gt.TotalSeconds != 3660 || gt.Text != "1 hr 1 min" || gt.Digital != "1:01" || gt.Hours != 1 || gt.Minutes != 1 || gt.Decimal != "1.02" {
+		if gt.TotalSeconds != 3900 || gt.Text != "1 hr 5 mins" || gt.Digital != "1:05" || gt.Hours != 1 || gt.Minutes != 5 || gt.Decimal != "1.08" {
 			t.Fatalf("grand_total = %+v", gt)
 		}
 		if len(sb.Data.Projects) != 2 || sb.Data.Projects[0].Name != "logbook" || sb.Data.Projects[1].Name != "Unknown" ||
-			sb.Data.Projects[0].Text != "1 hr" || sb.Data.Projects[1].Percent != 1.64 {
+			sb.Data.Projects[0].Text != "1 hr 2 mins" || sb.Data.Projects[1].Percent != 4.62 {
 			t.Fatalf("projects = %+v", sb.Data.Projects)
 		}
 		if len(sb.Data.Categories) != 1 || sb.Data.Categories[0].Name != "Coding" {

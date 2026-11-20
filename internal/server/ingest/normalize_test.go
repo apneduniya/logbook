@@ -150,8 +150,9 @@ func TestIngestClearsPlaceholders(t *testing.T) {
 		t.Fatalf("stored project=%q language=%q branch=%q, want all empty", project, language, branch)
 	}
 	want := []minuteRow{
-		{Minute: base, Project: "alpha", Language: "Go", Editor: "vscode", Category: "coding", Label: "you", Seconds: 60},
-		{Minute: base.Add(time.Minute), Project: "Unknown", Language: "", Editor: "vscode", Category: "coding", Label: "you", Seconds: 60},
+		// Each gap is credited to the later heartbeat (Hackatime's rule).
+		{Minute: base, Project: "Unknown", Language: "", Editor: "vscode", Category: "coding", Label: "you", Seconds: 60},
+		{Minute: base.Add(time.Minute), Project: "alpha", Language: "Go", Editor: "vscode", Category: "coding", Label: "you", Seconds: 60},
 	}
 	if got := minutesOf(t, st, user); !reflect.DeepEqual(got, want) {
 		t.Fatalf("user_minutes =\n%+v\nwant\n%+v", got, want)

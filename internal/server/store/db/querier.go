@@ -28,6 +28,9 @@ type Querier interface {
 	DeleteSession(ctx context.Context, idHash []byte) error
 	// Marks the import done, unless a relink extended to_date in the meantime.
 	FinishHackatimeImport(ctx context.Context, arg FinishHackatimeImportParams) (int64, error)
+	// The user's earliest heartbeat, or NULL. Reads one row from the oldest
+	// non-empty partition via the (user_id, time) primary key.
+	FirstHeartbeatTime(ctx context.Context, userID uuid.UUID) (time.Time, error)
 	GetActiveAPIKeyByHash(ctx context.Context, keyHash []byte) (GetActiveAPIKeyByHashRow, error)
 	GetActiveSession(ctx context.Context, arg GetActiveSessionParams) (GetActiveSessionRow, error)
 	GetHackatimeImport(ctx context.Context, userID uuid.UUID) (HackatimeImport, error)
@@ -48,6 +51,7 @@ type Querier interface {
 	// Creates a user on first sign-in. A concurrent first sign-in of the same
 	// identity updates the profile instead of failing.
 	InsertSignInUser(ctx context.Context, arg InsertSignInUserParams) (User, error)
+	LastHeartbeatTime(ctx context.Context, userID uuid.UUID) (time.Time, error)
 	ListActiveAPIKeys(ctx context.Context, userID uuid.UUID) ([]ApiKey, error)
 	ListHackatimeLinksDueForTrustCheck(ctx context.Context, arg ListHackatimeLinksDueForTrustCheckParams) ([]uuid.UUID, error)
 	// Reads the heartbeats a rollup recompute needs. The ranges are inclusive and
@@ -55,9 +59,12 @@ type Querier interface {
 	// ranges: each one gets its own index range scan on (user_id, time) with
 	// runtime partition pruning, so a batch spread over months reads only the
 	// few minutes around each heartbeat, not everything in between.
+	// The latest heartbeat before each range, so the first heartbeat in a range
+	// knows its gap (a long break is credited 2 minutes, a first-ever heartbeat 0).
 	ListRollupHeartbeats(ctx context.Context, arg ListRollupHeartbeatsParams) ([]ListRollupHeartbeatsRow, error)
 	// System sweep: unfinished imports that haven't moved recently.
 	ListStalledHackatimeImports(ctx context.Context, arg ListStalledHackatimeImportsParams) ([]uuid.UUID, error)
+	ListUserIDsWithHeartbeats(ctx context.Context) ([]uuid.UUID, error)
 	// Reads the link and holds it until the transaction ends, so a concurrent
 	// trust refresh can't change it between a check and a write.
 	LockHackatimeLink(ctx context.Context, userID uuid.UUID) (HackatimeLink, error)

@@ -35,9 +35,9 @@ func TestCompute(t *testing.T) {
 			want: nil,
 		},
 		{
-			name: "gap is credited to the earlier heartbeat",
+			name: "gap is credited to the later heartbeat",
 			hbs:  []Heartbeat{hb(0, keyA), hb(30*s, keyB)},
-			want: []Row{{Minute: at(0), Key: keyA, Seconds: 30}},
+			want: []Row{{Minute: at(0), Key: keyB, Seconds: 30}},
 		},
 		{
 			name: "gap of exactly the timeout counts and splits across minutes",
@@ -45,9 +45,15 @@ func TestCompute(t *testing.T) {
 			want: []Row{{Minute: at(0), Key: keyA, Seconds: 60}, {Minute: at(time.Minute), Key: keyA, Seconds: 60}},
 		},
 		{
-			name: "gap over the timeout credits nothing",
+			// Hackatime's LEAST(gap, 2 minutes): a break still credits 2 minutes,
+			// placed just before the later heartbeat.
+			name: "gap over the timeout credits the timeout",
 			hbs:  []Heartbeat{hb(0, keyA), hb(2*time.Minute+s, keyA)},
-			want: nil,
+			want: []Row{
+				{Minute: at(0), Key: keyA, Seconds: 59},
+				{Minute: at(time.Minute), Key: keyA, Seconds: 60},
+				{Minute: at(2 * time.Minute), Key: keyA, Seconds: 1},
+			},
 		},
 		{
 			name: "span is split at the minute boundary",
@@ -61,21 +67,22 @@ func TestCompute(t *testing.T) {
 		},
 		{
 			name: "empty project rolls up as Unknown",
-			hbs:  []Heartbeat{hb(0, Key{Language: "Go"}), hb(10*s, keyA)},
+			hbs:  []Heartbeat{hb(0, keyA), hb(10*s, Key{Language: "Go"})},
 			want: []Row{{Minute: at(0), Key: Key{Project: UnknownProject, Language: "Go"}, Seconds: 10}},
 		},
 		{
 			name: "groups in one minute share it and sum to the wall clock",
 			hbs:  []Heartbeat{hb(0, keyA), hb(20*s, keyB), hb(40*s, keyA), hb(60*s, keyB)},
-			want: []Row{{Minute: at(0), Key: keyA, Seconds: 40}, {Minute: at(0), Key: keyB, Seconds: 20}},
+			want: []Row{{Minute: at(0), Key: keyA, Seconds: 20}, {Minute: at(0), Key: keyB, Seconds: 40}},
 		},
 		{
 			name: "fractional seconds round with largest remainder",
 			hbs: []Heartbeat{
 				hb(0, keyA), hb(20500*time.Millisecond, keyB), hb(41*s, keyA), hb(60*s, keyB),
 			},
-			// keyA: 20.5 + 19 = 39.5, keyB: 20.5; total 60.
-			want: []Row{{Minute: at(0), Key: keyA, Seconds: 40}, {Minute: at(0), Key: keyB, Seconds: 20}},
+			// keyB: 20.5 + 19 = 39.5, keyA: 20.5; total 60. Equal remainders go
+			// to the first key in sort order.
+			want: []Row{{Minute: at(0), Key: keyA, Seconds: 21}, {Minute: at(0), Key: keyB, Seconds: 39}},
 		},
 	}
 	for _, tt := range tests {
@@ -206,7 +213,11 @@ func TestIncrementalMatchesFullRecompute(t *testing.T) {
 			for i, h := range batch {
 				times[i] = h.Time
 			}
-			windows := Windows(times)
+			var prevFirst *time.Time
+			if prev := sorted(stored[:len(stored)-n]); len(prev) > 0 {
+				prevFirst = &prev[0].Time
+			}
+			windows := Windows(AffectedTimes(times, prevFirst))
 			for m := range table {
 				if inWindows(windows, m) {
 					delete(table, m)
@@ -251,17 +262,31 @@ func TestIncrementalMatchesFullRecompute(t *testing.T) {
 	}
 }
 
-// readable keeps only the heartbeats inside the windows' read ranges, as the
-// database query does, so the test proves the ranges are wide enough.
+// readable keeps only what the database query returns: the heartbeats inside
+// the windows' read ranges plus the latest heartbeat before each range, so the
+// test proves those reads are enough. hbs must be sorted.
 func readable(hbs []Heartbeat, windows []Range) []Heartbeat {
-	var out []Heartbeat
-	for _, h := range hbs {
-		for _, w := range windows {
-			from, to := ReadRange(w)
-			if !h.Time.Before(from) && !h.Time.After(to) {
-				out = append(out, h)
-				break
+	keep := make([]bool, len(hbs))
+	for _, w := range windows {
+		from, to := ReadRange(w)
+		prev := -1
+		for i, h := range hbs {
+			if h.Time.Before(from) {
+				prev = i
+				continue
 			}
+			if !h.Time.After(to) {
+				keep[i] = true
+			}
+		}
+		if prev >= 0 {
+			keep[prev] = true
+		}
+	}
+	var out []Heartbeat
+	for i, h := range hbs {
+		if keep[i] {
+			out = append(out, h)
 		}
 	}
 	return out

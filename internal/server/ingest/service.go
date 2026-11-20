@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/apneduniya/logbook/internal/server/ingest/rollup"
+	"github.com/apneduniya/logbook/internal/server/store"
 	"github.com/apneduniya/logbook/internal/server/store/db"
 	"github.com/apneduniya/logbook/pkg/wire"
 )
@@ -140,12 +141,19 @@ func (s *Service) IngestBatch(ctx context.Context, userID uuid.UUID, hbs []wire.
 		if err := q.LockUserIngest(ctx, userID); err != nil {
 			return fmt.Errorf("locking user ingest: %w", err)
 		}
+		var prevFirst *time.Time
+		switch first, err := q.FirstHeartbeatTime(ctx, userID); {
+		case err == nil:
+			prevFirst = &first
+		case !store.IsNotFound(err):
+			return fmt.Errorf("reading first heartbeat: %w", err)
+		}
 		times, err := q.InsertHeartbeats(ctx, db.InsertHeartbeatsParams{Rows: payload, UserID: userID, Source: source})
 		if err != nil {
 			return fmt.Errorf("inserting heartbeats: %w", err)
 		}
 		res.Inserted = len(times)
-		windows = rollup.Windows(times)
+		windows = rollup.Windows(rollup.AffectedTimes(times, prevFirst))
 		return recompute(ctx, q, userID, windows)
 	})
 	if err != nil {

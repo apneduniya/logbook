@@ -87,30 +87,53 @@ func Windows(times []time.Time) []Range {
 	return out
 }
 
+// AffectedTimes returns the heartbeat times whose credit can change when the
+// heartbeats at times are inserted: times themselves, plus prevFirst (the
+// user's earliest heartbeat before the insert, nil if there was none) when
+// the insert reaches earlier than it. That heartbeat was credited 0 as the
+// first ever and now gains a gap, which can lie outside every window built
+// from times alone. Pass the result to Windows.
+func AffectedTimes(times []time.Time, prevFirst *time.Time) []time.Time {
+	if prevFirst == nil || len(times) == 0 {
+		return times
+	}
+	earliest := slices.MinFunc(times, func(a, b time.Time) int { return a.Compare(b) })
+	if earliest.Before(*prevFirst) {
+		return append(slices.Clone(times), *prevFirst)
+	}
+	return times
+}
+
 // ReadRange returns the inclusive interval of heartbeats needed to recompute
-// window w: every heartbeat whose credit can fall inside w, plus the next
-// heartbeat of each.
+// window w: every heartbeat whose credit can fall inside w (credit lies in
+// [t-Timeout, t]). Callers must also supply the latest heartbeat before
+// from, so the first heartbeat in range knows its gap.
 func ReadRange(w Range) (from, to time.Time) {
 	return w.Start.Add(-Timeout), w.End.Add(Timeout)
 }
 
 // Compute returns the rollup rows inside windows for heartbeats, which must
 // be sorted by time (ties in a stable, deterministic order) and must include
-// every stored heartbeat in each window's ReadRange. windows must be sorted
-// and disjoint, as returned by Windows. Rows are sorted by minute, then key,
-// and rows with zero seconds are omitted.
+// every stored heartbeat in each window's ReadRange plus the latest stored
+// heartbeat before each ReadRange (so every heartbeat's predecessor is known).
+// windows must be sorted and disjoint, as returned by Windows. Rows are
+// sorted by minute, then key, and rows with zero seconds are omitted.
 func Compute(hbs []Heartbeat, windows []Range) []Row {
 	if len(windows) == 0 {
 		return nil
 	}
 	// Exact integer durations, so the result doesn't depend on summation order.
 	credit := map[time.Time]map[Key]time.Duration{}
-	for i := 0; i+1 < len(hbs); i++ {
-		start, end := hbs[i].Time, hbs[i+1].Time
-		gap := end.Sub(start)
-		if gap <= 0 || gap > Timeout {
+	// hbs[0] has no known predecessor: it is either the user's first heartbeat
+	// (credited 0, as in Hackatime) or a context row whose own credit lies
+	// before every window.
+	for i := 1; i < len(hbs); i++ {
+		end := hbs[i].Time
+		gap := end.Sub(hbs[i-1].Time)
+		if gap <= 0 {
 			continue
 		}
+		start := end.Add(-min(gap, Timeout))
 		key := normalizeKey(hbs[i].Key)
 		for m := start.UTC().Truncate(time.Minute); m.Before(end); m = m.Add(time.Minute) {
 			if !inWindows(windows, m) {

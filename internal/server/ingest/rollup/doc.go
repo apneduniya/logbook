@@ -6,19 +6,18 @@
 // # Duration rule
 //
 // A user's heartbeats form one timeline ordered by (time, fields_hash),
-// across all of their machines and editors. Each heartbeat is credited the
-// gap to the next heartbeat on that timeline, attributed to the earlier
-// heartbeat's project, language, editor and category:
+// across all of their machines and editors. Each heartbeat is credited
+// min(gap since the previous heartbeat, Timeout), attributed to that
+// heartbeat's own project, language, editor and category, and placed in the
+// span [t-credit, t) just before it. The user's first heartbeat is credited 0.
 //
-//   - gap <= Timeout (2 minutes): the whole gap is credited;
-//   - gap > Timeout, or no next heartbeat: nothing is credited.
+// This is exactly Hackatime's rule (LEAST(time - LAG(time), 2 minutes) over
+// the user's heartbeats), so raw totals match what programs read from
+// Hackatime today. It deliberately credits up to two minutes per break;
+// deciding what is real working time is the struggle engine's job
+// (credited_minutes, docs/STRUGGLE-RULES.md), not the raw rollup's.
 //
-// This is WakaTime's "keystroke timeout" rule. Hackatime differs slightly: it
-// credits min(gap, 2 minutes) even when the gap is longer, which adds up to
-// two minutes per break. We follow WakaTime because a long gap means the
-// person was not coding.
-//
-// A credited span [t, t+gap) is split across the minute boundaries it covers.
+// A credited span is split across the minute boundaries it covers.
 //
 // # 60-second cap
 //
@@ -41,12 +40,12 @@
 //
 // Heartbeats arrive out of order (bulk uploads, offline queues, imports), so a
 // batch can change minutes that were already rolled up. A new heartbeat at t
-// changes only its own credit, which lies in [t, t+Timeout], and its
-// predecessor's credit, which lies in [t-Timeout, t). Windows therefore
+// changes only its own credit, which lies in [t-Timeout, t), and its
+// successor's credit, which lies in [t, t+Timeout). Windows therefore
 // recomputes the whole minutes covering [t-Timeout, t+Timeout] for every new
 // heartbeat, merging windows that are close together. Recomputing a window
-// needs the heartbeats in ReadRange(window), which adds Timeout on each side
-// so the neighbours just outside the window are included. Recomputing every
+// needs the heartbeats in ReadRange(window), which adds Timeout on each side,
+// plus the latest heartbeat before that range so every gap is known. Recomputing every
 // affected window from the stored heartbeats gives the same rows whatever
 // order the heartbeats arrived in.
 package rollup

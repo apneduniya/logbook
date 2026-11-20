@@ -1,5 +1,8 @@
-// Command logbook-server runs the Logbook API, web UI and background jobs.
+// Command logbook-server runs the Logbook API and background jobs.
 // It only wires dependencies together; behaviour lives in internal/server.
+//
+// `logbook-server rebuild-rollups` recomputes every user's raw per-minute
+// rollups from stored heartbeats and exits.
 package main
 
 import (
@@ -115,6 +118,13 @@ func run() error {
 
 	// Heartbeat ingest. The streak cache is refreshed before the hub tells browsers to refetch.
 	ingestSvc := ingest.New(st, live.Fanout{statsSvc, hub})
+	if len(os.Args) > 1 && os.Args[1] == "rebuild-rollups" {
+		// One-off maintenance: recompute every user's raw per-minute rollups
+		// from stored heartbeats (after a duration-rule change), then exit.
+		n, err := ingestSvc.RebuildAll(ctx)
+		logger.Info("rebuilt rollups", "users", n, "err", err)
+		return err
+	}
 	ingest.NewHandler(ingestSvc, authSvc.RequireAPIKey).Register(mux)
 
 	// Hackatime link, history import and trust refresh.

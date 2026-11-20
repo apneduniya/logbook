@@ -126,10 +126,12 @@ func TestIngestRollupRules(t *testing.T) {
 	user := newUser(t, st, "UTC")
 	m := func(d time.Duration) time.Time { return base.Add(d) }
 	hbs := []wire.Heartbeat{
-		beat(m(50*time.Second), "alpha"),  // 30s split 10s / 20s across 09:00 and 09:01
-		beat(m(80*time.Second), ""),       // 100s to the next, project Unknown
-		beat(m(180*time.Second), "alpha"), // gap 5m: credits nothing
-		beat(m(480*time.Second), "alpha"), // last heartbeat: credits nothing
+		// Hackatime's rule: each heartbeat is credited min(gap since the
+		// previous one, 2m) for its own project, just before it.
+		beat(m(50*time.Second), "alpha"),  // first ever: 0
+		beat(m(80*time.Second), ""),       // 30s Unknown, split 10s / 20s across 09:00 and 09:01
+		beat(m(180*time.Second), "alpha"), // 100s alpha: 40s in 09:01, 60s in 09:02
+		beat(m(480*time.Second), "alpha"), // gap 5m: 2m alpha in 09:06 and 09:07
 	}
 	if _, err := svc.Ingest(ctx, user, hbs, ingest.SourceEditor); err != nil {
 		t.Fatal(err)
@@ -138,10 +140,12 @@ func TestIngestRollupRules(t *testing.T) {
 		return minuteRow{Minute: m(d), Project: project, Language: "Go", Editor: "vscode", Category: "coding", Label: "you", Seconds: sec}
 	}
 	want := []minuteRow{
-		row(0, "alpha", 10),
-		row(time.Minute, "Unknown", 40),
-		row(time.Minute, "alpha", 20),
-		row(2*time.Minute, "Unknown", 60),
+		row(0, "Unknown", 10),
+		row(time.Minute, "Unknown", 20),
+		row(time.Minute, "alpha", 40),
+		row(2*time.Minute, "alpha", 60),
+		row(6*time.Minute, "alpha", 60),
+		row(7*time.Minute, "alpha", 60),
 	}
 	if got := minutesOf(t, st, user); !reflect.DeepEqual(got, want) {
 		t.Fatalf("user_minutes =\n%+v\nwant\n%+v", got, want)
@@ -341,5 +345,55 @@ func assertMinuteCap(t *testing.T, rows []minuteRow) {
 		if s > 60 {
 			t.Fatalf("minute %v holds %d seconds", m, s)
 		}
+	}
+}
+
+// Importing older history after newer heartbeats exist turns the old first
+// heartbeat into a normal one, so it gains the 2-minute break credit even
+// though it lies far outside the imported heartbeat's own window.
+func TestIngestOlderHistoryCreditsOldFirstHeartbeat(t *testing.T) {
+	svc, st, _ := newService(t)
+	ctx := context.Background()
+	user := newUser(t, st, "UTC")
+	today := beat(base.Add(3*time.Hour), "alpha")
+	if _, err := svc.Ingest(ctx, user, []wire.Heartbeat{today}, ingest.SourceEditor); err != nil {
+		t.Fatal(err)
+	}
+	if got := minutesOf(t, st, user); len(got) != 0 {
+		t.Fatalf("first-ever heartbeat credited %+v, want nothing", got)
+	}
+	if _, err := svc.Ingest(ctx, user, []wire.Heartbeat{beat(base, "old")}, ingest.SourceImport); err != nil {
+		t.Fatal(err)
+	}
+	row := func(d time.Duration) minuteRow {
+		return minuteRow{Minute: base.Add(d), Project: "alpha", Language: "Go", Editor: "vscode", Category: "coding", Label: "you", Seconds: 60}
+	}
+	want := []minuteRow{row(3*time.Hour - 2*time.Minute), row(3*time.Hour - time.Minute)}
+	if got := minutesOf(t, st, user); !reflect.DeepEqual(got, want) {
+		t.Fatalf("user_minutes =\n%+v\nwant\n%+v", got, want)
+	}
+}
+
+func TestRebuildUserMatchesIngest(t *testing.T) {
+	svc, st, _ := newService(t)
+	ctx := context.Background()
+	user := newUser(t, st, "UTC")
+	var hbs []wire.Heartbeat
+	for i := range 40 {
+		hbs = append(hbs, beat(base.Add(time.Duration(i*i)*7*time.Second), "alpha"))
+	}
+	if _, err := svc.Ingest(ctx, user, hbs, ingest.SourceEditor); err != nil {
+		t.Fatal(err)
+	}
+	want := minutesOf(t, st, user)
+	if _, err := st.Pool.Exec(ctx, "DELETE FROM user_minutes WHERE user_id = $1", user); err != nil {
+		t.Fatal(err)
+	}
+	n, err := svc.RebuildAll(ctx)
+	if err != nil || n != 1 {
+		t.Fatalf("RebuildAll() = %d, %v", n, err)
+	}
+	if got := minutesOf(t, st, user); !reflect.DeepEqual(got, want) {
+		t.Fatalf("rebuilt user_minutes =\n%+v\nwant\n%+v", got, want)
 	}
 }

@@ -46,13 +46,18 @@ new_projects AS (
 )
 SELECT inserted.time FROM inserted;
 
+-- name: FirstHeartbeatTime :one
+-- The user's earliest heartbeat, or NULL. Reads one row from the oldest
+-- non-empty partition via the (user_id, time) primary key.
+SELECT time FROM heartbeats WHERE user_id = sqlc.arg(user_id)::uuid ORDER BY time LIMIT 1;
+
 -- name: ListRollupHeartbeats :many
 -- Reads the heartbeats a rollup recompute needs. The ranges are inclusive and
 -- never overlap, so no row is returned twice. The read is driven from the
 -- ranges: each one gets its own index range scan on (user_id, time) with
 -- runtime partition pruning, so a batch spread over months reads only the
 -- few minutes around each heartbeat, not everything in between.
-SELECT h.time, h.project, h.language, h.editor, h.category
+SELECT h.time, h.fields_hash, h.project, h.language, h.editor, h.category
 FROM (
     -- Two set-returning functions in one SELECT list are zipped row by row.
     SELECT unnest(sqlc.arg(range_starts)::timestamptz[]) AS lo,
@@ -71,7 +76,22 @@ CROSS JOIN LATERAL (
     -- partition "never executed".
     OFFSET 0
 ) h
-ORDER BY h.time, h.fields_hash;
+UNION
+-- The latest heartbeat before each range, so the first heartbeat in a range
+-- knows its gap (a long break is credited 2 minutes, a first-ever heartbeat 0).
+SELECT p.time, p.fields_hash, p.project, p.language, p.editor, p.category
+FROM (
+    SELECT unnest(sqlc.arg(range_starts)::timestamptz[]) AS lo
+) r2
+CROSS JOIN LATERAL (
+    SELECT hb.time, hb.fields_hash, hb.project, hb.language, hb.editor, hb.category
+    FROM heartbeats hb
+    WHERE hb.user_id = sqlc.arg(user_id)::uuid
+      AND hb.time < r2.lo
+    ORDER BY hb.time DESC, hb.fields_hash DESC
+    LIMIT 1
+) p
+ORDER BY time, fields_hash;
 
 -- name: ReplaceUserMinutes :exec
 -- Makes the 'you' rows inside the given windows equal to the supplied set in
@@ -121,3 +141,9 @@ WHERE user_id = sqlc.arg(user_id)
   AND minute >= sqlc.arg(start_time)
   AND minute < sqlc.arg(end_time)
 GROUP BY project, language, editor, category;
+
+-- name: LastHeartbeatTime :one
+SELECT time FROM heartbeats WHERE user_id = sqlc.arg(user_id)::uuid ORDER BY time DESC LIMIT 1;
+
+-- name: ListUserIDsWithHeartbeats :many
+SELECT id FROM users u WHERE EXISTS (SELECT 1 FROM heartbeats h WHERE h.user_id = u.id) ORDER BY id;
