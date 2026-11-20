@@ -6,9 +6,18 @@ import (
 	"runtime/debug"
 )
 
+// tag is set by release builds with
+// -ldflags "-X github.com/apneduniya/logbook/internal/agent/version.tag=<tag>".
+// The linker can only set package-level variables, so this is the one exception
+// to the no-globals rule.
+var tag string
+
 // String returns the agent's version: the module version for tagged builds,
 // the short VCS revision for development builds, or "dev".
 func String() string {
+	if tag != "" {
+		return tag
+	}
 	info, ok := debug.ReadBuildInfo()
 	if !ok {
 		return "dev"

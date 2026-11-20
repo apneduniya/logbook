@@ -1,0 +1,6 @@
+[settings]
+debug = false
+apikey = waka_44444444-4444-4444-8444-444444444444
+hidefilenames = true
+api_url = http://127.0.0.1:47231/api/v1
+api_key = 00000000-0000-4000-8000-000000000000

@@ -1,0 +1,49 @@
+name: release
+# Builds the agent for every supported OS and CPU and publishes a GitHub
+# Release with the binaries and checksums.txt, which scripts/install.sh and
+# scripts/install.ps1 download and verify.
+on:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: read
+jobs:
+  agent:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write # create the release
+    env:
+      CGO_ENABLED: "0"
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Test
+        run: go test -count=1 ./internal/agent/... ./pkg/... ./cmd/logbook/...
+      - name: Check the daemon command exists
+        # Every autostart entry runs `logbook run`, and install refuses to
+        # set one up without it. Never publish a build that lacks it.
+        run: |
+          set -euo pipefail
+          go build -o /tmp/logbook ./cmd/logbook
+          /tmp/logbook help 2>&1 | grep -Eq '^  run +'
+      - name: Build
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64; do
+            os="${target%/*}"; arch="${target#*/}"; ext=""
+            if [ "$os" = windows ]; then ext=".exe"; fi
+            GOOS="$os" GOARCH="$arch" go build -trimpath \
+              -ldflags "-s -w -X github.com/apneduniya/logbook/internal/agent/version.tag=${TAG}" \
+              -o "dist/logbook_${os}_${arch}${ext}" ./cmd/logbook
+          done
+          cd dist
+          sha256sum logbook_* > checksums.txt
+          cat checksums.txt
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$TAG" dist/* --verify-tag --title "$TAG" --generate-notes

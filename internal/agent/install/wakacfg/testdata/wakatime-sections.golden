@@ -1,0 +1,15 @@
+; my wakatime config
+[settings]
+debug=false
+API_KEY: 00000000-0000-4000-8000-000000000000
+exclude =
+    ^/tmp/
+    ^COMMIT_EDITMSG$
+hide_file_names = true
+api_url = http://127.0.0.1:47231/api/v1
+
+[projectmap]
+projects/foo = Foo  # renamed
+
+[git]
+submodules_disabled = false
