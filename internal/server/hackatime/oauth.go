@@ -30,7 +30,7 @@ func (c *Client) Exchange(ctx context.Context, code, verifier string) (string, e
 	if c.oauth == nil {
 		return "", ErrNotConfigured
 	}
-	if err := c.pace.wait(ctx); err != nil {
+	if err := c.limit.Wait(ctx); err != nil {
 		return "", err
 	}
 	ctx, cancel := context.WithTimeout(ctx, c.timeout)
@@ -67,7 +67,7 @@ func (c *Client) Revoke(ctx context.Context, token string) error {
 	if c.oauth == nil {
 		return ErrNotConfigured
 	}
-	if err := c.pace.wait(ctx); err != nil {
+	if err := c.limit.Wait(ctx); err != nil {
 		return err
 	}
 	ctx, cancel := context.WithTimeout(ctx, c.timeout)
