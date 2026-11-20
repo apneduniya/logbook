@@ -13,7 +13,11 @@ live updates. Packages: `internal/server/stats`, `internal/server/projects`,
   - **public** means no auth is needed.
 - **Errors** are `{"error": "message"}`. Any 5xx is `{"error": "internal error"}`.
 - **Times** are RFC 3339 in UTC. **Dates** are `YYYY-MM-DD` local dates in the user's time zone (`timezone` on their profile).
-- **Credited time** is time on minutes labelled `you`. Every `seconds` and `total_seconds` field counts only credited time. Agent and idle time appear only under `labels`.
+- **Two kinds of time** (ADR 0014):
+  - **Raw time** comes from editor heartbeats (the Hackatime-equivalent rollup): time on minutes labelled `you`. Every plain `seconds`, `total_seconds`, `all_time_seconds` and `last_7_days_seconds` field is raw time, exactly as before. Agent and idle time appear only under `labels`.
+  - **Credited time** comes from the Logbook agent's struggle engine (`credited_*` fields). For each minute it is the sum over the user's devices and projects, capped at 60 s; when the cap applies, each project gets its share, rounded down.
+  - Every `credited_*` field is `null` when the user has never registered a device ("no evidence"), and a number (possibly `0`) once they have, even if all their devices are revoked.
+- **CORS:** browsers on the web origin (`LOGBOOK_WEB_URL`) may call these endpoints with credentials (ADR 0011; see [auth.md](auth.md#cors)).
 - Every `/me` endpoint reads and writes only the signed-in user's data.
 
 ---
@@ -41,15 +45,24 @@ The range can be at most 366 days.
   "timezone": "Asia/Kolkata",
   "total_seconds": 12345,
   "labels": { "you": 12345, "agent": 3600, "idle": 600 },
-  "projects":   [{ "name": "logbook", "seconds": 10000 }],
+  "credited_seconds": 9876,
+  "credited_labels": { "you": 11400, "agent": 4200, "idle": 300 },
+  "multi_device_minutes": 0,
+  "projects":   [{ "name": "logbook", "seconds": 10000, "credited_seconds": 8000 }],
   "languages":  [{ "name": "Go", "seconds": 9000 }],
   "editors":    [{ "name": "vscode", "seconds": 12345 }],
   "categories": [{ "name": "coding", "seconds": 12000 }],
-  "days": [{ "date": "2026-11-14", "seconds": 0 }, { "date": "2026-11-15", "seconds": 1800 }]
+  "days": [{ "date": "2026-11-14", "seconds": 0, "credited_seconds": 0 },
+           { "date": "2026-11-15", "seconds": 1800, "credited_seconds": 1500 }]
 }
 ```
 
-- Lists are sorted by `seconds` (largest first), then by name. They are `[]` when empty.
+- `credited_seconds` is the agent's credited time in the range (see Conventions).
+- `credited_labels` counts the minutes the agent reported, 60 s each, by label. A minute is counted once, under its strongest label across devices and projects (`you`, then `agent`, then `idle`).
+- `multi_device_minutes` counts minutes in which two or more devices credited `you` time (the `multi_device` flag). They are capped, not added.
+- `projects` includes projects that have credited time but no raw time (`seconds: 0`). Each project has `credited_seconds`.
+- With `project`, credited time counts only that project, but the 60-second cap is still worked out over every project of the minute.
+- Lists are sorted by `seconds` (largest first), then by name; `projects` breaks ties by `credited_seconds`. They are `[]` when empty.
 - `days` has one entry for every date in the range, with zeros filled in.
 - A day is a local calendar day, so a DST change day has 23 or 25 hours.
 
@@ -85,6 +98,7 @@ A project appears once it has tracked time or saved settings.
 {
   "name": "logbook",
   "total_seconds": 36000,
+  "credited_seconds": 30000,
   "last_activity": "2026-11-20T10:31:00Z",
   "languages": [{ "name": "Go", "seconds": 30000 }],
   "repo_url": "https://github.com/apneduniya/logbook",
@@ -93,8 +107,9 @@ A project appears once it has tracked time or saved settings.
 }
 ```
 
-- `total_seconds` is all-time credited time.
-- `last_activity` is the end of the last tracked minute of any label. It is `null` when the project has settings but no tracked time.
+- `total_seconds` is all-time raw time. `credited_seconds` is all-time credited time (`null` without a device).
+- A project with credited time and no heartbeats is listed too, with `total_seconds: 0`.
+- `last_activity` is the end of the last tracked minute of any label, from heartbeats or the agent. It is `null` when the project has settings but no tracked time.
 - `hidden` projects are left out of the public profile entirely, including its totals and languages.
 
 ### `GET /api/v1/me/projects`
@@ -146,16 +161,19 @@ Auth: public. `{username}` is case-insensitive.
   "display_name": "Alice",
   "avatar_url": "https://...",
   "member_since": "2026-11-01T08:00:00Z",
-  "totals": { "all_time_seconds": 360000, "last_7_days_seconds": 36000 },
+  "totals": { "all_time_seconds": 360000, "last_7_days_seconds": 36000,
+              "credited_all_time_seconds": 300000, "credited_last_7_days_seconds": 30000 },
   "projects": [
     { "name": "logbook", "repo_url": "https://github.com/apneduniya/logbook",
-      "total_seconds": 300000, "last_7_days_seconds": 30000 }
+      "total_seconds": 300000, "last_7_days_seconds": 30000,
+      "credited_seconds": 250000, "credited_last_7_days_seconds": 25000 }
   ],
   "languages": [{ "name": "Go", "seconds": 250000 }]
 }
 ```
 
-- `projects` lists the top 10 non-hidden projects by all-time credited time.
+- `projects` lists the top 10 non-hidden projects by all-time raw time, then credited time.
+- The `credited_*` fields are `null` when the user has never registered a device. Hidden projects contribute nothing to them either.
 - `last_7_days` is the last 168 hours, not 7 calendar days.
 - Email, HCA id and time zone are never included.
 
@@ -241,7 +259,7 @@ data: {}
 ```
 
 - The event carries no time range or project.
-- It is sent only when what the public profile shows has changed. Time in hidden projects, and agent or idle time, never triggers it.
+- It is sent only when what the public profile shows has changed, including credited time. Time in hidden projects, and agent or idle time, never triggers it.
 - The server checks for changes at most once a minute per stream, so viewers refetch the profile at most once a minute.
 - The stream is closed when the profile is made private.
 

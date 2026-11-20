@@ -27,6 +27,8 @@ type Querier interface {
 	ProjectsMinuteTotals(ctx context.Context, arg db.ProjectsMinuteTotalsParams) ([]db.ProjectsMinuteTotalsRow, error)
 	ProjectsSettingsList(ctx context.Context, userID uuid.UUID) ([]db.Project, error)
 	ProjectsSettingsGet(ctx context.Context, arg db.ProjectsSettingsGetParams) (db.Project, error)
+	ProjectsCreditedTotals(ctx context.Context, arg db.ProjectsCreditedTotalsParams) ([]db.ProjectsCreditedTotalsRow, error)
+	StatsUserHasDevices(ctx context.Context, userID uuid.UUID) (bool, error)
 }
 
 // Store is what the service needs: reads plus transactions for updates.
@@ -59,15 +61,20 @@ type Language struct {
 	Seconds int64  `json:"seconds"`
 }
 
-// Project is a project with its settings and all-time credited totals.
+// Project is a project with its settings and all-time totals.
 type Project struct {
-	Name         string     `json:"name"`
-	TotalSeconds int64      `json:"total_seconds"`
-	LastActivity *time.Time `json:"last_activity"`
-	Languages    []Language `json:"languages"`
-	RepoURL      string     `json:"repo_url"`
-	Hidden       bool       `json:"hidden"`
-	Archived     bool       `json:"archived"`
+	Name string `json:"name"`
+	// TotalSeconds is raw (heartbeat) time labelled "you".
+	TotalSeconds int64 `json:"total_seconds"`
+	// CreditedSeconds is the agent's credited time, capped at 60 s per minute
+	// across devices (ADR 0014); null when the user has never registered a
+	// device.
+	CreditedSeconds *int64     `json:"credited_seconds"`
+	LastActivity    *time.Time `json:"last_activity"`
+	Languages       []Language `json:"languages"`
+	RepoURL         string     `json:"repo_url"`
+	Hidden          bool       `json:"hidden"`
+	Archived        bool       `json:"archived"`
 }
 
 // Patch holds the settings to change; nil fields are left as they are.
@@ -98,7 +105,31 @@ func (s *Service) List(ctx context.Context, userID uuid.UUID) ([]Project, error)
 	if err != nil {
 		return nil, fmt.Errorf("listing project settings: %w", err)
 	}
-	return merge(totals, settings), nil
+	credited, err := s.credited(ctx, userID, pgtype.Text{})
+	if err != nil {
+		return nil, err
+	}
+	return merge(totals, settings, credited), nil
+}
+
+// credited returns the user's credited totals per project, or nil when the
+// user has never registered a device.
+func (s *Service) credited(ctx context.Context, userID uuid.UUID, project pgtype.Text) ([]db.ProjectsCreditedTotalsRow, error) {
+	has, err := s.st.StatsUserHasDevices(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("checking devices: %w", err)
+	}
+	if !has {
+		return nil, nil
+	}
+	rows, err := s.st.ProjectsCreditedTotals(ctx, db.ProjectsCreditedTotalsParams{UserID: userID, Project: project})
+	if err != nil {
+		return nil, fmt.Errorf("querying credited totals: %w", err)
+	}
+	if rows == nil {
+		rows = []db.ProjectsCreditedTotalsRow{} // has devices: zeros, not null
+	}
+	return rows, nil
 }
 
 // Get returns one of the user's projects or ErrNotFound.
@@ -117,7 +148,11 @@ func (s *Service) Get(ctx context.Context, userID uuid.UUID, name string) (Proje
 	case !store.IsNotFound(err):
 		return Project{}, fmt.Errorf("reading project settings: %w", err)
 	}
-	ps := merge(totals, settings)
+	credited, err := s.credited(ctx, userID, pgtype.Text{String: name, Valid: true})
+	if err != nil {
+		return Project{}, err
+	}
+	ps := merge(totals, settings, credited)
 	if len(ps) == 0 {
 		return Project{}, ErrNotFound
 	}
@@ -218,8 +253,10 @@ func optBool(b *bool) pgtype.Bool {
 	return pgtype.Bool{Bool: *b, Valid: true}
 }
 
-// merge joins per-language totals with settings rows into sorted projects.
-func merge(totals []db.ProjectsMinuteTotalsRow, settings []db.Project) []Project {
+// merge joins per-language totals, settings rows and credited totals into
+// sorted projects. A nil credited means the user has no device, so
+// CreditedSeconds stays null; otherwise every project gets a value.
+func merge(totals []db.ProjectsMinuteTotalsRow, settings []db.Project, credited []db.ProjectsCreditedTotalsRow) []Project {
 	byName := map[string]*Project{}
 	get := func(name string) *Project {
 		p, ok := byName[name]
@@ -243,8 +280,19 @@ func merge(totals []db.ProjectsMinuteTotalsRow, settings []db.Project) []Project
 		p := get(s.Name)
 		p.RepoURL, p.Hidden, p.Archived = s.RepoUrl, s.Hidden, s.Archived
 	}
+	for _, c := range credited {
+		p := get(c.Project)
+		v := c.Seconds
+		p.CreditedSeconds = &v
+		if last := c.LastMinute.Add(time.Minute); p.LastActivity == nil || last.After(*p.LastActivity) {
+			p.LastActivity = &last
+		}
+	}
 	out := make([]Project, 0, len(byName))
 	for _, p := range byName {
+		if credited != nil && p.CreditedSeconds == nil {
+			p.CreditedSeconds = new(int64)
+		}
 		slices.SortFunc(p.Languages, func(a, b Language) int {
 			if c := cmp.Compare(b.Seconds, a.Seconds); c != 0 {
 				return c

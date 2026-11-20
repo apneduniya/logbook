@@ -28,6 +28,8 @@ type Querier interface {
 	StatsBreakdown(ctx context.Context, arg db.StatsBreakdownParams) ([]db.StatsBreakdownRow, error)
 	StatsQualifyingDays(ctx context.Context, arg db.StatsQualifyingDaysParams) ([]string, error)
 	StatsQualifyingDaysBetween(ctx context.Context, arg db.StatsQualifyingDaysBetweenParams) ([]string, error)
+	StatsUserHasDevices(ctx context.Context, userID uuid.UUID) (bool, error)
+	StatsCreditedBreakdown(ctx context.Context, arg db.StatsCreditedBreakdownParams) ([]db.StatsCreditedBreakdownRow, error)
 }
 
 // Service computes aggregates for one user at a time.
@@ -60,10 +62,21 @@ type Item struct {
 	Seconds int64  `json:"seconds"`
 }
 
-// Day is the credited time on one local date.
+// Day is the time on one local date.
 type Day struct {
 	Date    string `json:"date"`
 	Seconds int64  `json:"seconds"`
+	// CreditedSeconds is the agent's credited time (see Summary).
+	CreditedSeconds *int64 `json:"credited_seconds"`
+}
+
+// ProjectItem is one project's raw time and, for users with a device, its
+// credited time. A project can have credited time and no raw time (the
+// agent saw AI work but no editor heartbeats), or the other way round.
+type ProjectItem struct {
+	Name            string `json:"name"`
+	Seconds         int64  `json:"seconds"`
+	CreditedSeconds *int64 `json:"credited_seconds"`
 }
 
 // Labels splits all tracked time by minute label.
@@ -81,10 +94,25 @@ type Summary struct {
 	// TotalSeconds is credited ("you") time; it equals Labels.You.
 	TotalSeconds int64  `json:"total_seconds"`
 	Labels       Labels `json:"labels"`
-	Projects     []Item `json:"projects"`
-	Languages    []Item `json:"languages"`
-	Editors      []Item `json:"editors"`
-	Categories   []Item `json:"categories"`
+
+	// CreditedSeconds is the struggle engine's credited time from the
+	// user's devices (ADR 0010, 0014): per minute, the sum over devices
+	// and projects, capped at 60 s. The Credited* fields and
+	// MultiDeviceMinutes are null when the user has never registered a
+	// device, so a UI can say "no evidence" rather than "0".
+	CreditedSeconds *int64 `json:"credited_seconds"`
+	// CreditedLabels splits the minutes the devices reported by label, 60 s
+	// per minute, each minute counted once under its strongest label (you,
+	// then agent, then idle).
+	CreditedLabels *Labels `json:"credited_labels"`
+	// MultiDeviceMinutes counts minutes in which two or more devices credited
+	// "you" time (the multi_device flag); they are capped, not added.
+	MultiDeviceMinutes *int64 `json:"multi_device_minutes"`
+
+	Projects   []ProjectItem `json:"projects"`
+	Languages  []Item        `json:"languages"`
+	Editors    []Item        `json:"editors"`
+	Categories []Item        `json:"categories"`
 	// Days has one entry per local date in the range, zero-filled.
 	Days []Day `json:"days"`
 }
@@ -140,14 +168,31 @@ func (s *Service) Summary(ctx context.Context, userID uuid.UUID, from, to time.T
 	if err != nil {
 		return Summary{}, fmt.Errorf("querying breakdown: %w", err)
 	}
-	return buildSummary(rows, first, last, tz), nil
+	hasDevices, err := s.q.StatsUserHasDevices(ctx, userID)
+	if err != nil {
+		return Summary{}, fmt.Errorf("checking devices: %w", err)
+	}
+	var credited []db.StatsCreditedBreakdownRow
+	if hasDevices {
+		credited, err = s.q.StatsCreditedBreakdown(ctx, db.StatsCreditedBreakdownParams{
+			Tz: tz.String(), UserID: userID, FromTime: from.UTC(), ToTime: to.UTC(), Project: project,
+		})
+		if err != nil {
+			return Summary{}, fmt.Errorf("querying credited breakdown: %w", err)
+		}
+	}
+	sum := buildSummary(rows, first, last, tz)
+	if hasDevices {
+		addCredited(&sum, credited)
+	}
+	return sum, nil
 }
 
 // buildSummary turns breakdown rows into a sorted, zero-filled Summary.
 func buildSummary(rows []db.StatsBreakdownRow, first, last Date, tz *time.Location) Summary {
 	sum := Summary{
 		Start: first.String(), End: last.String(), Timezone: tz.String(),
-		Projects: []Item{}, Languages: []Item{}, Editors: []Item{}, Categories: []Item{},
+		Projects: []ProjectItem{}, Languages: []Item{}, Editors: []Item{}, Categories: []Item{},
 	}
 	perDay := map[string]int64{}
 	for _, r := range rows {
@@ -163,7 +208,7 @@ func buildSummary(rows []db.StatsBreakdownRow, first, last Date, tz *time.Locati
 				sum.Labels.Idle = r.Seconds
 			}
 		case "project":
-			sum.Projects = append(sum.Projects, it)
+			sum.Projects = append(sum.Projects, ProjectItem{Name: r.Key, Seconds: r.Seconds})
 		case "language":
 			sum.Languages = append(sum.Languages, it)
 		case "editor":
@@ -175,7 +220,8 @@ func buildSummary(rows []db.StatsBreakdownRow, first, last Date, tz *time.Locati
 		}
 	}
 	sum.TotalSeconds = sum.Labels.You
-	for _, items := range [][]Item{sum.Projects, sum.Languages, sum.Editors, sum.Categories} {
+	sortProjects(sum.Projects)
+	for _, items := range [][]Item{sum.Languages, sum.Editors, sum.Categories} {
 		SortItems(items)
 	}
 	for d := first; !last.Before(d); d = d.AddDays(1) {
@@ -183,6 +229,67 @@ func buildSummary(rows []db.StatsBreakdownRow, first, last Date, tz *time.Locati
 		sum.Days = append(sum.Days, Day{Date: key, Seconds: perDay[key]})
 	}
 	return sum
+}
+
+// addCredited fills the credited fields of sum from credited-breakdown rows
+// (see StatsCreditedBreakdown). Every credited field becomes non-nil, so a
+// user with a device but no credited minutes in range sees zeros.
+func addCredited(sum *Summary, rows []db.StatsCreditedBreakdownRow) {
+	var total, multi int64
+	labels := Labels{}
+	perProject := map[string]int64{}
+	perDay := map[string]int64{}
+	for _, r := range rows {
+		switch r.Dimension {
+		case "credited":
+			total = r.Seconds
+		case "project":
+			perProject[r.Key] = r.Seconds
+		case "day":
+			perDay[r.Key] = r.Seconds
+		case "label":
+			switch r.Key {
+			case "you":
+				labels.You = r.Seconds
+			case "agent":
+				labels.Agent = r.Seconds
+			case "idle":
+				labels.Idle = r.Seconds
+			}
+		case "multi_device":
+			multi = r.Seconds
+		}
+	}
+	sum.CreditedSeconds, sum.CreditedLabels, sum.MultiDeviceMinutes = &total, &labels, &multi
+	for i := range sum.Projects {
+		p := &sum.Projects[i]
+		v := perProject[p.Name]
+		p.CreditedSeconds = &v
+		delete(perProject, p.Name)
+	}
+	// Projects with credited time but no raw time in range.
+	for name, v := range perProject {
+		sum.Projects = append(sum.Projects, ProjectItem{Name: name, CreditedSeconds: &v})
+	}
+	sortProjects(sum.Projects)
+	for i := range sum.Days {
+		v := perDay[sum.Days[i].Date]
+		sum.Days[i].CreditedSeconds = &v
+	}
+}
+
+// sortProjects orders projects by raw seconds, then credited seconds, both
+// largest first, then by name.
+func sortProjects(ps []ProjectItem) {
+	credited := func(p ProjectItem) int64 {
+		if p.CreditedSeconds == nil {
+			return 0
+		}
+		return *p.CreditedSeconds
+	}
+	slices.SortFunc(ps, func(a, b ProjectItem) int {
+		return cmp.Or(cmp.Compare(b.Seconds, a.Seconds), cmp.Compare(credited(b), credited(a)), cmp.Compare(a.Name, b.Name))
+	})
 }
 
 // SortItems orders items by seconds, largest first, then by name.

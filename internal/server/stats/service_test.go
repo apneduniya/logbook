@@ -56,7 +56,7 @@ func TestSummaryAggregates(t *testing.T) {
 	if sum.Labels != (Labels{You: wantTotal, Agent: 300, Idle: 120}) {
 		t.Errorf("Labels = %+v", sum.Labels)
 	}
-	if want := []Item{{"logbook", 1842}, {"site", 600}}; !equalItems(sum.Projects, want) {
+	if want := []Item{{"logbook", 1842}, {"site", 600}}; !equalItems(projectItems(sum.Projects), want) {
 		t.Errorf("Projects = %+v, want %+v", sum.Projects, want)
 	}
 	if want := []Item{{"Go", 1842}, {"Svelte", 600}}; !equalItems(sum.Languages, want) {
@@ -68,7 +68,7 @@ func TestSummaryAggregates(t *testing.T) {
 	if want := []Item{{"coding", 2400}, {"debugging", 42}}; !equalItems(sum.Categories, want) {
 		t.Errorf("Categories = %+v, want %+v", sum.Categories, want)
 	}
-	wantDays := []Day{{"2026-11-10", 2400}, {"2026-11-11", 0}, {"2026-11-12", 42}}
+	wantDays := []Day{{Date: "2026-11-10", Seconds: 2400}, {Date: "2026-11-11"}, {Date: "2026-11-12", Seconds: 42}}
 	if len(sum.Days) != len(wantDays) {
 		t.Fatalf("Days = %+v, want %+v", sum.Days, wantDays)
 	}
@@ -86,6 +86,15 @@ func TestSummaryAggregates(t *testing.T) {
 	if filtered.TotalSeconds != 600 || len(filtered.Projects) != 1 {
 		t.Errorf("filtered summary = %+v", filtered)
 	}
+}
+
+// projectItems drops the credited field, for comparing raw totals.
+func projectItems(ps []ProjectItem) []Item {
+	out := make([]Item, len(ps))
+	for i, p := range ps {
+		out[i] = Item{Name: p.Name, Seconds: p.Seconds}
+	}
+	return out
 }
 
 func equalItems(a, b []Item) bool {
