@@ -1,0 +1,126 @@
+{
+  "description": "my hooks",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.codex/hooks/session_start.py",
+            "statusMessage": "Loading notes"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/opt/logbook/bin/logbook hook codex SessionStart",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "^Bash$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/python3 policy.py",
+            "timeout": 30
+          }
+        ]
+      },
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "mcp_tool",
+            "server": "scanner",
+            "tool": "scan_patch"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/opt/logbook/bin/logbook hook codex PreToolUse",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/opt/logbook/bin/logbook hook codex UserPromptSubmit",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/opt/logbook/bin/logbook hook codex PostToolUse",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/opt/logbook/bin/logbook hook codex PermissionRequest",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/opt/logbook/bin/logbook hook codex Stop",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Interrupt": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/opt/logbook/bin/logbook hook codex Interrupt",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/opt/logbook/bin/logbook hook codex SessionEnd",
+            "timeout": 3
+          }
+        ]
+      }
+    ]
+  },
+  "x-unknown": {
+    "keep": true
+  }
+}

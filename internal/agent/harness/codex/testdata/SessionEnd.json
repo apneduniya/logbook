@@ -1,0 +1,8 @@
+{
+  "session_id": "thr_123",
+  "transcript_path": "/home/teen/.codex/sessions/rollout-SENTINEL-PRIVATE.jsonl",
+  "cwd": "/home/teen/my-app",
+  "model": "gpt-5.5-codex",
+  "hook_event_name": "SessionEnd",
+  "reason": "other"
+}

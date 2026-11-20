@@ -1,0 +1,18 @@
+{
+  "session_id": "abc123",
+  "prompt_id": "550e8400-e29b-41d4-a716-446655440000",
+  "transcript_path": "/home/teen/.claude/projects/-home-teen-my-app/00893aaf-SENTINEL-PRIVATE.jsonl",
+  "cwd": "/home/teen/my-app",
+  "permission_mode": "default",
+  "hook_event_name": "PreToolUse",
+  "effort": {
+    "level": "high"
+  },
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "npm test SENTINEL-PRIVATE",
+    "description": "SENTINEL-PRIVATE",
+    "timeout": 120000
+  },
+  "tool_use_id": "toolu_01ABC123"
+}

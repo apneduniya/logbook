@@ -1,0 +1,88 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/opt/logbook/bin/logbook hook gemini-cli SessionStart",
+            "name": "logbook",
+            "timeout": 5000
+          }
+        ]
+      }
+    ],
+    "BeforeAgent": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/opt/logbook/bin/logbook hook gemini-cli BeforeAgent",
+            "name": "logbook",
+            "timeout": 5000
+          }
+        ]
+      }
+    ],
+    "BeforeTool": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/opt/logbook/bin/logbook hook gemini-cli BeforeTool",
+            "name": "logbook",
+            "timeout": 5000
+          }
+        ]
+      }
+    ],
+    "AfterTool": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/opt/logbook/bin/logbook hook gemini-cli AfterTool",
+            "name": "logbook",
+            "timeout": 5000
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/opt/logbook/bin/logbook hook gemini-cli Notification",
+            "name": "logbook",
+            "timeout": 5000
+          }
+        ]
+      }
+    ],
+    "AfterAgent": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/opt/logbook/bin/logbook hook gemini-cli AfterAgent",
+            "name": "logbook",
+            "timeout": 5000
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/opt/logbook/bin/logbook hook gemini-cli SessionEnd",
+            "name": "logbook",
+            "timeout": 5000
+          }
+        ]
+      }
+    ]
+  }
+}
