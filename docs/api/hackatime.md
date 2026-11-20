@@ -28,8 +28,9 @@ Hackatime redirects the browser here after the user consents. The web UI doesn't
   5. Writes an audit log entry (`hackatime.linked`) and queues the history import.
   6. Clears the state cookie in every case.
 - **Response:**
-  - `303 See Other` to `/settings?hackatime=linked`.
-  - `303 See Other` to `/settings?hackatime=denied` if the user declined on Hackatime.
+  - `303 See Other` to `{LOGBOOK_WEB_URL}/settings?hackatime=linked`.
+  - `303 See Other` to `{LOGBOOK_WEB_URL}/settings?hackatime=denied` if the user declined on Hackatime.
+  - The web UI is on its own origin (ADR 0011), so `cmd/logbook-server` passes the web origin's settings page as `HandlerOptions.SettingsPath`.
 - **Errors:**
   - `400` invalid or expired state, missing or foreign cookie, or Hackatime rejected the code (expired, reused or PKCE mismatch). The UI should offer "start linking again".
   - `401` not signed in.

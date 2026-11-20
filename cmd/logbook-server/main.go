@@ -153,7 +153,7 @@ func run() error {
 		return fmt.Errorf("building job client: %w", err)
 	}
 	htSvc := hackatime.NewService(st, box, htClient, jobClient.River(), hackatime.ServiceOptions{Logger: logger})
-	hackatime.NewHandler(htSvc, authSvc.RequireSession, hackatime.HandlerOptions{InsecureCookies: cfg.DevInsecureCookie}).Register(mux)
+	hackatime.NewHandler(htSvc, authSvc.RequireSession, hackatimeHandlerOptions(cfg)).Register(mux)
 
 	if err := jobClient.Start(ctx); err != nil {
 		return fmt.Errorf("starting jobs: %w", err)
@@ -195,6 +195,15 @@ func run() error {
 		serveErr = errors.Join(serveErr, fmt.Errorf("stopping jobs: %w", err))
 	}
 	return serveErr
+}
+
+// hackatimeHandlerOptions sends the browser back to the web UI's settings
+// page after linking Hackatime: the API origin serves no pages (ADR 0011).
+func hackatimeHandlerOptions(cfg config.Config) hackatime.HandlerOptions {
+	return hackatime.HandlerOptions{
+		InsecureCookies: cfg.DevInsecureCookie,
+		SettingsPath:    cfg.WebOrigin() + "/settings",
+	}
 }
 
 // corsSkip lists the /api/ paths browsers never call (wakatime-cli and agent
