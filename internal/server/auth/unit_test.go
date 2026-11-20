@@ -68,8 +68,10 @@ func TestBaseUsername(t *testing.T) {
 		want string
 	}{
 		{hcaIdentity{FirstName: "Fiona", LastName: "Hackworth"}, "fiona-hackworth"},
-		{hcaIdentity{PrimaryEmail: "orpheus.dino@hackclub.com"}, "orpheus-dino"},
-		{hcaIdentity{FirstName: "李", PrimaryEmail: "x@y"}, fallbackUsername},
+		// Email is private: never a source for the public username.
+		{hcaIdentity{PrimaryEmail: "orpheus.dino@hackclub.com"}, fallbackUsername},
+		{hcaIdentity{FirstName: "李", PrimaryEmail: "jane.doe2009@gmail.com"}, fallbackUsername},
+		{hcaIdentity{FirstName: "देव", LastName: "शर्मा", PrimaryEmail: "dev@example.com"}, fallbackUsername},
 		{hcaIdentity{}, fallbackUsername},
 	}
 	for _, tc := range tests {
@@ -153,6 +155,40 @@ func TestStateCookieMAC(t *testing.T) {
 	expired, _ := a.encodeState(oauthState{State: "s", Verifier: "v", Expires: now.Add(-time.Second).Unix()})
 	if _, err := a.decodeState(expired); err == nil {
 		t.Fatal("expired state accepted")
+	}
+}
+
+func TestCleanupInterval(t *testing.T) {
+	tests := []struct{ in, want time.Duration }{
+		{0, DefaultSessionCleanupInterval},
+		{-time.Second, DefaultSessionCleanupInterval},
+		{15 * time.Minute, 15 * time.Minute},
+	}
+	for _, tc := range tests {
+		if got := cleanupInterval(tc.in); got != tc.want {
+			t.Errorf("cleanupInterval(%v) = %v, want %v", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestIsLoopbackPeer(t *testing.T) {
+	tests := []struct {
+		addr string
+		want bool
+	}{
+		{"127.0.0.1:5000", true},
+		{"127.8.9.10:5000", true},
+		{"[::1]:5000", true},
+		{"192.168.1.20:5000", false},
+		{"[2001:db8::1]:5000", false},
+		{"localhost:5000", false}, // RemoteAddr is always an IP
+		{"127.0.0.1", false},
+		{"", false},
+	}
+	for _, tc := range tests {
+		if got := isLoopbackPeer(tc.addr); got != tc.want {
+			t.Errorf("isLoopbackPeer(%q) = %v, want %v", tc.addr, got, tc.want)
+		}
 	}
 }
 

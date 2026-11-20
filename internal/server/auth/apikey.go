@@ -205,29 +205,36 @@ func (s *Service) authenticateAPIKey(ctx context.Context, key string) (httpapi.C
 }
 
 // RequireAPIKey authenticates editor plugins and the agent by API key (see
-// apiKeyFromRequest for the accepted forms). Failures return 401; an IP with
-// too many recent failures gets 429 until its budget refills.
+// apiKeyFromRequest for the accepted forms).
+//
+// A valid key always gets through: many users share one NAT address, and one
+// misconfigured neighbour must not block their heartbeats. Only failures are
+// rate limited. Each one takes a token from the client's budget in a single
+// atomic step; a failure with a token left gets 401, one without gets 429.
+// Successful requests never create or touch a limiter bucket.
 func (s *Service) RequireAPIKey(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ip := s.clientIP(r)
-		if s.keyFailLimiter.Exhausted(ip) {
-			httpapi.WriteTooManyRequests(w, r, s.keyFailLimiter.RetryAfter(ip))
+		u, err := s.authenticateRequest(r)
+		if err == nil {
+			next.ServeHTTP(w, r.WithContext(httpapi.WithUser(r.Context(), u)))
 			return
 		}
-		key, ok := apiKeyFromRequest(r)
-		if !ok {
-			s.keyFailLimiter.Allow(ip) // count the failure
-			httpapi.WriteError(w, r, errInvalidAPIKey)
-			return
-		}
-		u, err := s.authenticateAPIKey(r.Context(), key)
-		if err != nil {
-			if errors.Is(err, errInvalidAPIKey) {
-				s.keyFailLimiter.Allow(ip)
+		if errors.Is(err, errInvalidAPIKey) {
+			if k := s.limitKey(r); !s.keyFailLimiter.Allow(k) {
+				httpapi.WriteTooManyRequests(w, r, s.keyFailLimiter.RetryAfter(k))
+				return
 			}
-			httpapi.WriteError(w, r, err)
-			return
 		}
-		next.ServeHTTP(w, r.WithContext(httpapi.WithUser(r.Context(), u)))
+		httpapi.WriteError(w, r, err)
 	})
+}
+
+// authenticateRequest resolves the request's API key, or returns
+// errInvalidAPIKey when it has none or it doesn't verify.
+func (s *Service) authenticateRequest(r *http.Request) (httpapi.CurrentUser, error) {
+	key, ok := apiKeyFromRequest(r)
+	if !ok {
+		return httpapi.CurrentUser{}, errInvalidAPIKey
+	}
+	return s.authenticateAPIKey(r.Context(), key)
 }

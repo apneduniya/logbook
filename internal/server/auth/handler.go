@@ -2,9 +2,9 @@ package auth
 
 import (
 	"crypto/subtle"
-	"fmt"
 	"log/slog"
 	"mime"
+	"net"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -40,12 +40,14 @@ func NewHandler(s *Service) *Handler { return &Handler{s: s} }
 // Register adds the auth routes to mux.
 func (h *Handler) Register(mux *http.ServeMux) {
 	s := h.s
-	limited := s.authLimiter.Middleware(httpapi.IPKey(s.trustProxy))
+	perClient := httpapi.IPKey(s.trustProxy)
+	signInLimited := s.signInLimiter.Middleware(perClient)
+	limited := s.authLimiter.Middleware(perClient)
 
-	mux.Handle("GET /auth/login", limited(httpapi.Handle(h.login)))
+	mux.Handle("GET /auth/login", signInLimited(httpapi.Handle(h.login)))
 	mux.Handle("GET /auth/callback", limited(httpapi.Handle(h.callback)))
 	mux.Handle("POST /auth/logout", limited(s.RequireSession(httpapi.Handle(h.logout))))
-	mux.Handle("POST /auth/dev-login", limited(httpapi.Handle(h.devLogin)))
+	mux.Handle("POST /auth/dev-login", signInLimited(httpapi.Handle(h.devLogin)))
 
 	mux.Handle("GET /api/v1/session", s.RequireSession(httpapi.Handle(h.session)))
 	mux.Handle("GET /api/v1/api_keys", s.RequireSession(httpapi.Handle(h.listKeys)))
@@ -82,7 +84,11 @@ func (h *Handler) callback(w http.ResponseWriter, r *http.Request) error {
 		h.failSignIn(w, r, authErrInvalidState, "no state cookie")
 		return nil
 	}
-	s.clearStateCookie(w) // single use, whatever happens next
+	// Clear the cookie whatever happens next, so this browser can't reuse it.
+	// The state itself is stateless (a MAC'd cookie with a 10-minute
+	// expiry); a captured cookie and state pair is stopped by HCA's
+	// single-use code and our PKCE verifier, not by a server-side record.
+	s.clearStateCookie(w)
 	st, err := s.decodeState(c.Value)
 	if err != nil {
 		h.failSignIn(w, r, authErrInvalidState, "bad state cookie")
@@ -108,7 +114,7 @@ func (h *Handler) callback(w http.ResponseWriter, r *http.Request) error {
 		h.failSignIn(w, r, authErrFailed, "identity exchange failed")
 		return nil
 	}
-	if _, _, err := h.signIn(w, r, signInFromHCA(id), "hca"); err != nil {
+	if _, err := h.startSession(w, r, signInFromHCA(id), methodHCA); err != nil {
 		return err
 	}
 	http.Redirect(w, r, st.Next, http.StatusFound)
@@ -121,55 +127,38 @@ func (h *Handler) failSignIn(w http.ResponseWriter, r *http.Request, code, reaso
 	http.Redirect(w, r, "/?auth_error="+url.QueryEscape(code), http.StatusFound)
 }
 
-// signIn upserts the user, replaces any existing session on this browser
-// with a new one (no session fixation), writes the audit row and sets the
-// session cookie.
-func (h *Handler) signIn(w http.ResponseWriter, r *http.Request, in signIn, method string) (db.User, session, error) {
-	s := h.s
-	ctx := r.Context()
-	u, err := s.upsertUser(ctx, in)
+// startSession signs the browser in through Service.signIn, passing the hash
+// of any session cookie it already has so that session is replaced, then
+// sets the new cookie.
+func (h *Handler) startSession(w http.ResponseWriter, r *http.Request, in signInIdentity, method string) (signedIn, error) {
+	old, _ := sessionHashFromRequest(r) // nil when absent or malformed
+	out, err := h.s.signIn(r.Context(), in, method, old)
 	if err != nil {
-		return db.User{}, session{}, err
+		return signedIn{}, err
 	}
-	var cookie string
-	var sess session
-	err = s.st.InTx(ctx, func(q *db.Queries) error {
-		if old, ok := sessionHashFromRequest(r); ok {
-			if err := q.DeleteSession(ctx, old); err != nil {
-				return fmt.Errorf("deleting previous session: %w", err)
-			}
-		}
-		var cerr error
-		cookie, sess, cerr = s.createSession(ctx, q, u.ID)
-		if cerr != nil {
-			return cerr
-		}
-		return audit(ctx, q, u.ID, "auth.login", "user", u.ID.String(), map[string]any{"method": method})
-	})
-	if err != nil {
-		return db.User{}, session{}, err
-	}
-	s.setSessionCookie(w, cookie, sess.expiresAt)
-	return u, sess, nil
+	h.s.setSessionCookie(w, out.cookie, out.sess.expiresAt)
+	return out, nil
 }
 
 func (h *Handler) logout(w http.ResponseWriter, r *http.Request) error {
-	s := h.s
-	ctx := r.Context()
-	u, _ := httpapi.UserFrom(ctx)
-	sess, _ := sessionFrom(ctx) // RequireSession guarantees both
-	err := s.st.InTx(ctx, func(q *db.Queries) error {
-		if err := q.DeleteSession(ctx, sess.idHash); err != nil {
-			return fmt.Errorf("deleting session: %w", err)
-		}
-		return audit(ctx, q, u.ID, "auth.logout", "user", u.ID.String(), nil)
-	})
-	if err != nil {
+	u, _ := httpapi.UserFrom(r.Context())
+	sess, _ := sessionFrom(r.Context()) // RequireSession guarantees both
+	if err := h.s.logout(r.Context(), u.ID, sess.idHash); err != nil {
 		return err
 	}
-	s.clearSessionCookie(w)
+	h.s.clearSessionCookie(w)
 	w.WriteHeader(http.StatusNoContent)
 	return nil
+}
+
+// isLoopbackPeer reports whether a "host:port" remote address is a loopback IP.
+func isLoopbackPeer(remoteAddr string) bool {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		return false
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 type devLoginRequest struct {
@@ -178,7 +167,10 @@ type devLoginRequest struct {
 
 func (h *Handler) devLogin(w http.ResponseWriter, r *http.Request) error {
 	s := h.s
-	if !s.devLogin {
+	// Config already requires a loopback base URL and listen address; also
+	// refuse any connection that doesn't come from this machine. RemoteAddr
+	// is the TCP peer, never a client-supplied header.
+	if !s.devLogin || !isLoopbackPeer(r.RemoteAddr) {
 		return httpapi.Errorf(http.StatusNotFound, nil, "not found")
 	}
 	// Requiring JSON blocks cross-site form posts (login CSRF).
@@ -193,11 +185,13 @@ func (h *Handler) devLogin(w http.ResponseWriter, r *http.Request) error {
 	if !devUsernameRe.MatchString(name) {
 		return httpapi.Errorf(http.StatusBadRequest, nil, "username must match [a-z0-9_-]{2,32}")
 	}
-	u, sess, err := h.signIn(w, r, signIn{hcaID: devHCAPrefix + name, username: name, displayName: name}, "dev")
+	out, err := h.startSession(w, r, signInIdentity{hcaID: devHCAPrefix + name, username: name, displayName: name}, methodDev)
 	if err != nil {
 		return err
 	}
-	httpapi.WriteJSON(w, http.StatusOK, sessionResponse{User: toUserJSON(u), CSRFToken: sess.csrfToken, ExpiresAt: sess.expiresAt})
+	httpapi.WriteJSON(w, http.StatusOK, sessionResponse{
+		User: toUserJSON(out.user), CSRFToken: out.sess.csrfToken, ExpiresAt: out.sess.expiresAt,
+	})
 	return nil
 }
 
@@ -232,9 +226,9 @@ func (h *Handler) session(w http.ResponseWriter, r *http.Request) error {
 	ctx := r.Context()
 	cu, _ := httpapi.UserFrom(ctx)
 	sess, _ := sessionFrom(ctx) // RequireSession guarantees both
-	u, err := h.s.st.GetUserByID(ctx, cu.ID)
+	u, err := h.s.currentUser(ctx, cu.ID)
 	if err != nil {
-		return fmt.Errorf("loading session user: %w", err)
+		return err
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	httpapi.WriteJSON(w, http.StatusOK, sessionResponse{User: toUserJSON(u), CSRFToken: sess.csrfToken, ExpiresAt: sess.expiresAt})

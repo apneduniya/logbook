@@ -81,10 +81,35 @@ type Service struct {
 	trustProxy bool
 	now        func() time.Time
 
-	// authLimiter limits /auth/* per IP; keyFailLimiter limits failed API
-	// key attempts per IP.
-	authLimiter    *httpapi.RateLimiter
-	keyFailLimiter *httpapi.RateLimiter
+	// Per-client limiters (see rateLimit* below). Budgets are sized for
+	// shared NATs: a school or hackathon venue is often one IPv4 address.
+	signInLimiter  *httpapi.RateLimiter // GET /auth/login, POST /auth/dev-login
+	authLimiter    *httpapi.RateLimiter // GET /auth/callback, POST /auth/logout
+	keyFailLimiter *httpapi.RateLimiter // failed API key attempts only
+}
+
+// Rate-limit budgets per client (IPv4 address or IPv6 /64): a burst of N,
+// refilled at N per minute.
+const (
+	// signInBurst covers sign-in starts. Each costs one request, and the
+	// callback is limited separately, so a 100-person NAT can all sign in at
+	// once.
+	signInBurst = 120
+	// authBurst covers the callback and logout. It is looser than
+	// signInBurst because a 429 on the callback throws away a code the user
+	// just approved, and the state cookie already gates it.
+	authBurst = 300
+	// keyFailBurst counts only failed API key attempts; valid keys never
+	// touch it. Keys carry 122 random bits, so this limit is about slowing
+	// misbehaving clients and bounding wasted lookups, not brute force.
+	keyFailBurst = 60
+
+	limiterMaxKeys = 10_000
+	limiterIdleTTL = 10 * time.Minute
+)
+
+func perMinuteLimiter(burst int) *httpapi.RateLimiter {
+	return httpapi.NewRateLimiter(float64(burst)/60, burst, limiterMaxKeys, limiterIdleTTL)
 }
 
 // New builds a Service. It fails on configuration that would be unsafe.
@@ -124,8 +149,9 @@ func New(st Store, opts Options) (*Service, error) {
 		devLogin:       opts.DevLogin && config.IsLoopbackHost(base.Hostname()),
 		trustProxy:     opts.TrustProxy,
 		now:            func() time.Time { return now().UTC() },
-		authLimiter:    httpapi.NewRateLimiter(20.0/60, 20, 10_000, 10*time.Minute),
-		keyFailLimiter: httpapi.NewRateLimiter(10.0/60, 10, 10_000, 10*time.Minute),
+		signInLimiter:  perMinuteLimiter(signInBurst),
+		authLimiter:    perMinuteLimiter(authBurst),
+		keyFailLimiter: perMinuteLimiter(keyFailBurst),
 	}
 	if opts.DevLogin && !s.devLogin {
 		slog.Warn("dev login requested but base URL is not loopback; leaving it disabled")
@@ -133,7 +159,10 @@ func New(st Store, opts Options) (*Service, error) {
 	return s, nil
 }
 
-func (s *Service) clientIP(r *http.Request) string { return httpapi.ClientIP(r, s.trustProxy) }
+// limitKey is the rate-limit bucket for the request's client.
+func (s *Service) limitKey(r *http.Request) string {
+	return httpapi.LimitKey(httpapi.ClientIP(r, s.trustProxy))
+}
 
 // audit writes one audit_log row. data must be JSON-encodable and must never
 // contain secrets.

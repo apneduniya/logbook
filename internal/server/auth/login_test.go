@@ -3,8 +3,10 @@ package auth_test
 import (
 	"crypto/sha256"
 	"encoding/base64"
+	"fmt"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -83,6 +85,21 @@ func TestCallbackSignsInAndCreatesUser(t *testing.T) {
 	other := e.login(fakeIdentity{ID: "ident!fiona2", FirstName: "Fiona", LastName: "Hackworth"})
 	if other.name != "fiona-hackworth2" || other.userID == b.userID {
 		t.Errorf("namesake got %s/%s", other.userID, other.name)
+	}
+}
+
+func TestUsernameNeverComesFromEmail(t *testing.T) {
+	e := newEnv(t)
+	random := regexp.MustCompile(`^hacker[0-9]{6}$`)
+	tests := []fakeIdentity{
+		{ID: "ident!li", FirstName: "李", LastName: "华", Email: "jane.doe2009@gmail.com"},
+		{ID: "ident!noname", Email: "orpheus.dino@hackclub.com"},
+	}
+	for _, id := range tests {
+		b := e.login(id)
+		if !random.MatchString(b.name) {
+			t.Errorf("username for %s = %q, want hacker plus a random suffix", id.ID, b.name)
+		}
 	}
 }
 
@@ -165,7 +182,7 @@ func TestCallbackProviderError(t *testing.T) {
 	}
 }
 
-func TestCallbackStateIsSingleUse(t *testing.T) {
+func TestCallbackClearsStateCookie(t *testing.T) {
 	e := newEnv(t)
 	ap := e.startLogin("")
 	code := e.hca.issueCode(ap.challenge, fiona)
@@ -175,6 +192,28 @@ func TestCallbackStateIsSingleUse(t *testing.T) {
 	}
 	if c := cookieNamed(rec, "logbook_oauth"); c == nil || c.MaxAge >= 0 {
 		t.Fatalf("state cookie not cleared: %+v", c)
+	}
+}
+
+// The state cookie is stateless, so replaying a captured callback (cookie,
+// state and code) is stopped by HCA's single-use code.
+func TestCallbackReplayIsRejected(t *testing.T) {
+	e := newEnv(t)
+	ap := e.startLogin("")
+	code := e.hca.issueCode(ap.challenge, fiona)
+	callback := req{target: "/auth/callback?code=" + code + "&state=" + url.QueryEscape(ap.state), cookies: []*http.Cookie{ap.cookie}}
+	if rec := e.do(callback); rec.Header().Get("Location") != "/" {
+		t.Fatalf("first callback Location = %q", rec.Header().Get("Location"))
+	}
+	rec := e.do(callback)
+	if got := rec.Header().Get("Location"); got != "/?auth_error=failed" {
+		t.Fatalf("replayed callback Location = %q, want failure", got)
+	}
+	if cookieNamed(rec, auth.SessionCookie) != nil {
+		t.Fatal("replayed callback created a session")
+	}
+	if n := e.count("SELECT count(*) FROM sessions"); n != 1 {
+		t.Fatalf("sessions = %d, want 1", n)
 	}
 }
 
@@ -221,21 +260,57 @@ func TestLoginReplacesExistingSession(t *testing.T) {
 
 func TestAuthRoutesAreRateLimitedPerIP(t *testing.T) {
 	e := newEnv(t)
+	const ip = "198.51.100.7:5000"
 	limited := false
-	for range 30 {
-		if rec := e.do(req{target: "/auth/login", remoteAddr: "198.51.100.7:5000"}); rec.Code == http.StatusTooManyRequests {
+	var pending []authorizeParams
+	for range 500 {
+		rec := e.do(req{target: "/auth/login", remoteAddr: ip})
+		if rec.Code == http.StatusTooManyRequests {
 			if rec.Header().Get("Retry-After") == "" {
 				t.Error("429 without Retry-After")
 			}
 			limited = true
 			break
 		}
+		if len(pending) < 3 {
+			loc, _ := url.Parse(rec.Header().Get("Location"))
+			pending = append(pending, authorizeParams{
+				state: loc.Query().Get("state"), challenge: loc.Query().Get("code_challenge"),
+				cookie: cookieNamed(rec, "logbook_oauth"),
+			})
+		}
 	}
 	if !limited {
-		t.Fatal("30 rapid logins from one IP were never limited")
+		t.Fatal("500 rapid logins from one IP were never limited")
+	}
+	// Sign-ins already started on this IP can still finish: the callback
+	// has its own budget, so a busy venue doesn't lose approved codes.
+	for _, ap := range pending {
+		code := e.hca.issueCode(ap.challenge, fiona)
+		rec := e.do(req{target: "/auth/callback?code=" + code + "&state=" + url.QueryEscape(ap.state),
+			cookies: []*http.Cookie{ap.cookie}, remoteAddr: ip})
+		if rec.Code != http.StatusFound || rec.Header().Get("Location") != "/" {
+			t.Fatalf("callback after login limit = %d %q", rec.Code, rec.Header().Get("Location"))
+		}
 	}
 	// Another IP is unaffected.
 	if rec := e.do(req{target: "/auth/login", remoteAddr: "198.51.100.8:5000"}); rec.Code != http.StatusFound {
 		t.Fatalf("other IP status = %d", rec.Code)
+	}
+}
+
+// A school or hackathon behind one NAT address must be able to sign in
+// together.
+func TestManySignInsFromOneNAT(t *testing.T) {
+	e := newEnv(t)
+	for i := range 100 {
+		id := fakeIdentity{ID: fmt.Sprintf("ident!nat%d", i), FirstName: "Student", LastName: fmt.Sprint(i)}
+		ap := e.startLogin("")
+		code := e.hca.issueCode(ap.challenge, id)
+		rec := e.do(req{target: "/auth/callback?code=" + code + "&state=" + url.QueryEscape(ap.state),
+			cookies: []*http.Cookie{ap.cookie}})
+		if rec.Code != http.StatusFound || rec.Header().Get("Location") != "/" {
+			t.Fatalf("sign-in %d = %d %q", i, rec.Code, rec.Header().Get("Location"))
+		}
 	}
 }

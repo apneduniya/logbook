@@ -24,20 +24,26 @@ const (
 	randomUsernameTries     = 10
 )
 
-// signIn is a verified identity ready to become (or match) a Logbook user.
-type signIn struct {
-	hcaID       string
-	username    string // preferred base username, already sanitized
-	displayName string
-	email       string
+// signInIdentity is a verified identity ready to become (or match) a Logbook user.
+type signInIdentity struct {
+	hcaID    string
+	username string // preferred base username, already sanitized
+	// randomSuffix skips base, base2, ... and goes straight to a random
+	// numeric suffix. Used for the generic fallback name, so it neither
+	// reveals how many such accounts exist nor wastes tries on taken names.
+	randomSuffix bool
+	displayName  string
+	email        string
 }
 
-func signInFromHCA(id hcaIdentity) signIn {
-	return signIn{
-		hcaID:       id.ID,
-		username:    baseUsername(id),
-		displayName: clip(strings.TrimSpace(id.FirstName+" "+id.LastName), maxDisplayName),
-		email:       clip(strings.ToLower(strings.TrimSpace(id.PrimaryEmail)), maxEmail),
+func signInFromHCA(id hcaIdentity) signInIdentity {
+	base := baseUsername(id)
+	return signInIdentity{
+		hcaID:        id.ID,
+		username:     base,
+		randomSuffix: base == fallbackUsername,
+		displayName:  clip(strings.TrimSpace(id.FirstName+" "+id.LastName), maxDisplayName),
+		email:        clip(strings.ToLower(strings.TrimSpace(id.PrimaryEmail)), maxEmail),
 	}
 }
 
@@ -55,7 +61,7 @@ func clip(s string, n int) string {
 // upsertUser returns the user for in.hcaID, creating it with a unique
 // username on first sign-in and refreshing name and email afterwards. The
 // username never changes after creation.
-func (s *Service) upsertUser(ctx context.Context, in signIn) (db.User, error) {
+func (s *Service) upsertUser(ctx context.Context, in signInIdentity) (db.User, error) {
 	u, err := s.st.GetUserByHCAID(ctx, in.hcaID)
 	switch {
 	case err == nil:
@@ -73,7 +79,11 @@ func (s *Service) upsertUser(ctx context.Context, in signIn) (db.User, error) {
 		return db.User{}, fmt.Errorf("looking up user by identity: %w", err)
 	}
 
-	for i := range sequentialUsernameTries + randomUsernameTries {
+	first := 0
+	if in.randomSuffix {
+		first = sequentialUsernameTries
+	}
+	for i := first; i < sequentialUsernameTries+randomUsernameTries; i++ {
 		name := usernameCandidate(in.username, i)
 		if i >= sequentialUsernameTries {
 			name = in.username + randomDigits(6)

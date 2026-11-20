@@ -48,16 +48,13 @@ func sanitizeUsername(s string) string {
 	return out
 }
 
-// baseUsername picks a username from an HCA identity: the name if granted,
-// else the email's local part, else a fixed fallback.
+// baseUsername picks a username from an HCA identity: the name if granted
+// and usable, else a fixed fallback (which upsertUser gives a random
+// suffix). It never uses the email address: usernames are public and
+// permanent, and THREAT-MODEL.md keeps email private.
 func baseUsername(id hcaIdentity) string {
 	if u := sanitizeUsername(id.FirstName + " " + id.LastName); u != "" {
 		return u
-	}
-	if local, _, ok := strings.Cut(id.PrimaryEmail, "@"); ok {
-		if u := sanitizeUsername(local); u != "" {
-			return u
-		}
 	}
 	return fallbackUsername
 }

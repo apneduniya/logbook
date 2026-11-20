@@ -25,8 +25,8 @@ func TestRateLimiterBurstAndRefill(t *testing.T) {
 	if l.Allow("a") {
 		t.Fatal("request beyond burst allowed")
 	}
-	if !l.Exhausted("a") || l.RetryAfter("a") != time.Second {
-		t.Fatalf("Exhausted=%v RetryAfter=%v", l.Exhausted("a"), l.RetryAfter("a"))
+	if got := l.RetryAfter("a"); got != time.Second {
+		t.Fatalf("RetryAfter = %v, want 1s", got)
 	}
 	if !l.Allow("b") {
 		t.Fatal("independent key denied")
@@ -82,6 +82,49 @@ func TestRateLimiterMiddleware(t *testing.T) {
 	}
 	if fmt.Sprint(codes) != "[204 204 429]" {
 		t.Fatalf("codes = %v", codes)
+	}
+}
+
+func TestLimitKey(t *testing.T) {
+	tests := []struct{ in, want string }{
+		{"192.0.2.1", "192.0.2.1"},
+		{"::ffff:192.0.2.1", "192.0.2.1"},
+		{"2001:db8:1:2:aaaa:bbbb:cccc:dddd", "2001:db8:1:2::/64"},
+		{"2001:db8:1:2::1", "2001:db8:1:2::/64"},
+		{"2001:db8:1:3::1", "2001:db8:1:3::/64"},
+		{"not-an-ip", "not-an-ip"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.in, func(t *testing.T) {
+			if got := LimitKey(tc.in); got != tc.want {
+				t.Fatalf("LimitKey(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestIPKeyGroupsIPv6ByPrefix(t *testing.T) {
+	l, _ := newTestLimiter(1, 1, 10, time.Hour)
+	h := l.Middleware(IPKey(false))(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	send := func(remote string) int {
+		r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
+		r.RemoteAddr = remote
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, r)
+		return rec.Code
+	}
+	if code := send("[2001:db8:1:2::1]:443"); code != http.StatusNoContent {
+		t.Fatalf("first request = %d", code)
+	}
+	// Another address in the same /64 shares the spent budget.
+	if code := send("[2001:db8:1:2::ffff]:443"); code != http.StatusTooManyRequests {
+		t.Fatalf("same /64 = %d, want 429", code)
+	}
+	// A different /64 has its own.
+	if code := send("[2001:db8:1:3::1]:443"); code != http.StatusNoContent {
+		t.Fatalf("other /64 = %d", code)
 	}
 }
 

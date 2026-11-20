@@ -56,6 +56,22 @@ func TestSessionExpiresAndSlides(t *testing.T) {
 	}
 }
 
+func TestRunSessionCleanupToleratesZeroInterval(t *testing.T) {
+	e := newEnv(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // run one pass, then return
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		e.svc.RunSessionCleanup(ctx, 0) // a zero interval used to panic in time.NewTicker
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("RunSessionCleanup did not return after cancellation")
+	}
+}
+
 func TestSessionTouchIsThrottled(t *testing.T) {
 	e := newEnv(t)
 	b := e.login(fiona)

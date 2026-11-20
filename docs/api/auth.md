@@ -8,7 +8,12 @@ Owned by `internal/server/auth`. Covers sign-in with Hack Club Auth (HCA), brows
 - **Session auth:** the browser sends the `logbook_session` cookie (`HttpOnly`, `Secure`, `SameSite=Lax`, `Path=/`). The UI can't read it. Sessions slide: any request made more than 5 minutes after the last refresh extends the expiry to now + `LOGBOOK_SESSION_TTL` (default 30 days) and re-issues the cookie.
 - **CSRF:** every session-authenticated request whose method isn't `GET`, `HEAD` or `OPTIONS` must send `X-CSRF-Token: <csrf_token>`. Get the token from `GET /api/v1/session`. It is fixed for the life of the session. A missing or wrong token gets `403 {"error": "missing or invalid CSRF token"}`.
 - **No session** gets `401 {"error": "not signed in"}`.
-- **Rate limits:** each client IP can make 20 requests to `/auth/*` in a burst, refilled at 20 per minute. Over the limit the response is `429` with a `Retry-After` header (seconds).
+- **Rate limits:** limits are per client, where a client is one IPv4 address or one IPv6 `/64` network. Budgets are sized so a school or hackathon behind one NAT address can sign in together. Each is a burst of N, refilled at N per minute:
+  - `GET /auth/login` and `POST /auth/dev-login` share 120.
+  - `GET /auth/callback` and `POST /auth/logout` share 300. This is a separate budget, so a sign-in that has started can still finish.
+  - Failed API key attempts: 60 (see below). Successful API key requests are never limited here.
+
+  Over a limit the response is `429` with a `Retry-After` header (seconds).
 
 ## Browser sign-in (HCA)
 
@@ -40,9 +45,9 @@ HCA redirects here. Not for direct use.
 | `access_denied` | The user declined, or HCA returned an error. |
 | `failed` | Code exchange or identity fetch failed (including a PKCE mismatch). |
 
-The state cookie is cleared on every callback, so each login attempt can be used once.
+Every callback clears the state cookie in the browser. The state itself is not recorded on the server: it is a MAC'd cookie that expires after 10 minutes. A replayed callback fails because HCA codes are single use and bound to the PKCE verifier.
 
-**New users:** the username comes from the HCA first and last name (`Fiona Hackworth` becomes `fiona-hackworth`). If the name isn't usable, it comes from the email's local part, and failing that it is `hacker`. Names already taken get a numeric suffix (`fiona-hackworth2`). The username never changes on later sign-ins.
+**New users:** the username comes from the HCA first and last name (`Fiona Hackworth` becomes `fiona-hackworth`). Names already taken get a numeric suffix (`fiona-hackworth2`). If the name isn't usable (for example it has no Latin letters, or the name scope wasn't granted), the username is `hacker` plus six random digits (`hacker402913`). The email address is never used, because usernames are public. The username never changes on later sign-ins.
 
 ### `POST /auth/logout`
 
@@ -55,14 +60,14 @@ The state cookie is cleared on every callback, so each login attempt can be used
 
 ### `POST /auth/dev-login` (development only)
 
-This route exists only when `LOGBOOK_DEV_LOGIN=true` **and** `LOGBOOK_BASE_URL` is on `localhost`, `127.0.0.1` or `::1`. Config loading refuses `LOGBOOK_DEV_LOGIN=true` on any other host. When the route is disabled it returns `404`.
+This route exists only when `LOGBOOK_DEV_LOGIN=true` **and** `LOGBOOK_BASE_URL` is on `localhost`, `127.0.0.1` or `::1`. Config loading refuses `LOGBOOK_DEV_LOGIN=true` on any other host, and also when `LOGBOOK_ADDR` listens on anything other than loopback (for example `0.0.0.0:8080` or `:8080`). The handler also answers only connections whose TCP peer is a loopback address; `X-Forwarded-For` is ignored. Otherwise it returns `404`.
 
 | | |
 |---|---|
 | Auth | none |
 | Request | `Content-Type: application/json` (required, which blocks cross-site form posts). Body: `{"username": "orpheus"}`. The username is lowercased and must match `[a-z0-9_-]{2,32}`. |
 | Response | `200`, the same body as `GET /api/v1/session`, plus the `logbook_session` cookie. The user is created on first use with `hca_id = "dev:<username>"`. |
-| Errors | `404` disabled, `415` wrong content type, `400` invalid username or JSON, `429` rate-limited. |
+| Errors | `404` disabled or not from loopback, `415` wrong content type, `400` invalid username or JSON, `429` rate-limited. |
 
 ## Session
 
@@ -149,6 +154,6 @@ Routes guarded by `RequireAPIKey` (WakaTime-compatible ingest, agent endpoints) 
 2. `Authorization: Basic <base64(key)>`, which is what `wakatime-cli` sends. `base64("<key>:")` and `base64(":<key>")` also work.
 3. `?api_key=<key>` query parameter
 
-If an `Authorization` header is present, it is the only form checked. A bad key, a revoked key or no key gets `401 {"error": "invalid API key"}`. Each IP may make 10 failed attempts in a burst, refilled at 10 per minute. Past that, every API-key request from that IP gets `429` with `Retry-After` until the budget refills, even if it carries a valid key.
+If an `Authorization` header is present, it is the only form checked. A bad key, a malformed key, a revoked key or no key gets `401 {"error": "invalid API key"}`. Each client (IPv4 address or IPv6 `/64`) may make 60 failed attempts in a burst, refilled at 60 per minute. Past that, further **failed** attempts from that client get `429` with `Retry-After` instead of `401`. A request with a valid key always succeeds, even from a client that is over its failure budget, so one misconfigured editor on a shared network can't block everyone else's heartbeats.
 
 Behind a reverse proxy, set `LOGBOOK_TRUST_PROXY=true` so rate limits use the last `X-Forwarded-For` hop instead of the proxy's address.

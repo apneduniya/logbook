@@ -222,24 +222,64 @@ func TestFailedAPIKeyAttemptsAreRateLimited(t *testing.T) {
 	ip := "192.0.2.50:1"
 	bad := map[string]string{"Authorization": "Bearer 3f1e2d4c-1111-4222-8333-444455556666"}
 	limited := false
-	for range 20 {
-		if rec := e.do(req{target: "/api/v1/probe/key", header: bad, remoteAddr: ip}); rec.Code == http.StatusTooManyRequests {
+	for range 200 {
+		rec := e.do(req{target: "/api/v1/probe/key", header: bad, remoteAddr: ip})
+		if rec.Code == http.StatusTooManyRequests {
+			if rec.Header().Get("Retry-After") == "" {
+				t.Error("429 without Retry-After")
+			}
+			limited = true
+			break
+		}
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("bad key = %d, want 401 or 429", rec.Code)
+		}
+	}
+	if !limited {
+		t.Fatal("200 bad keys from one IP were never limited")
+	}
+	// A neighbour behind the same NAT with a valid key is not blocked by
+	// someone else's failures.
+	good := map[string]string{"Authorization": "Bearer " + k.Key}
+	for range 5 {
+		if rec := e.do(req{target: "/api/v1/probe/key", header: good, remoteAddr: ip}); rec.Code != http.StatusOK {
+			t.Fatalf("valid key from limited IP = %d, want 200", rec.Code)
+		}
+	}
+	// Other IPs keep their own failure budget.
+	if rec := e.do(req{target: "/api/v1/probe/key", header: bad, remoteAddr: "192.0.2.51:1"}); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("bad key from other IP = %d, want 401", rec.Code)
+	}
+}
+
+func TestFailedAPIKeyLimitGroupsIPv6ByPrefix(t *testing.T) {
+	e := newEnv(t)
+	bad := map[string]string{"Authorization": "Bearer 3f1e2d4c-1111-4222-8333-444455556666"}
+	// Rotating through addresses in one /64 doesn't buy a fresh budget.
+	limited := false
+	for i := range 200 {
+		addr := fmt.Sprintf("[2001:db8:5:6::%x]:1", i+1)
+		if rec := e.do(req{target: "/api/v1/probe/key", header: bad, remoteAddr: addr}); rec.Code == http.StatusTooManyRequests {
 			limited = true
 			break
 		}
 	}
 	if !limited {
-		t.Fatal("20 bad keys from one IP were never limited")
+		t.Fatal("bad keys from 200 addresses in one /64 were never limited")
 	}
-	// The limited IP is blocked even with a valid key until it refills...
+}
+
+func TestSuccessfulAPIKeyRequestsDontTouchFailureLimiter(t *testing.T) {
+	e := newEnv(t)
+	b := e.login(fiona)
+	k := createKey(t, e, b, "editor")
 	good := map[string]string{"Authorization": "Bearer " + k.Key}
-	if rec := e.do(req{target: "/api/v1/probe/key", header: good, remoteAddr: ip}); rec.Code != http.StatusTooManyRequests {
-		t.Fatalf("limited IP with good key = %d, want 429", rec.Code)
-	}
-	// ...while other IPs and successful requests are unaffected.
-	for range 20 {
-		if rec := e.do(req{target: "/api/v1/probe/key", header: good, remoteAddr: "192.0.2.51:1"}); rec.Code != http.StatusOK {
-			t.Fatalf("good key from other IP = %d", rec.Code)
+	for i := range 50 {
+		if rec := e.do(req{target: "/api/v1/probe/key", header: good, remoteAddr: fmt.Sprintf("198.51.100.%d:1", i+1)}); rec.Code != http.StatusOK {
+			t.Fatalf("good key = %d", rec.Code)
 		}
+	}
+	if n := auth.KeyFailBuckets(e.svc); n != 0 {
+		t.Fatalf("failure limiter tracks %d clients after only successes, want 0", n)
 	}
 }

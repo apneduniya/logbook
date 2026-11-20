@@ -59,14 +59,6 @@ func (l *RateLimiter) Allow(key string) bool {
 	return l.get(key, now).limiter.AllowN(now, 1)
 }
 
-// Exhausted reports whether key has no token left, without taking one.
-func (l *RateLimiter) Exhausted(key string) bool {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	now := l.now()
-	return l.get(key, now).limiter.TokensAt(now) < 1
-}
-
 // RetryAfter is how long until key has a token again, rounded up to seconds.
 func (l *RateLimiter) RetryAfter(key string) time.Duration {
 	l.mu.Lock()
@@ -172,7 +164,28 @@ func ClientIP(r *http.Request, trustProxy bool) string {
 	return host
 }
 
-// IPKey returns a key function for Middleware that limits per client IP.
+// ipv6LimitPrefix is how much of an IPv6 address identifies one client for
+// rate limiting. Ordinary subscribers get a whole /64, so keying on the full
+// address would give each of them 2^64 separate budgets.
+const ipv6LimitPrefix = 64
+
+// LimitKey turns a client IP into a rate-limit bucket key: IPv4 addresses
+// (including IPv4-mapped IPv6) as they are, IPv6 addresses truncated to their
+// /64 network. Anything that isn't an IP is returned unchanged.
+func LimitKey(ip string) string {
+	parsed := net.ParseIP(ip)
+	if parsed == nil {
+		return ip
+	}
+	if v4 := parsed.To4(); v4 != nil {
+		return v4.String()
+	}
+	mask := net.CIDRMask(ipv6LimitPrefix, 8*net.IPv6len)
+	return parsed.Mask(mask).String() + "/" + strconv.Itoa(ipv6LimitPrefix)
+}
+
+// IPKey returns a key function for Middleware that limits per client (see
+// LimitKey for how IPv6 clients are grouped).
 func IPKey(trustProxy bool) func(*http.Request) string {
-	return func(r *http.Request) string { return ClientIP(r, trustProxy) }
+	return func(r *http.Request) string { return LimitKey(ClientIP(r, trustProxy)) }
 }
