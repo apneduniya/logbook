@@ -1,0 +1,10 @@
+research/
+.env*
+*.local
+/bin/
+/dist/
+.impeccable/
+/web/build/
+/web/node_modules/
+/web/.svelte-kit/
+coverage.out

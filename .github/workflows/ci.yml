@@ -1,0 +1,36 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  go:
+    runs-on: ubuntu-24.04
+    env:
+      DATABASE_URL: postgres://logbook:logbook@127.0.0.1:54329/logbook?sslmode=disable
+    services:
+      postgres:
+        image: postgres:17.12-alpine
+        env:
+          POSTGRES_USER: logbook
+          POSTGRES_PASSWORD: logbook
+          POSTGRES_DB: logbook
+        ports: ["54329:5432"]
+        options: >-
+          --health-cmd "pg_isready -U logbook" --health-interval 2s --health-timeout 3s --health-retries 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - run: go install github.com/pressly/goose/v3/cmd/goose@v3.30.1
+      - run: go install golang.org/x/vuln/cmd/govulncheck@latest
+      - uses: golangci/golangci-lint-action@v8
+        with:
+          version: v2.15.0
+      - run: goose -dir migrations postgres "$DATABASE_URL" up
+      - run: go vet ./...
+      - run: go test -race -count=1 ./...
+      - run: govulncheck ./...

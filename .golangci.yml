@@ -1,0 +1,22 @@
+version: "2"
+linters:
+  default: standard
+  enable:
+    - bodyclose
+    - contextcheck
+    - errorlint
+    - gosec
+    - misspell
+    - noctx
+    - revive
+    - sqlclosecheck
+    - unconvert
+    - unparam
+  exclusions:
+    paths:
+      - internal/server/store/db
+    rules:
+      - path: _test\.go
+        linters: [gosec, unparam]
+formatters:
+  enable: [gofmt, goimports]
