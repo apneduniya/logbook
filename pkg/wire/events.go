@@ -122,3 +122,27 @@ func (g GitEvent) Validate() error {
 
 // ErrInvalidEvent is wrapped by every event validation failure.
 var ErrInvalidEvent = errors.New("invalid event")
+
+// LocalEvent is the envelope hook commands send to the agent's
+// POST /local/v1/events endpoint, and the line format of the spool file
+// (<data dir>/spool/events.jsonl) used when the daemon is not reachable.
+// Exactly one of the pointer fields is set, matching Type.
+type LocalEvent struct {
+	Type     string          `json:"type"` // "ai", "activity" or "git"
+	AI       *AIEvent        `json:"ai,omitempty"`
+	Activity *ActivitySample `json:"activity,omitempty"`
+	Git      *GitEvent       `json:"git,omitempty"`
+}
+
+// Validate checks that the envelope matches its payload.
+func (e LocalEvent) Validate() error {
+	switch {
+	case e.Type == "ai" && e.AI != nil && e.Activity == nil && e.Git == nil:
+		return e.AI.Validate()
+	case e.Type == "activity" && e.Activity != nil && e.AI == nil && e.Git == nil:
+		return e.Activity.Validate()
+	case e.Type == "git" && e.Git != nil && e.AI == nil && e.Activity == nil:
+		return e.Git.Validate()
+	}
+	return fmt.Errorf("%w: envelope type %q does not match payload", ErrInvalidEvent, e.Type)
+}
