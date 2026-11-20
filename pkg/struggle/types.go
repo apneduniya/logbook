@@ -1,7 +1,3 @@
-// Package struggle is the crediting engine: it turns a device's raw events
-// into labelled, credited minutes (docs/STRUGGLE-RULES.md, ADR 0010). It is
-// pure and deterministic: no I/O, no clock, no randomness. The agent runs it
-// continuously; the server re-runs it on submitted evidence.
 package struggle
 
 import (
@@ -95,7 +91,8 @@ type Repo struct {
 	Project string
 }
 
-// Minute is the engine's output for one (minute, project) pair.
+// Minute is the engine's output for one (minute, project) pair. Idle minutes
+// with no project are not emitted: a minute missing from a Result is idle.
 type Minute struct {
 	Minute  time.Time // UTC, truncated to the minute
 	Project string    // "" when the minute has no project (idle with nothing open)
