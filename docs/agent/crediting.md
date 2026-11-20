@@ -17,7 +17,7 @@ How the agent runs the struggle engine and keeps the evidence chain (ADR 0010, A
 | Device key | `<data dir>/device.key`, PKCS#8 PEM, 0600 | one file; retired keys are kept as `device.key.retired-<unix>[-n]`, never overwritten |
 | Full heartbeats | `heartbeats` (payload as received, deduplicated) | 90 days, 3 000 000 rows |
 | Credited minutes | `credited_minutes` (minute, project, label, credit, cuts, flags, rules version, upload state) | 90 days |
-| Evidence days | `evidence_days` (signed values, event counts, high-water ids, state) | one row per day, kept |
+| Evidence days | `evidence_days` (signed values, event counts, high-water ids, the active-time records hashed, state) | one row per day, kept; active-time records cleared after 90 days |
 | State | `kv` keys `device.*`, `crediting.*`, `evidence.*` | small |
 
 ## Each minute
@@ -52,7 +52,7 @@ A local failure while sealing a day (database, active-time source) is shown as "
 
 ## Evidence days
 
-A UTC day is sealed once it has ended plus one hour and the server has answered for every stored minute up to its end; sealing closes the day to minutes on the server. No new day is sealed on a run whose minute uploads are on hold or failed. The agent records the highest row id of each event table, hashes the day's events up to those ids (`evidence.ContentHash`), chains it to the last accepted day (`prev_chain_hash`, `""` for the first), signs it with the device key and stores it as `pending`. It is uploaded until the server accepts it; only then does the chain move on. Days without events are skipped. Catch-up after downtime seals up to 7 days per run, in order.
+A UTC day is sealed once it has ended plus one hour and the server has answered for every stored minute up to its end; sealing closes the day to minutes on the server. No new day is sealed on a run whose minute uploads are on hold or failed. The agent records the highest row id of each event table and keeps the day's active-time records as hashed (they can't be pinned by ids), hashes the day's events up to those ids plus those records (`evidence.ContentHash`), chains it to the last accepted day (`prev_chain_hash`, `""` for the first), signs it with the device key and stores it as `pending`. It is uploaded until the server accepts it; only then does the chain move on. Days without events are skipped. Catch-up after downtime seals up to 7 days per run, in order. `crediting.ReplayDay` rebuilds a sealed day's events from the same marks and records, so late events never change its hash (ADR 0013).
 
 ## Status
 

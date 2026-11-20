@@ -22,7 +22,14 @@ ADR 0010 fixes what the agent uploads (labelled minutes, one signed hash per UTC
 - An event outside the day is an error, not silently dropped.
 - Only the agent's own reading of each event is covered: times as stored locally (milliseconds for sensor events, heartbeats exactly as received).
 
-**Which events a day covers.** When a day is sealed the agent records the highest row id of each local event table. The day's content is exactly its events at or below those ids. Late events (an editor's offline queue, the hook spool) never change a sealed day, and a step 5 bundle can reproduce the hash from the same rows. Active-time datapoints come from an optional source without row ids; they are read at sealing time, an hour after the day ends.
+**Which events a day covers.** One rule for every event type: a sealed day's content is fixed at sealing time, and anything that arrives or changes later is not part of it. How each type is pinned:
+
+| Type | Pinned by | Why that is enough |
+|---|---|---|
+| heartbeats, AI events, activity samples, git events | the highest row id of each table at sealing time (`evidence_days.hw_*`); the day's content is its rows at or below those ids | the tables are append-only (rows are inserted, never updated; a duplicate heartbeat or commit is ignored, not rewritten) and each row holds its final values, including the AI event's project, which is derived once at ingest |
+| active time | the exact records hashed, stored with the day (`evidence_days.active_time`, migration 0004) | points arrive late (OTLP export interval, delta temporality, exporter retries), and their derived fields (the session's working directory from hook events, which sessions the receiver's uptime covered) are read from other tables that keep changing, so no id range can reproduce them |
+
+`crediting.ReplayDay` rebuilds a sealed day from exactly this (rows up to the marks plus the stored active time); sealing hashes what the same function returns, so the two can't drift. Late events (an editor's offline queue, wakatime-cli's offline queue, the hook spool, a delayed OTLP export) never change a sealed day. If local data no longer holds the day as sealed (raw events pruned after 90 days or trimmed by the row cap, or a day sealed before migration 0004 that had active time), `ReplayDay` returns `ErrNotReproducible`, checked against the stored event counts, rather than a different hash. The stored active time is cleared with the day's raw events after the retention period.
 
 **Full heartbeats are kept locally** in a new `heartbeats` table (90 days, deduplicated by `wire.FieldsHash`). They hold file paths, which the server already receives in heartbeats; nothing new leaves the device.
 
@@ -65,6 +72,6 @@ A revoked device is never re-registered silently: revoking is the user's decisio
 ## Consequences
 
 - The evidence format is pinned by tests in `pkg/evidence`, and agent and server share one implementation.
-- A step 5 bundle must contain the same rows (by the stored high-water ids), including file paths and working directories. Redacting them would change the hash; if redaction is wanted, it needs a new encoding version.
+- A step 5 bundle must contain the same rows (by the stored high-water ids) and the stored active-time records (`ReplayDay`), including file paths and working directories. Redacting them would change the hash; if redaction is wanted, it needs a new encoding version.
 - A conflict needs a person to look at it. Logging in with a new API key starts a new device and chain.
 - If the agent's clock is far ahead of the server's, rewrites of open minutes may be refused as final; they are counted, not retried.
