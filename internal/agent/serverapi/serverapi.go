@@ -53,7 +53,8 @@ const (
 	// KindUnknownDevice means 404 with a JSON error, the server doesn't know the
 	// device for this user.
 	KindUnknownDevice
-	// KindConflict means 409, the request conflicts with what the server stores.
+	// KindConflict means 409 with a JSON error, the request conflicts with
+	// what the server stores. A 409 without one (a proxy) is KindRetry.
 	KindConflict
 	// KindInvalid means 400, 413 or 422 with a JSON error, the server refused the
 	// request itself. Sending it again won't help.
@@ -100,6 +101,36 @@ func RetryAfterOf(err error) time.Duration {
 		return e.RetryAfter
 	}
 	return 0
+}
+
+// Server error messages the agent acts on. The server sends only
+// {"error": message}, so these texts are part of its contract with the
+// agent (internal/server/devices and internal/server/credited).
+const (
+	// keyTakenMessage is the 409 for a public key registered to another
+	// account. Any other 409 from registration (the active-device limit)
+	// must not make the agent replace its key.
+	keyTakenMessage = "public key is registered to another account"
+	// batchSizeMarker is in the 400 for a minutes batch over the size limit.
+	batchSizeMarker = "minutes per request"
+)
+
+// IsKeyTaken reports whether err is the server saying the device's public
+// key is registered to another account.
+func IsKeyTaken(err error) bool {
+	var e *Error
+	return errors.As(err, &e) && e.Kind == KindConflict && e.Message == keyTakenMessage
+}
+
+// IsTooLarge reports whether err is the server refusing a request for its
+// size (413, or the 400 for too many minutes), so a smaller one may pass.
+func IsTooLarge(err error) bool {
+	var e *Error
+	if !errors.As(err, &e) || e.Kind != KindInvalid {
+		return false
+	}
+	return e.Status == http.StatusRequestEntityTooLarge ||
+		e.Status == http.StatusBadRequest && strings.Contains(e.Message, batchSizeMarker)
 }
 
 // DeviceRequest is the body of POST /api/v1/devices.
@@ -253,7 +284,7 @@ func classify(status int, retryAfter string, body []byte, now time.Time) *Error 
 		e.Kind = KindRevoked
 	case status == http.StatusNotFound && isJSON:
 		e.Kind = KindUnknownDevice
-	case status == http.StatusConflict:
+	case status == http.StatusConflict && isJSON:
 		e.Kind = KindConflict
 	case (status == http.StatusBadRequest || status == http.StatusRequestEntityTooLarge ||
 		status == http.StatusUnprocessableEntity) && isJSON:

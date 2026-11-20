@@ -29,6 +29,7 @@ func TestClassify(t *testing.T) {
 		{"unknown device", 404, `{"error":"not found"}`, "", KindUnknownDevice, 0},
 		{"proxy 404", 404, `Not Found`, "", KindRetry, 0},
 		{"conflict", 409, `{"error":"chain mismatch"}`, "", KindConflict, 0},
+		{"proxy 409", 409, `<html>Conflict</html>`, "", KindRetry, 0},
 		{"invalid", 400, `{"error":"bad signature"}`, "", KindInvalid, 0},
 		{"too large", 413, `{"error":"too many minutes"}`, "", KindInvalid, 0},
 		{"proxy 400", 400, `<html>`, "", KindRetry, 0},
@@ -49,6 +50,35 @@ func TestClassify(t *testing.T) {
 	}
 	if KindOf(errors.New("x")) != KindRetry {
 		t.Fatal("plain errors must be retried")
+	}
+}
+
+func TestErrorPredicates(t *testing.T) {
+	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name            string
+		status          int
+		body            string
+		keyTaken, large bool
+	}{
+		{"key taken", 409, `{"error":"public key is registered to another account"}`, true, false},
+		{"device limit", 409, `{"error":"you already have 20 active devices; revoke one first"}`, false, false},
+		{"proxy 409", 409, `public key is registered to another account`, false, false},
+		{"413", 413, `{"error":"request body too large"}`, false, true},
+		{"too many minutes", 400, `{"error":"at most 1000 minutes per request"}`, false, true},
+		{"unknown rules", 400, `{"error":"unknown rules_version"}`, false, false},
+		{"proxy 413", 413, `<html>`, false, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			e := classify(tt.status, "", []byte(tt.body), now)
+			if IsKeyTaken(e) != tt.keyTaken || IsTooLarge(e) != tt.large {
+				t.Fatalf("IsKeyTaken = %v, IsTooLarge = %v; want %v, %v", IsKeyTaken(e), IsTooLarge(e), tt.keyTaken, tt.large)
+			}
+		})
+	}
+	if IsKeyTaken(errors.New("x")) || IsTooLarge(nil) {
+		t.Fatal("plain errors matched")
 	}
 }
 
