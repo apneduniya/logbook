@@ -13,10 +13,10 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const advanceHackatimeImport = `-- name: AdvanceHackatimeImport :one
-
+const advanceHackatimeBackfill = `-- name: AdvanceHackatimeBackfill :execrows
 UPDATE hackatime_imports i
-SET next_date           = $1,
+SET next_date           = CASE WHEN $1::date >= i.recent_from THEN i.recent_next ELSE $1 END,
+    recent_from         = CASE WHEN $1::date >= i.recent_from THEN i.recent_next ELSE i.recent_from END,
     heartbeats_imported = i.heartbeats_imported + $2,
     status              = 'running',
     last_error          = $3,
@@ -26,10 +26,10 @@ WHERE i.user_id = $4
   AND l.user_id = i.user_id
   AND l.linked_at = $5
   AND i.next_date = $6
-RETURNING i.to_date
+  AND i.recent_done
 `
 
-type AdvanceHackatimeImportParams struct {
+type AdvanceHackatimeBackfillParams struct {
 	NextDate           pgtype.Date
 	HeartbeatsImported int64
 	LastError          string
@@ -38,13 +38,11 @@ type AdvanceHackatimeImportParams struct {
 	PrevNextDate       pgtype.Date
 }
 
-// The importer's writes below apply only while the link the run started with
-// is still current: linked_at changes on every (re)link, so a run that was
-// overtaken by an unlink or relink can't move the new import's cursor or
-// mark it done or failed.
-// Saves one imported day. prev_next_date guards against a second writer.
-func (q *Queries) AdvanceHackatimeImport(ctx context.Context, arg AdvanceHackatimeImportParams) (pgtype.Date, error) {
-	row := q.db.QueryRow(ctx, advanceHackatimeImport,
+// Saves backfill progress, like AdvanceHackatimeRecent. Once next_date
+// reaches recent_from the two segments join, and all three cursors move to
+// recent_next.
+func (q *Queries) AdvanceHackatimeBackfill(ctx context.Context, arg AdvanceHackatimeBackfillParams) (int64, error) {
+	result, err := q.db.Exec(ctx, advanceHackatimeBackfill,
 		arg.NextDate,
 		arg.HeartbeatsImported,
 		arg.LastError,
@@ -52,9 +50,64 @@ func (q *Queries) AdvanceHackatimeImport(ctx context.Context, arg AdvanceHackati
 		arg.LinkedAt,
 		arg.PrevNextDate,
 	)
-	var to_date pgtype.Date
-	err := row.Scan(&to_date)
-	return to_date, err
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const advanceHackatimeRecent = `-- name: AdvanceHackatimeRecent :execrows
+
+UPDATE hackatime_imports i
+SET recent_next         = $1,
+    next_date           = CASE WHEN i.next_date = i.recent_from THEN $1 ELSE i.next_date END,
+    recent_from         = CASE WHEN i.next_date = i.recent_from THEN $1 ELSE i.recent_from END,
+    recent_done         = $2,
+    heartbeats_imported = i.heartbeats_imported + $3,
+    status              = 'running',
+    last_error          = $4,
+    updated_at          = now()
+FROM hackatime_links l
+WHERE i.user_id = $5
+  AND l.user_id = i.user_id
+  AND l.linked_at = $6
+  AND i.recent_next = $7
+  AND NOT i.recent_done
+`
+
+type AdvanceHackatimeRecentParams struct {
+	RecentNext         pgtype.Date
+	RecentDone         bool
+	HeartbeatsImported int64
+	LastError          string
+	UserID             uuid.UUID
+	LinkedAt           time.Time
+	PrevRecentNext     pgtype.Date
+}
+
+// The importer's writes below apply only while the link the run started with
+// is still current: linked_at changes on every (re)link, so a run that was
+// overtaken by an unlink or relink can't move the new import's cursors or
+// mark it done or failed.
+// Saves progress in the recent segment: adds the heartbeats a finished window
+// stored and moves recent_next (it may stay put when an earlier window is
+// still in flight). prev_recent_next guards against a second writer. While
+// the backfill has nothing left before the recent segment, next_date and
+// recent_from move with it.
+func (q *Queries) AdvanceHackatimeRecent(ctx context.Context, arg AdvanceHackatimeRecentParams) (int64, error) {
+	result, err := q.db.Exec(ctx, advanceHackatimeRecent,
+		arg.RecentNext,
+		arg.RecentDone,
+		arg.HeartbeatsImported,
+		arg.LastError,
+		arg.UserID,
+		arg.LinkedAt,
+		arg.PrevRecentNext,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const deleteHackatimeImport = `-- name: DeleteHackatimeImport :exec
@@ -93,6 +146,8 @@ WHERE i.user_id = $2
   AND l.user_id = i.user_id
   AND l.linked_at = $3
   AND i.to_date = $4
+  AND i.recent_done
+  AND i.next_date = i.recent_from
 `
 
 type FinishHackatimeImportParams struct {
@@ -117,7 +172,7 @@ func (q *Queries) FinishHackatimeImport(ctx context.Context, arg FinishHackatime
 }
 
 const getHackatimeImport = `-- name: GetHackatimeImport :one
-SELECT user_id, status, from_date, to_date, next_date, heartbeats_imported, last_error, updated_at FROM hackatime_imports WHERE user_id = $1
+SELECT user_id, status, from_date, to_date, next_date, heartbeats_imported, last_error, updated_at, recent_from, recent_next, recent_done FROM hackatime_imports WHERE user_id = $1
 `
 
 func (q *Queries) GetHackatimeImport(ctx context.Context, userID uuid.UUID) (HackatimeImport, error) {
@@ -132,6 +187,9 @@ func (q *Queries) GetHackatimeImport(ctx context.Context, userID uuid.UUID) (Hac
 		&i.HeartbeatsImported,
 		&i.LastError,
 		&i.UpdatedAt,
+		&i.RecentFrom,
+		&i.RecentNext,
+		&i.RecentDone,
 	)
 	return i, err
 }
@@ -287,26 +345,49 @@ func (q *Queries) SetHackatimeImportStatus(ctx context.Context, arg SetHackatime
 }
 
 const startHackatimeImport = `-- name: StartHackatimeImport :one
-INSERT INTO hackatime_imports (user_id, status, from_date, to_date, next_date)
-VALUES ($1, 'pending', $2, $3, $2)
+INSERT INTO hackatime_imports AS i (user_id, status, from_date, to_date, next_date, recent_from, recent_next)
+VALUES ($1, 'pending', $2, $3, $2,
+        $4, $4)
 ON CONFLICT (user_id) DO UPDATE SET
-    status     = 'pending',
-    to_date    = GREATEST(hackatime_imports.to_date, EXCLUDED.to_date),
-    last_error = '',
-    updated_at = now()
-RETURNING user_id, status, from_date, to_date, next_date, heartbeats_imported, last_error, updated_at
+    status      = 'pending',
+    to_date     = GREATEST(i.to_date, EXCLUDED.to_date),
+    next_date   = CASE WHEN i.recent_next < EXCLUDED.recent_from AND i.next_date = i.recent_from
+                       THEN i.recent_next ELSE i.next_date END,
+    recent_from = CASE WHEN i.recent_next < EXCLUDED.recent_from
+                       THEN EXCLUDED.recent_from ELSE i.recent_from END,
+    recent_next = CASE WHEN i.recent_next < EXCLUDED.recent_from
+                       THEN EXCLUDED.recent_from ELSE i.recent_next END,
+    recent_done = false,
+    last_error  = '',
+    updated_at  = now()
+RETURNING user_id, status, from_date, to_date, next_date, heartbeats_imported, last_error, updated_at, recent_from, recent_next, recent_done
 `
 
 type StartHackatimeImportParams struct {
-	UserID   uuid.UUID
-	FromDate pgtype.Date
-	ToDate   pgtype.Date
+	UserID     uuid.UUID
+	FromDate   pgtype.Date
+	ToDate     pgtype.Date
+	RecentFrom pgtype.Date
 }
 
 // Creates the import, or extends an existing one to a new end date and makes
-// it runnable again. next_date is kept so finished days aren't refetched.
+// it runnable again. Imported days are [from_date, next_date) and
+// [recent_from, recent_next); the importer fills the recent segment up to
+// to_date first, then backfills from next_date up to recent_from.
+//
+// On an extension, finished days aren't refetched. The recent segment carries
+// on from recent_next when it still reaches the new recent start. Otherwise a
+// new recent segment starts at the new recent start: if the backfill had
+// already joined the old segment, everything before the old recent_next is
+// done and becomes the backfill cursor; if not, the old segment is dropped
+// (its days are fetched again by the backfill, and ingest drops duplicates).
 func (q *Queries) StartHackatimeImport(ctx context.Context, arg StartHackatimeImportParams) (HackatimeImport, error) {
-	row := q.db.QueryRow(ctx, startHackatimeImport, arg.UserID, arg.FromDate, arg.ToDate)
+	row := q.db.QueryRow(ctx, startHackatimeImport,
+		arg.UserID,
+		arg.FromDate,
+		arg.ToDate,
+		arg.RecentFrom,
+	)
 	var i HackatimeImport
 	err := row.Scan(
 		&i.UserID,
@@ -317,6 +398,9 @@ func (q *Queries) StartHackatimeImport(ctx context.Context, arg StartHackatimeIm
 		&i.HeartbeatsImported,
 		&i.LastError,
 		&i.UpdatedAt,
+		&i.RecentFrom,
+		&i.RecentNext,
+		&i.RecentDone,
 	)
 	return i, err
 }

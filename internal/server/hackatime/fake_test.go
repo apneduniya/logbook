@@ -59,6 +59,19 @@ type fakeHackatime struct {
 	spansCalls []string // "start..end" of each spans call that succeeded
 	// importReqs counts every heartbeats and spans request, answered or not.
 	importReqs int
+	// reqLog lists every heartbeats and spans request in arrival order.
+	reqLog []fakeReq
+	// inFlight and maxInFlight track import requests being answered, per
+	// Hackatime user (0 for an unknown token).
+	inFlight    map[int64]int
+	maxInFlight map[int64]int
+}
+
+// fakeReq is one heartbeats or spans request.
+type fakeReq struct {
+	user  int64  // Hackatime user id of the bearer token, 0 if unknown
+	kind  string // "heartbeats" or "spans"
+	start string // start_time or start_date as sent
 }
 
 func newFakeHackatime(t *testing.T) *fakeHackatime {
@@ -66,6 +79,7 @@ func newFakeHackatime(t *testing.T) *fakeHackatime {
 	f := &fakeHackatime{
 		t: t, users: map[int64]*fakeUser{}, grants: map[string]fakeGrant{},
 		tokens: map[string]int64{}, heartbeats: map[int64][]map[string]any{},
+		inFlight: map[int64]int{}, maxInFlight: map[int64]int{},
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /oauth/token", f.token)
@@ -78,10 +92,55 @@ func newFakeHackatime(t *testing.T) *fakeHackatime {
 		f.mu.Lock()
 		f.userAgents = append(f.userAgents, r.UserAgent())
 		f.mu.Unlock()
+		if done := f.track(r); done != nil {
+			defer done()
+		}
 		mux.ServeHTTP(w, r)
 	}))
 	t.Cleanup(f.srv.Close)
 	return f
+}
+
+// track logs an import request and counts it in flight until done is called.
+// It returns nil for other requests.
+func (f *fakeHackatime) track(r *http.Request) (done func()) {
+	q := r.URL.Query()
+	var req fakeReq
+	switch r.URL.Path {
+	case "/api/v1/my/heartbeats":
+		req = fakeReq{kind: "heartbeats", start: q.Get("start_time")}
+	case "/api/v1/users/my/heartbeats/spans":
+		req = fakeReq{kind: "spans", start: q.Get("start_date")}
+	default:
+		return nil
+	}
+	if u, ok := f.bearer(r); ok {
+		req.user = u.id
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.reqLog = append(f.reqLog, req)
+	f.inFlight[req.user]++
+	f.maxInFlight[req.user] = max(f.maxInFlight[req.user], f.inFlight[req.user])
+	return func() {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		f.inFlight[req.user]--
+	}
+}
+
+// requests returns the import request log.
+func (f *fakeHackatime) requests() []fakeReq {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]fakeReq(nil), f.reqLog...)
+}
+
+// peakInFlight is the most import requests user had in flight at once.
+func (f *fakeHackatime) peakInFlight(user int64) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.maxInFlight[user]
 }
 
 func (f *fakeHackatime) addUser(id int64, trust string) {

@@ -193,6 +193,8 @@ type ImportJSON struct {
 	FromDate           string    `json:"from_date"`
 	ToDate             string    `json:"to_date"`
 	NextDate           string    `json:"next_date"`
+	RecentFrom         string    `json:"recent_from"`
+	RecentDone         bool      `json:"recent_done"`
 	DaysTotal          int       `json:"days_total"`
 	DaysDone           int       `json:"days_done"`
 	HeartbeatsImported int64     `json:"heartbeats_imported"`
@@ -222,8 +224,11 @@ func toStatusJSON(st Status) StatusJSON {
 
 func toImportJSON(imp db.HackatimeImport) *ImportJSON {
 	from, to, next := imp.FromDate.Time, imp.ToDate.Time, imp.NextDate.Time
-	total := int(to.Sub(from).Hours()/24) + 1
-	done := min(max(int(next.Sub(from).Hours()/24), 0), total)
+	days := func(a, b time.Time) int { return max(int(b.Sub(a).Hours()/24), 0) }
+	total := days(from, to) + 1
+	// Imported days are [from, next) and the recent segment
+	// [recent_from, recent_next), which is filled first.
+	done := min(days(from, next)+days(imp.RecentFrom.Time, imp.RecentNext.Time), total)
 	if imp.Status == importDone {
 		// A finished import keeps its cursor on the day it was linked, which
 		// hadn't ended yet, so the next link fetches the rest of that day.
@@ -234,6 +239,8 @@ func toImportJSON(imp db.HackatimeImport) *ImportJSON {
 		FromDate:           from.Format(time.DateOnly),
 		ToDate:             to.Format(time.DateOnly),
 		NextDate:           next.Format(time.DateOnly),
+		RecentFrom:         imp.RecentFrom.Time.Format(time.DateOnly),
+		RecentDone:         imp.RecentDone || imp.Status == importDone,
 		DaysTotal:          total,
 		DaysDone:           done,
 		HeartbeatsImported: imp.HeartbeatsImported,

@@ -13,7 +13,6 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"golang.org/x/oauth2"
@@ -82,10 +81,18 @@ type ClientConfig struct {
 	// MaxRetries is the number of retries after the first attempt on
 	// 429/5xx/network errors. Default 3; negative disables retries.
 	MaxRetries int
-	// MinInterval spaces out all requests from this process. Hackatime
-	// allows 10,000 API requests per hour per IP, and every Logbook user
-	// shares the server's IP. Default 500ms (7,200/hour).
+	// MinInterval is the sustained spacing of all requests from this
+	// process. Hackatime allows 10,000 API requests per hour per IP, and
+	// every Logbook user shares the server's IP. Default 500ms (7,200/hour).
+	// Ignored when Limiter is set.
 	MinInterval time.Duration
+	// Burst is how many requests may go out back to back after a quiet
+	// spell, on top of the sustained rate. Default 2. Ignored when Limiter
+	// is set.
+	Burst int
+	// Limiter, if set, replaces the limiter built from MinInterval and
+	// Burst. Tests inject one with a virtual clock.
+	Limiter *Limiter
 	// MaxRetryWait is the longest the client blocks for a single retry.
 	// A longer Retry-After is returned as *RateLimitedError. Default 30s.
 	MaxRetryWait time.Duration
@@ -104,7 +111,7 @@ type Client struct {
 	maxRetries   int
 	maxRetryWait time.Duration
 	maxHBBody    int64
-	pace         *pacer
+	limit        *Limiter // the process-wide request budget
 }
 
 // NewClient validates cfg and builds a client.
@@ -138,7 +145,10 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 		maxRetries:   cfg.MaxRetries,
 		maxRetryWait: orDefault(cfg.MaxRetryWait, 30*time.Second),
 		maxHBBody:    cfg.MaxHeartbeatsBody,
-		pace:         &pacer{interval: orDefault(cfg.MinInterval, 500*time.Millisecond)},
+		limit:        cfg.Limiter,
+	}
+	if c.limit == nil {
+		c.limit = NewLimiter(LimiterConfig{Interval: cfg.MinInterval, Burst: cfg.Burst, MaxPause: c.maxRetryWait})
 	}
 	if c.maxHBBody <= 0 {
 		c.maxHBBody = defaultMaxHeartbeatsBody
@@ -201,9 +211,12 @@ func (c *Client) getJSON(ctx context.Context, path string, query url.Values, tok
 	for attempt := 0; ; attempt++ {
 		body, status, retryAfter, err := c.fetch(ctx, u, token, maxBody)
 		retryable := false
+		var rl *RateLimitedError
 		switch {
 		case err != nil:
-			if ctx.Err() != nil || errors.Is(err, ErrResponseTooLarge) {
+			// A long pause from the limiter is returned as is: the caller
+			// snoozes rather than retrying here.
+			if ctx.Err() != nil || errors.Is(err, ErrResponseTooLarge) || errors.As(err, &rl) {
 				return err
 			}
 			retryable = true // network error or attempt timeout
@@ -219,23 +232,23 @@ func (c *Client) getJSON(ctx context.Context, path string, query url.Values, tok
 		default:
 			return &StatusError{Code: status}
 		}
-		if !retryable || attempt >= c.maxRetries {
-			if status == http.StatusTooManyRequests {
-				return &RateLimitedError{RetryAfter: max(retryAfter, c.backoff(attempt))}
+		if status == http.StatusTooManyRequests {
+			wait := retryAfter
+			if wait <= 0 {
+				wait = c.backoff(attempt)
 			}
+			// Hackatime's limit is per IP, so every caller backs off, not
+			// just this one. The limiter holds the retry until the pause ends.
+			c.limit.Pause(wait)
+			if attempt >= c.maxRetries || wait > c.maxRetryWait {
+				return &RateLimitedError{RetryAfter: wait}
+			}
+			continue
+		}
+		if !retryable || attempt >= c.maxRetries {
 			return err
 		}
-		wait := c.backoff(attempt)
-		if retryAfter > 0 {
-			wait = retryAfter
-		}
-		if wait > c.maxRetryWait {
-			return &RateLimitedError{RetryAfter: wait}
-		}
-		if status == http.StatusTooManyRequests {
-			c.pace.pauseUntil(time.Now().Add(wait)) // slow every caller, not just this one
-		}
-		if err := sleep(ctx, wait); err != nil {
+		if err := sleep(ctx, c.backoff(attempt)); err != nil {
 			return err
 		}
 	}
@@ -243,7 +256,7 @@ func (c *Client) getJSON(ctx context.Context, path string, query url.Values, tok
 
 // fetch performs one GET attempt and reads the bounded body.
 func (c *Client) fetch(ctx context.Context, u, token string, maxBody int64) (body []byte, status int, retryAfter time.Duration, err error) {
-	if err := c.pace.wait(ctx); err != nil {
+	if err := c.limit.Wait(ctx); err != nil {
 		return nil, 0, 0, err
 	}
 	actx, cancel := context.WithTimeout(ctx, c.timeout)
@@ -332,33 +345,6 @@ func sleep(ctx context.Context, d time.Duration) error {
 	case <-t.C:
 		return nil
 	}
-}
-
-// pacer spaces requests from the whole process at least interval apart.
-type pacer struct {
-	mu       sync.Mutex
-	interval time.Duration
-	next     time.Time
-}
-
-func (p *pacer) wait(ctx context.Context) error {
-	p.mu.Lock()
-	now := time.Now()
-	at := p.next
-	if at.Before(now) {
-		at = now
-	}
-	p.next = at.Add(p.interval)
-	p.mu.Unlock()
-	return sleep(ctx, time.Until(at))
-}
-
-func (p *pacer) pauseUntil(t time.Time) {
-	p.mu.Lock()
-	if t.After(p.next) {
-		p.next = t
-	}
-	p.mu.Unlock()
 }
 
 // userAgentTransport sets Logbook's User-Agent on every request.

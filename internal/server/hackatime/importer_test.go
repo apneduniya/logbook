@@ -13,8 +13,9 @@ import (
 var day1 = time.Date(2025, 3, 1, 0, 0, 0, 0, time.UTC)
 
 // perDay makes every day with activity, and the day after it, a window of
-// its own, for tests about what happens between days.
-var perDay = ImportOptions{WindowActivity: time.Nanosecond}
+// its own, for tests about what happens between days. One window at a time
+// keeps the order of requests fixed.
+var perDay = ImportOptions{WindowActivity: time.Nanosecond, Concurrency: 1}
 
 // linkedUser links a new user to Hackatime account hid through the real flow.
 func (e *testEnv) linkedUser(t *testing.T, name string, hid int64) uuid.UUID {
@@ -244,7 +245,7 @@ func TestImportYieldsAfterBudget(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 		return false
 	}
-	res, err := e.importer(t, ImportOptions{RunBudget: time.Millisecond, WindowActivity: time.Nanosecond}).Run(ctx, alice, false)
+	res, err := e.importer(t, ImportOptions{RunBudget: time.Millisecond, WindowActivity: time.Nanosecond, Concurrency: 1}).Run(ctx, alice, false)
 	if err != nil || res.Done {
 		t.Fatalf("Run() = %+v, %v; want not done", res, err)
 	}

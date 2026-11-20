@@ -60,6 +60,21 @@ const defaultMaxPerDay = 50_000
 // the history isn't complete. It is kept for the rest of the import.
 const truncatedNote = "Some days had more Hackatime heartbeats than Logbook imports per day; the excess was skipped."
 
+// recentDays is how many of the latest days (up to and including the day of
+// linking) the import fetches before backfilling older history, so the
+// dashboard fills in within seconds of linking.
+const recentDays = 30
+
+// defaultConcurrency is how many windows one import fetches at a time. Every
+// request still waits on the client's process-wide limiter, so this only
+// overlaps one window's ingest with the next window's fetch; it never raises
+// the request rate.
+const defaultConcurrency = 2
+
+// maxConcurrency bounds ImportOptions.Concurrency. Each window in flight
+// holds at most one response in memory.
+const maxConcurrency = 8
+
 // stalledAfter is how long an unfinished import may go without progress
 // before the sweep queues a job for it again.
 const stalledAfter = 15 * time.Minute
@@ -84,7 +99,12 @@ type ImportOptions struct {
 	ChunkSize int
 	// MaxPerDay caps the heartbeats imported for one UTC day. Default 50,000.
 	MaxPerDay int
-	Now       func() time.Time
+	// Concurrency is how many windows one import fetches at a time. Default
+	// 2, at most 8. All imports and the trust refresher share the client's
+	// limiter, so this bounds one import's share of the request budget
+	// rather than adding to it.
+	Concurrency int
+	Now         func() time.Time
 }
 
 // Importer copies a user's Hackatime heartbeat history into Logbook.
@@ -99,6 +119,7 @@ type Importer struct {
 	budget         time.Duration
 	chunk          int
 	maxPerDay      int
+	concurrency    int
 	now            func() time.Time
 }
 
@@ -107,7 +128,7 @@ func NewImporter(st *store.Store, box *secretbox.Box, client *Client, sink Heart
 	im := &Importer{
 		st: st, box: box, client: client, sink: sink, log: opts.Logger,
 		delay: opts.WindowDelay, windowActivity: opts.WindowActivity, budget: opts.RunBudget,
-		chunk: opts.ChunkSize, maxPerDay: opts.MaxPerDay, now: opts.Now,
+		chunk: opts.ChunkSize, maxPerDay: opts.MaxPerDay, concurrency: opts.Concurrency, now: opts.Now,
 	}
 	if im.log == nil {
 		im.log = slog.Default()
@@ -129,6 +150,10 @@ func NewImporter(st *store.Store, box *secretbox.Box, client *Client, sink Heart
 	if im.maxPerDay <= 0 {
 		im.maxPerDay = defaultMaxPerDay
 	}
+	if im.concurrency <= 0 {
+		im.concurrency = defaultConcurrency
+	}
+	im.concurrency = min(im.concurrency, maxConcurrency)
 	if im.now == nil {
 		im.now = time.Now
 	}
@@ -147,14 +172,18 @@ type RunResult struct {
 // errPermanent marks failures that retrying won't fix.
 var errPermanent = errors.New("permanent import failure")
 
-// Run imports days from the user's saved cursor until the import finishes or
-// the run budget is spent. It asks Hackatime where the user was active (a
-// spans probe per month), then fetches the heartbeats in windows of whole
-// UTC days sized to that activity, so quiet months cost one probe and part of
-// one window. Every day in the range is still fetched: the probe only sizes
-// windows. Progress is saved after every window, so a crash or cancellation
-// resumes at the first unfinished window. lastAttempt marks the final retry:
-// a failure then marks the import failed instead of pending.
+// Run imports the user's history until the import finishes or the run budget
+// is spent, in two phases. The recent phase fetches the last recentDays days
+// first, so the dashboard fills in within seconds of linking; the backfill
+// phase then fetches everything older, oldest first. Each phase asks
+// Hackatime where the user was active (a spans probe per month), then fetches
+// the heartbeats in windows of whole UTC days sized to that activity, up to
+// the configured number of windows at a time. Every day in the range is still
+// fetched: the probe only sizes windows. Progress is saved as windows finish,
+// and a phase's cursor only moves past windows that finished with every
+// earlier window, so a crash or cancellation resumes at the first unfinished
+// window. lastAttempt marks the final retry: a failure then marks the import
+// failed instead of pending.
 //
 // A run belongs to the link it started with (identified by linked_at, which
 // changes on every link). Every write is conditional on that link still being
@@ -193,61 +222,27 @@ func (im *Importer) Run(ctx context.Context, userID uuid.UUID, lastAttempt bool)
 		}
 	}
 
-	note := ""
+	r := &importRun{im: im, userID: userID, gen: gen, token: string(token), started: time.Now()}
 	if imp.LastError == truncatedNote {
-		note = truncatedNote
+		r.note = truncatedNote
 	}
-	started := time.Now()
-	day, last := utcDay(imp.NextDate.Time), utcDay(imp.ToDate.Time)
-days:
-	for !day.After(last) {
-		windows, err := im.plan(ctx, string(token), day, last)
-		if err != nil {
-			return im.fail(ctx, userID, gen, lastAttempt, err)
+	last := utcDay(imp.ToDate.Time)
+	if !imp.RecentDone {
+		end, err := r.phase(ctx, recentPhase, utcDay(imp.RecentNext.Time), last.AddDate(0, 0, 1))
+		if end != phaseComplete || err != nil {
+			return r.stop(ctx, end, err, lastAttempt)
 		}
-		for _, w := range windows {
-			fetchedAt := im.now()
-			res, err := im.importWindow(ctx, userID, string(token), w)
-			if err != nil {
-				return im.fail(ctx, userID, gen, lastAttempt, err)
-			}
-			if len(res.truncated) > 0 {
-				note = truncatedNote
-			}
-			next := w.to
-			partial := next.After(fetchedAt)
-			if partial {
-				// The last day hadn't ended when it was fetched. Keep the
-				// cursor on it so the next import (after a relink) fetches
-				// the rest; ingest drops what we already have.
-				next = latest(w.from, utcDay(fetchedAt))
-			}
-			toDate, err := im.st.AdvanceHackatimeImport(ctx, db.AdvanceHackatimeImportParams{
-				NextDate: pgDate(next), HeartbeatsImported: int64(res.inserted), LastError: note,
-				UserID: userID, LinkedAt: gen, PrevNextDate: pgDate(w.from),
-			})
-			if store.IsNotFound(err) {
-				return im.superseded(ctx, userID)
-			}
-			if err != nil {
-				return RunResult{}, fmt.Errorf("saving hackatime import progress: %w", err)
-			}
-			if partial {
-				break days // no later day can have ended either
-			}
-			day, last = next, utcDay(toDate.Time)
-			if time.Since(started) > im.budget {
-				return RunResult{}, nil
-			}
-			if !day.After(last) {
-				if err := sleep(ctx, im.delay); err != nil {
-					return RunResult{}, err
-				}
-			}
+	}
+	// While the backfill has caught up, the recent phase moved next_date
+	// along with it, and there is nothing older left to fetch.
+	if next, recentFrom := utcDay(imp.NextDate.Time), utcDay(imp.RecentFrom.Time); next.Before(recentFrom) {
+		end, err := r.phase(ctx, backfillPhase, next, recentFrom)
+		if end != phaseComplete || err != nil {
+			return r.stop(ctx, end, err, lastAttempt)
 		}
 	}
 	n, err := im.st.FinishHackatimeImport(ctx, db.FinishHackatimeImportParams{
-		LastError: note, UserID: userID, LinkedAt: gen, ToDate: pgDate(last),
+		LastError: r.note, UserID: userID, LinkedAt: gen, ToDate: pgDate(last),
 	})
 	if err != nil {
 		return RunResult{}, fmt.Errorf("finishing hackatime import: %w", err)
@@ -281,8 +276,7 @@ func (im *Importer) StalledUsers(ctx context.Context) ([]uuid.UUID, error) {
 	return ids, nil
 }
 
-// window is a run of whole UTC days, [from, to), fetched as one unit and
-// saved as one step of progress.
+// window is a run of whole UTC days, [from, to), fetched as one unit.
 type window struct{ from, to time.Time }
 
 // plan probes Hackatime's activity spans a month at a time from `from` and
@@ -343,6 +337,12 @@ func planWindows(from, to time.Time, activity map[time.Time]time.Duration, budge
 		sum += a
 	}
 	return append(windows, window{start, to})
+}
+
+// recentStart is the first day of the recent phase for an import of
+// [from, to]: the last recentDays days, or all of them if there are fewer.
+func recentStart(from, to time.Time) time.Time {
+	return latest(utcDay(from), utcDay(to).AddDate(0, 0, 1-recentDays))
 }
 
 // utcDay is the start of t's UTC day.

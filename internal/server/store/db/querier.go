@@ -13,12 +13,20 @@ import (
 )
 
 type Querier interface {
+	// Saves backfill progress, like AdvanceHackatimeRecent. Once next_date
+	// reaches recent_from the two segments join, and all three cursors move to
+	// recent_next.
+	AdvanceHackatimeBackfill(ctx context.Context, arg AdvanceHackatimeBackfillParams) (int64, error)
 	// The importer's writes below apply only while the link the run started with
 	// is still current: linked_at changes on every (re)link, so a run that was
-	// overtaken by an unlink or relink can't move the new import's cursor or
+	// overtaken by an unlink or relink can't move the new import's cursors or
 	// mark it done or failed.
-	// Saves one imported day. prev_next_date guards against a second writer.
-	AdvanceHackatimeImport(ctx context.Context, arg AdvanceHackatimeImportParams) (pgtype.Date, error)
+	// Saves progress in the recent segment: adds the heartbeats a finished window
+	// stored and moves recent_next (it may stay put when an earlier window is
+	// still in flight). prev_recent_next guards against a second writer. While
+	// the backfill has nothing left before the recent segment, next_date and
+	// recent_from move with it.
+	AdvanceHackatimeRecent(ctx context.Context, arg AdvanceHackatimeRecentParams) (int64, error)
 	CountActiveAPIKeys(ctx context.Context, userID uuid.UUID) (int64, error)
 	CreateAPIKey(ctx context.Context, arg CreateAPIKeyParams) (ApiKey, error)
 	CreateSession(ctx context.Context, arg CreateSessionParams) error
@@ -153,7 +161,16 @@ type Querier interface {
 	SeedTestUserMinute(ctx context.Context, arg SeedTestUserMinuteParams) error
 	SetHackatimeImportStatus(ctx context.Context, arg SetHackatimeImportStatusParams) (int64, error)
 	// Creates the import, or extends an existing one to a new end date and makes
-	// it runnable again. next_date is kept so finished days aren't refetched.
+	// it runnable again. Imported days are [from_date, next_date) and
+	// [recent_from, recent_next); the importer fills the recent segment up to
+	// to_date first, then backfills from next_date up to recent_from.
+	//
+	// On an extension, finished days aren't refetched. The recent segment carries
+	// on from recent_next when it still reaches the new recent start. Otherwise a
+	// new recent segment starts at the new recent start: if the backfill had
+	// already joined the old segment, everything before the old recent_next is
+	// done and becomes the backfill cursor; if not, the old segment is dropped
+	// (its days are fetched again by the backfill, and ingest drops duplicates).
 	StartHackatimeImport(ctx context.Context, arg StartHackatimeImportParams) (HackatimeImport, error)
 	// One pass over the range, returned as (dimension, key, seconds) rows.
 	// Days are local dates in the given IANA time zone.

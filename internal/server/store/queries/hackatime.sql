@@ -46,25 +46,67 @@ SELECT * FROM hackatime_imports WHERE user_id = $1;
 
 -- name: StartHackatimeImport :one
 -- Creates the import, or extends an existing one to a new end date and makes
--- it runnable again. next_date is kept so finished days aren't refetched.
-INSERT INTO hackatime_imports (user_id, status, from_date, to_date, next_date)
-VALUES ($1, 'pending', $2, $3, $2)
+-- it runnable again. Imported days are [from_date, next_date) and
+-- [recent_from, recent_next); the importer fills the recent segment up to
+-- to_date first, then backfills from next_date up to recent_from.
+--
+-- On an extension, finished days aren't refetched. The recent segment carries
+-- on from recent_next when it still reaches the new recent start. Otherwise a
+-- new recent segment starts at the new recent start: if the backfill had
+-- already joined the old segment, everything before the old recent_next is
+-- done and becomes the backfill cursor; if not, the old segment is dropped
+-- (its days are fetched again by the backfill, and ingest drops duplicates).
+INSERT INTO hackatime_imports AS i (user_id, status, from_date, to_date, next_date, recent_from, recent_next)
+VALUES (sqlc.arg(user_id), 'pending', sqlc.arg(from_date), sqlc.arg(to_date), sqlc.arg(from_date),
+        sqlc.arg(recent_from), sqlc.arg(recent_from))
 ON CONFLICT (user_id) DO UPDATE SET
-    status     = 'pending',
-    to_date    = GREATEST(hackatime_imports.to_date, EXCLUDED.to_date),
-    last_error = '',
-    updated_at = now()
+    status      = 'pending',
+    to_date     = GREATEST(i.to_date, EXCLUDED.to_date),
+    next_date   = CASE WHEN i.recent_next < EXCLUDED.recent_from AND i.next_date = i.recent_from
+                       THEN i.recent_next ELSE i.next_date END,
+    recent_from = CASE WHEN i.recent_next < EXCLUDED.recent_from
+                       THEN EXCLUDED.recent_from ELSE i.recent_from END,
+    recent_next = CASE WHEN i.recent_next < EXCLUDED.recent_from
+                       THEN EXCLUDED.recent_from ELSE i.recent_next END,
+    recent_done = false,
+    last_error  = '',
+    updated_at  = now()
 RETURNING *;
 
 -- The importer's writes below apply only while the link the run started with
 -- is still current: linked_at changes on every (re)link, so a run that was
--- overtaken by an unlink or relink can't move the new import's cursor or
+-- overtaken by an unlink or relink can't move the new import's cursors or
 -- mark it done or failed.
 
--- name: AdvanceHackatimeImport :one
--- Saves one imported day. prev_next_date guards against a second writer.
+-- name: AdvanceHackatimeRecent :execrows
+-- Saves progress in the recent segment: adds the heartbeats a finished window
+-- stored and moves recent_next (it may stay put when an earlier window is
+-- still in flight). prev_recent_next guards against a second writer. While
+-- the backfill has nothing left before the recent segment, next_date and
+-- recent_from move with it.
 UPDATE hackatime_imports i
-SET next_date           = sqlc.arg(next_date),
+SET recent_next         = sqlc.arg(recent_next),
+    next_date           = CASE WHEN i.next_date = i.recent_from THEN sqlc.arg(recent_next) ELSE i.next_date END,
+    recent_from         = CASE WHEN i.next_date = i.recent_from THEN sqlc.arg(recent_next) ELSE i.recent_from END,
+    recent_done         = sqlc.arg(recent_done),
+    heartbeats_imported = i.heartbeats_imported + sqlc.arg(heartbeats_imported),
+    status              = 'running',
+    last_error          = sqlc.arg(last_error),
+    updated_at          = now()
+FROM hackatime_links l
+WHERE i.user_id = sqlc.arg(user_id)
+  AND l.user_id = i.user_id
+  AND l.linked_at = sqlc.arg(linked_at)
+  AND i.recent_next = sqlc.arg(prev_recent_next)
+  AND NOT i.recent_done;
+
+-- name: AdvanceHackatimeBackfill :execrows
+-- Saves backfill progress, like AdvanceHackatimeRecent. Once next_date
+-- reaches recent_from the two segments join, and all three cursors move to
+-- recent_next.
+UPDATE hackatime_imports i
+SET next_date           = CASE WHEN sqlc.arg(next_date)::date >= i.recent_from THEN i.recent_next ELSE sqlc.arg(next_date) END,
+    recent_from         = CASE WHEN sqlc.arg(next_date)::date >= i.recent_from THEN i.recent_next ELSE i.recent_from END,
     heartbeats_imported = i.heartbeats_imported + sqlc.arg(heartbeats_imported),
     status              = 'running',
     last_error          = sqlc.arg(last_error),
@@ -74,7 +116,7 @@ WHERE i.user_id = sqlc.arg(user_id)
   AND l.user_id = i.user_id
   AND l.linked_at = sqlc.arg(linked_at)
   AND i.next_date = sqlc.arg(prev_next_date)
-RETURNING i.to_date;
+  AND i.recent_done;
 
 -- name: FinishHackatimeImport :execrows
 -- Marks the import done, unless a relink extended to_date in the meantime.
@@ -84,7 +126,9 @@ FROM hackatime_links l
 WHERE i.user_id = sqlc.arg(user_id)
   AND l.user_id = i.user_id
   AND l.linked_at = sqlc.arg(linked_at)
-  AND i.to_date = sqlc.arg(to_date);
+  AND i.to_date = sqlc.arg(to_date)
+  AND i.recent_done
+  AND i.next_date = i.recent_from;
 
 -- name: SetHackatimeImportStatus :execrows
 UPDATE hackatime_imports i
