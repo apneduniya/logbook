@@ -6,6 +6,7 @@ package db
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -15,6 +16,25 @@ type Querier interface {
 	GetUserByID(ctx context.Context, id uuid.UUID) (User, error)
 	GetUserByUsername(ctx context.Context, username string) (User, error)
 	InsertAuditLog(ctx context.Context, arg InsertAuditLogParams) error
+	// Inserts a batch in one round trip. rows is a JSON array of objects whose
+	// keys match the column list below (fields_hash hex-encoded, time RFC 3339).
+	// Duplicates are skipped; projects rows are created for new project names.
+	// Returns the time of each heartbeat that was actually inserted.
+	InsertHeartbeats(ctx context.Context, arg InsertHeartbeatsParams) ([]time.Time, error)
+	// Reads the heartbeats a rollup recompute needs. The ranges are inclusive and
+	// never overlap, so no row is returned twice. min_time/max_time bound the scan
+	// so Postgres prunes partitions outside the batch.
+	ListRollupHeartbeats(ctx context.Context, arg ListRollupHeartbeatsParams) ([]ListRollupHeartbeatsRow, error)
+	// Queries for internal/server/ingest. Every query is scoped to one user_id.
+	// Serialises ingest batches for one user until the transaction ends.
+	// 1001 namespaces the lock so it can't collide with other advisory locks.
+	LockUserIngest(ctx context.Context, userID uuid.UUID) error
+	// Makes the 'you' rows inside the given windows equal to the supplied set in
+	// one round trip: upserts the fresh rows and deletes every other 'you' row in
+	// the windows. Both parts see the same snapshot and touch disjoint rows.
+	ReplaceUserMinutes(ctx context.Context, arg ReplaceUserMinutesParams) error
+	// Totals a user's 'you' seconds in [start_time, end_time) per rollup group.
+	SumUserMinutesByGroup(ctx context.Context, arg SumUserMinutesByGroupParams) ([]SumUserMinutesByGroupRow, error)
 }
 
 var _ Querier = (*Queries)(nil)
