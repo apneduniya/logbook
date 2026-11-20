@@ -64,7 +64,10 @@ type fixture struct {
 	} `json:"heartbeats"`
 	// Turns are agent turns: a prompt at Start (or a tool_start with
 	// NoPrompt), tool calls every ToolEvery seconds, permission waits, and a
-	// turn_end at End unless Open.
+	// turn_end at End unless Open. Tool calls take the shape of the
+	// harness's hooks (docs/agent/harness.md): a tool_start and a tool_end
+	// 1 s later; for "copilot" only the tool_end; for "cursor" the tool_end
+	// with a tool_start back-dated by ToolTook seconds.
 	Turns []struct {
 		Session    string  `json:"session"`
 		Harness    string  `json:"harness"`
@@ -76,6 +79,7 @@ type fixture struct {
 		Chars      int     `json:"chars"`
 		Hash       string  `json:"hash"`
 		ToolEvery  float64 `json:"tool_every"`
+		ToolTook   float64 `json:"tool_took"`
 		Permission []struct {
 			At    string `json:"at"`
 			Until string `json:"until"`
@@ -226,8 +230,17 @@ func expandFixture(t testing.TB, f fixture) Input {
 		}
 		if tr.ToolEvery > 0 {
 			for x := start.Add(secs(tr.ToolEvery)); x.Before(end); x = x.Add(secs(tr.ToolEvery)) {
-				if !waiting(x) {
-					in.AI = append(in.AI, ev(x, wire.AIToolStart), ev(x.Add(time.Second), wire.AIToolEnd))
+				if waiting(x) {
+					continue
+				}
+				done := x.Add(time.Second)
+				switch harness(tr.Harness) {
+				case wire.HarnessCopilot:
+					in.AI = append(in.AI, ev(done, wire.AIToolEnd))
+				case wire.HarnessCursor:
+					in.AI = append(in.AI, ev(done.Add(-secs(tr.ToolTook)), wire.AIToolStart), ev(done, wire.AIToolEnd))
+				default:
+					in.AI = append(in.AI, ev(x, wire.AIToolStart), ev(done, wire.AIToolEnd))
 				}
 			}
 		}

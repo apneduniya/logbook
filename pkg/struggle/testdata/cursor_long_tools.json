@@ -1,0 +1,43 @@
+{
+  "description": "A Cursor turn from 09:00 to 10:40 whose tool calls each take 3 to 4 minutes; Cursor reports a call only when it ends, with its start back-dated by its duration. The person leaves at 09:10. The turn is agent time throughout, whichever of its events a caller holds.",
+  "date": "2026-11-20",
+  "window": {
+    "From": "09:00:00",
+    "To": "11:00:00"
+  },
+  "seed": 8,
+  "repos": [
+    {
+      "path": "/home/sam/app",
+      "project": "app"
+    }
+  ],
+  "inputs": [
+    {
+      "from": "08:55:00",
+      "to": "09:10:00",
+      "gap_min": 0.5,
+      "gap_max": 30
+    }
+  ],
+  "samples": [
+    {
+      "from": "08:50:00",
+      "to": "11:01:00",
+      "focus": "terminal"
+    }
+  ],
+  "turns": [
+    {
+      "session": "k1",
+      "harness": "cursor",
+      "cwd": "/home/sam/app",
+      "start": "09:00:00",
+      "end": "10:40:00",
+      "chars": 90,
+      "hash": "q",
+      "tool_every": 240,
+      "tool_took": 200
+    }
+  ]
+}

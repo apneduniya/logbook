@@ -1,6 +1,7 @@
 package struggle
 
 import (
+	"flag"
 	"fmt"
 	"slices"
 	"testing"
@@ -47,6 +48,8 @@ func TestLateSampleDoesNotChangeAutomatedSession(t *testing.T) {
 	}
 }
 
+var boundedSeeds = flag.Int("seeds", 40, "random scenarios for TestBoundedContext")
+
 // TestBoundedContext is the finality contract (ADR 0012) as a property: for
 // random scenarios, every minute's result computed from only the events in
 // [minute-ContextBefore, minute+Lookahead) equals its result computed from
@@ -54,7 +57,7 @@ func TestLateSampleDoesNotChangeAutomatedSession(t *testing.T) {
 // sensor stalls, late samples that reveal old input, and events far before
 // and after the minute.
 func TestBoundedContext(t *testing.T) {
-	seeds := 40
+	seeds := *boundedSeeds
 	if testing.Short() {
 		seeds = 10
 	}
@@ -127,15 +130,26 @@ func randomScenario(seed uint64) Input {
 		})
 	}
 	// AI sessions: prompts (some short, some repeated), tool calls,
-	// permission asks and answers, turn ends, timeouts.
-	for s := range 3 {
+	// permission asks and answers, turn ends, timeouts, session starts
+	// mid-turn (Claude Code's compaction). Sessions 3 to 5 have the shapes
+	// of other harnesses' hooks (docs/agent/harness.md): Copilot's tool ends
+	// with no tool starts, Cursor's tool starts back-dated by the tool's
+	// duration, OpenCode's replies as decided asks. Their turns can run for
+	// over an hour, so the prompt is often outside a minute's context.
+	harnesses := []wire.Harness{wire.HarnessClaudeCode, wire.HarnessClaudeCode, wire.HarnessClaudeCode,
+		wire.HarnessCopilot, wire.HarnessCursor, wire.HarnessOpenCode}
+	for s, h := range harnesses {
 		session := fmt.Sprint("s", s)
-		cwd := []string{"/w/app", "/w/lib", "/w/other"}[s]
+		cwd := []string{"/w/app", "/w/lib", "/w/other"}[s%3]
 		ev := func(x time.Time, k wire.AIEventKind) wire.AIEvent {
-			return wire.AIEvent{Time: x, Kind: k, Harness: wire.HarnessClaudeCode, SessionID: session, Cwd: cwd, Project: projects[pick(len(projects))]}
+			return wire.AIEvent{Time: x, Kind: k, Harness: h, SessionID: session, Cwd: cwd, Project: projects[pick(len(projects))]}
+		}
+		longest := 1800.0
+		if s >= 3 {
+			longest = 6000
 		}
 		for x := start.Add(secs(r.between(0, 1800))); x.Before(end); {
-			if chance(0.2) {
+			if chance(0.2) && h != wire.HarnessCopilot {
 				in.AI = append(in.AI, ev(x, wire.AIToolStart))
 			} else {
 				e := ev(x, wire.AIPromptSubmit)
@@ -143,15 +157,22 @@ func randomScenario(seed uint64) Input {
 				e.PromptHash = []string{"", "h1", "h2", "h3"}[pick(4)]
 				in.AI = append(in.AI, e)
 			}
-			turnEnd := x.Add(secs(r.between(5, 1800)))
+			turnEnd := x.Add(secs(r.between(5, longest)))
 			for x = x.Add(secs(r.between(1, 30))); x.Before(turnEnd); x = x.Add(secs(r.between(1, 400))) {
 				switch {
-				case chance(0.1):
+				case chance(0.03):
+					in.AI = append(in.AI, ev(x, wire.AISessionStart))
+				case chance(0.1) && h != wire.HarnessCursor:
 					in.AI = append(in.AI, ev(x, wire.AIPermissionAsk))
-				case chance(0.05):
+				case chance(0.05) && (h == wire.HarnessClaudeCode || h == wire.HarnessOpenCode):
 					a := ev(x, wire.AIPermissionAsk)
 					a.Decision = "allow"
 					in.AI = append(in.AI, a)
+				case h == wire.HarnessCopilot:
+					in.AI = append(in.AI, ev(x, wire.AIToolEnd))
+				case h == wire.HarnessCursor:
+					took := secs(r.between(0, 1200))
+					in.AI = append(in.AI, ev(x.Add(-took), wire.AIToolStart), ev(x, wire.AIToolEnd))
 				default:
 					in.AI = append(in.AI, ev(x, wire.AIToolStart), ev(x.Add(time.Second), wire.AIToolEnd))
 				}
@@ -190,11 +211,73 @@ func TestLongPermissionWaitIsBounded(t *testing.T) {
 		full.AI = append(full.AI, ev(d, wire.AIPermissionAsk))
 	}
 	full.AI = append(full.AI, ev(85*time.Minute, wire.AIToolEnd), ev(90*time.Minute, wire.AIToolStart))
+	checkBounded(t, full)
+}
+
+// checkBounded computes every minute of full's window from only the events in
+// [minute-ContextBefore, minute+Lookahead), compares it with the full run,
+// and returns the full run.
+func checkBounded(t *testing.T, full Input) Result {
+	t.Helper()
 	want := Compute(full)
 	for m := full.Window.From; m.Before(full.Window.To); m = m.Add(time.Minute) {
 		in := sliceInput(full, m.Add(-ContextBefore), m.Add(Lookahead))
 		in.Window = Window{From: m, To: m.Add(time.Minute)}
 		in.DataEnd = m.Add(Lookahead)
 		compareMinutes(t, "bounded context", Compute(in), want, m, m.Add(time.Minute))
+	}
+	return want
+}
+
+// labelAt returns the label of minute m in res; a minute not emitted is idle.
+func labelAt(res Result, m time.Time) Label {
+	for _, row := range res.Minutes {
+		if row.Minute.Equal(m) {
+			return row.Label
+		}
+	}
+	return LabelIdle
+}
+
+// midTurnStream is one session's prompt at t0 followed by an event of kind
+// every 5 minutes up to +90 minutes, with nobody at the machine.
+func midTurnStream(h wire.Harness, kind wire.AIEventKind, decision string) Input {
+	full := Input{Window: Window{From: at(70 * time.Minute), To: at(90 * time.Minute)}}
+	for x := t0; x.Before(at(120 * time.Minute)); x = x.Add(5 * time.Second) {
+		full.Activity = append(full.Activity, wire.ActivitySample{Time: x, IdleSeconds: 3600, FocusKind: "terminal"})
+	}
+	full.AI = append(full.AI, wire.AIEvent{Time: t0, Kind: wire.AIPromptSubmit, Harness: h, SessionID: "s", Project: "app", PromptChars: 80})
+	for d := 5 * time.Minute; d <= 90*time.Minute; d += 5 * time.Minute {
+		full.AI = append(full.AI, wire.AIEvent{Time: at(d), Kind: kind, Harness: h, SessionID: "s", Project: "app", Decision: decision})
+	}
+	return full
+}
+
+// GitHub Copilot's hooks emit tool ends but no tool starts. A prompt followed
+// by a tool end every 5 minutes is one running turn. At +80 minutes the
+// prompt is outside ContextBefore, and the minute must still be agent time.
+func TestToolEndOnlyTurnIsBounded(t *testing.T) {
+	want := checkBounded(t, midTurnStream(wire.HarnessCopilot, wire.AIToolEnd, ""))
+	if got := labelAt(want, at(80*time.Minute)); got != LabelAgent {
+		t.Fatalf("minute +80 of a running Copilot turn is %s, want agent", got)
+	}
+}
+
+// OpenCode reports the person's reply to a permission ask as a
+// permission_ask with a Decision. A stream of replies is a running turn too.
+func TestDecidedAskOnlyTurnIsBounded(t *testing.T) {
+	want := checkBounded(t, midTurnStream(wire.HarnessOpenCode, wire.AIPermissionAsk, "allow"))
+	if got := labelAt(want, at(80*time.Minute)); got != LabelAgent {
+		t.Fatalf("minute +80 of a running OpenCode turn is %s, want agent", got)
+	}
+}
+
+// session_start isn't agent work (Claude Code also sends it on resume and
+// compaction): a run of them after a prompt doesn't keep the prompt's turn
+// running, so minute +80 doesn't depend on a prompt 80 minutes back.
+func TestSessionStartDoesNotKeepTurnOpen(t *testing.T) {
+	want := checkBounded(t, midTurnStream(wire.HarnessClaudeCode, wire.AISessionStart, ""))
+	if got := labelAt(want, at(80*time.Minute)); got != LabelIdle {
+		t.Fatalf("minute +80 after only session starts is %s, want idle", got)
 	}
 }

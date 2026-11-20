@@ -14,13 +14,20 @@ type span struct {
 	from, to time.Time
 }
 
-// turn is one agent turn: from a prompt_submit (or a tool_start or an
-// unanswered permission_ask outside any turn) until turn_end, session_end, the session's next prompt, or the last
-// event before a turnTimeout gap.
+// turn is one agent turn: from a prompt_submit until turn_end, session_end,
+// the session's next prompt, or the last event before a turnTimeout gap.
+//
+// A mid-turn event (tool_start, tool_end or permission_ask) outside any turn
+// opens an inferred turn at that event: the agent is working, and its prompt
+// is either before the caller's data or was never sent by the harness. So
+// whether a session is in a turn at time t depends only on its last event
+// before t, never on a prompt further back than turnTimeout. An inferred
+// turn has prompt false, so no rule decided at a prompt (loop,
+// rubber_stamp, automated_session) applies to it.
 type turn struct {
 	session    string
 	start, end time.Time
-	prompt     bool // started by prompt_submit
+	prompt     bool // started by prompt_submit; false for an inferred turn
 	chars      int
 	hash       string
 	// promptProject is the prompt_submit's project ("" without a prompt).
@@ -104,6 +111,11 @@ func (s *sessionState) close(at time.Time) {
 	s.open = nil
 }
 
+// midTurn reports an event the agent sends only while working on a turn.
+func midTurn(k wire.AIEventKind) bool {
+	return k == wire.AIToolStart || k == wire.AIToolEnd || k == wire.AIPermissionAsk
+}
+
 // buildTurns replays AI events session by session and returns every turn,
 // sorted by (start, session). horizon is how far the data reaches: a turn
 // still open with its last event less than turnTimeout before horizon runs
@@ -112,6 +124,12 @@ func buildTurns(events []aiEvent, horizon time.Time) []turn {
 	states := map[string]*sessionState{}
 	var order []string
 	for _, e := range events {
+		if e.kind == wire.AISessionStart {
+			// Not agent work, and not a sign of the person either: Claude Code
+			// also sends it on resume and on compaction mid-turn. It neither
+			// opens, extends, answers nor ends a turn.
+			continue
+		}
 		st := states[e.session]
 		if st == nil {
 			st = &sessionState{}
@@ -135,15 +153,17 @@ func buildTurns(events []aiEvent, horizon time.Time) []turn {
 			if st.lastKind == wire.AITurnEnd {
 				st.open.afterTurnEnd, st.open.prevTurnEnd = true, st.last
 			}
-		case e.kind == wire.AIToolStart && st.open == nil:
+		case midTurn(e.kind) && st.open == nil:
+			// The agent is mid-turn (and waiting, after an unanswered ask).
+			// Without this, a turn whose events keep coming for longer than
+			// ContextBefore (Copilot sends tool ends only; a wait's asks
+			// repeat) would be busy, and its answers recognised, only for
+			// callers holding its prompt.
 			st.open = &turn{session: e.session, start: e.t}
-		case newAsk && st.open == nil:
-			// The agent is mid-turn and waiting. Without this, a wait whose
-			// asks repeat for longer than ContextBefore would be seen, and
-			// its answer recognised, only by callers holding its prompt.
-			st.open = &turn{session: e.session, start: e.t}
-			st.waitFrom, st.waiting = e.t, true
-		case newAsk && st.open != nil && !st.waiting:
+			if newAsk {
+				st.waitFrom, st.waiting = e.t, true
+			}
+		case newAsk && !st.waiting:
 			st.waitFrom, st.waiting = e.t, true
 		}
 		if st.open != nil && e.project != "" {
