@@ -1,0 +1,6 @@
+{
+  "session_id": "ses_01",
+  "cwd": "/home/teen/my-app",
+  "model": "claude-sonnet-5-5",
+  "prompt_chars": 42
+}

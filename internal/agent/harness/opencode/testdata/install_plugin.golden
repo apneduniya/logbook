@@ -1,0 +1,152 @@
+// logbook-managed-plugin
+// Logbook plugin for OpenCode. Written by "logbook install" and removed by
+// "logbook uninstall"; edits are overwritten on the next install.
+// It reports metadata only (session id, project directory, model id, tool
+// name, prompt length, permission answer) to the local Logbook agent. Prompt
+// text, tool arguments and tool output never leave this file.
+import { spawn } from "node:child_process"
+
+const BIN = "/opt/logbook/bin/logbook"
+const models = new Map()
+
+function chars(text) {
+  return typeof text === "string" ? Array.from(text).length : 0
+}
+
+function str(v) {
+  return typeof v === "string" ? v : ""
+}
+
+function send(event, meta) {
+  try {
+    const child = spawn(BIN, ["hook", "opencode", event], {
+      stdio: ["pipe", "ignore", "ignore"],
+      windowsHide: true,
+    })
+    const timer = setTimeout(() => {
+      try { child.kill() } catch {}
+    }, 5000)
+    if (timer.unref) timer.unref()
+    child.on("error", () => clearTimeout(timer))
+    child.on("exit", () => clearTimeout(timer))
+    child.stdin.on("error", () => {})
+    child.stdin.end(JSON.stringify(meta))
+    if (child.unref) child.unref()
+  } catch {}
+}
+
+function meta(sessionID, dir, extra) {
+  const id = str(sessionID)
+  return Object.assign({ session_id: id, cwd: str(dir), model: str(models.get(id)) }, extra)
+}
+
+function decision(reply) {
+  if (reply === "reject") return "deny"
+  if (reply === "once" || reply === "always") return "allow"
+  return ""
+}
+
+function safe(fn) {
+  return (...args) => {
+    try { fn(...args) } catch {}
+  }
+}
+
+async function setup(ctx) {
+  const dir = () => str(ctx && ctx.location && ctx.location.directory)
+  await ctx.session.hook("prompt", safe((ev) => {
+    send("prompt", meta(ev.sessionID, dir(), { prompt_chars: chars(ev.prompt && ev.prompt.text) }))
+  }))
+  await ctx.tool.hook("execute.before", safe((ev) => {
+    send("tool-start", meta(ev.sessionID, dir(), { tool: str(ev.tool) }))
+  }))
+  await ctx.tool.hook("execute.after", safe((ev) => {
+    send("tool-end", meta(ev.sessionID, dir(), { tool: str(ev.tool) }))
+  }))
+  const controller = new AbortController()
+  const types = [
+    "session.created", "session.model.selected", "session.deleted",
+    "session.execution.succeeded", "session.execution.failed", "session.execution.interrupted",
+    "permission.asked", "permission.replied",
+  ]
+  const onEvent = safe((e) => {
+    const d = (e && e.data) || {}
+    const id = str(d.sessionID)
+    switch (e.type) {
+      case "session.created":
+        if (d.model && d.model.id) models.set(id, str(d.model.id))
+        send("session-start", meta(id, dir(), {}))
+        break
+      case "session.model.selected":
+        if (d.model && d.model.id) models.set(id, str(d.model.id))
+        break
+      case "session.deleted":
+        send("session-end", meta(id, dir(), {}))
+        models.delete(id)
+        break
+      case "session.execution.succeeded":
+      case "session.execution.failed":
+      case "session.execution.interrupted":
+        send("turn-end", meta(id, dir(), {}))
+        break
+      case "permission.asked":
+        send("permission-ask", meta(id, dir(), {}))
+        break
+      case "permission.replied":
+        send("permission-reply", meta(id, dir(), { decision: decision(d.reply) }))
+        break
+    }
+  })
+  ;(async () => {
+    for await (const e of ctx.event.subscribe({ types, signal: controller.signal })) onEvent(e)
+  })().catch(() => {})
+  return () => controller.abort()
+}
+
+async function server(input) {
+  const dir = str(input && input.directory)
+  return {
+    event: async ({ event }) => {
+      safe(() => {
+        const p = (event && event.properties) || {}
+        const info = p.info || {}
+        switch (event.type) {
+          case "session.created":
+            send("session-start", meta(info.id, dir, {}))
+            break
+          case "session.deleted":
+            send("session-end", meta(info.id, dir, {}))
+            models.delete(str(info.id))
+            break
+          case "session.idle":
+            send("turn-end", meta(p.sessionID, dir, {}))
+            break
+          case "permission.asked":
+          case "permission.updated":
+            send("permission-ask", meta(p.sessionID, dir, {}))
+            break
+          case "permission.replied":
+            send("permission-reply", meta(p.sessionID, dir, { decision: decision(p.response || p.reply) }))
+            break
+        }
+      })()
+    },
+    "chat.message": async (inp, out) => {
+      safe(() => {
+        if (inp && inp.model && inp.model.modelID) models.set(str(inp.sessionID), str(inp.model.modelID))
+        const parts = (out && Array.isArray(out.parts)) ? out.parts : []
+        let n = 0
+        for (const part of parts) if (part && part.type === "text" && !part.synthetic) n += chars(part.text)
+        send("prompt", meta(inp && inp.sessionID, dir, { prompt_chars: n }))
+      })()
+    },
+    "tool.execute.before": async (inp) => {
+      safe(() => send("tool-start", meta(inp && inp.sessionID, dir, { tool: str(inp && inp.tool) })))()
+    },
+    "tool.execute.after": async (inp) => {
+      safe(() => send("tool-end", meta(inp && inp.sessionID, dir, { tool: str(inp && inp.tool) })))()
+    },
+  }
+}
+
+export default { id: "logbook", setup, server }
