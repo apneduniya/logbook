@@ -28,9 +28,16 @@ func (c *virtualClock) Now() time.Time {
 	return c.now
 }
 
-func (c *virtualClock) SleepUntil(ctx context.Context, t time.Time) error {
+// SleepUntil records t as an admission and jumps to it, unless wake is
+// already closed: then the limiter has to look again before anything goes.
+func (c *virtualClock) SleepUntil(ctx context.Context, t time.Time, wake <-chan struct{}) error {
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	select {
+	case <-wake:
+		return nil
+	default:
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
