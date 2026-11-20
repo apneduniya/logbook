@@ -61,7 +61,11 @@ type Server interface {
 // Identity keeps the device registered. *devicekey.Identity satisfies it.
 type Identity interface {
 	Ensure(ctx context.Context, t serverapi.Target) (devicekey.Device, error)
-	MarkRevoked(ctx context.Context, t serverapi.Target) error
+	// MarkRevoked returns repaired = true when it already retired the key
+	// so a new device registers next, and false when the device stays
+	// revoked until the API key changes.
+	MarkRevoked(ctx context.Context, t serverapi.Target) (repaired bool, err error)
+	Confirm(ctx context.Context, t serverapi.Target) error
 	Forget(ctx context.Context) error
 }
 
@@ -110,7 +114,14 @@ type Options struct {
 type Runner struct {
 	opt     Options
 	running sync.Mutex // held for the length of one run
-	cache   eventCache // used only while running is held
+	// Used only while running is held:
+	cache eventCache
+	// holdMinutes is when minute uploads may resume after the server
+	// refused a batch as a whole for a reason other than its size.
+	holdMinutes time.Time
+	// shown caches persisted status values (refused, local evidence error),
+	// so they are written only when they change.
+	shown map[string]string
 
 	mu    sync.Mutex
 	gate  gate
@@ -282,15 +293,79 @@ func (r *Runner) upload(ctx context.Context, now time.Time) {
 			localdb.KV{Key: keyEvidenceHash, Value: ""}, localdb.KV{Key: keyEvidenceState, Value: ""},
 			localdb.KV{Key: keyEvidenceError, Value: ""})
 	}
-	if err := r.uploadMinutes(ctx, t.Target, dev, now); err != nil {
+	if now.Before(r.holdMinutes) {
+		r.opt.Logger.DebugContext(ctx, "minute uploads on hold after a refused batch", "until", r.holdMinutes)
+	} else {
+		err := r.uploadMinutes(ctx, t.Target, dev, now)
+		var refused *refusedError
+		switch {
+		case errors.As(err, &refused):
+			// Not a transport problem: retrying soon won't help, and the
+			// minutes are kept (not marked sent) for when it does.
+			r.holdMinutes = now.Add(r.opt.Reprobe)
+			r.opt.Logger.ErrorContext(ctx, "server refused credited minutes; holding them and retrying later",
+				"err", refused.err, "retry_at", r.holdMinutes)
+			r.show(ctx, keyRefused, refusedText(refused.err))
+		case err != nil:
+			r.fail(ctx, t, err)
+			return
+		default:
+			r.show(ctx, keyRefused, "")
+		}
+	}
+	err = r.sealAndUploadDays(ctx, t.Target, dev, now)
+	if isServerError(err) {
 		r.fail(ctx, t, err)
 		return
 	}
-	if err := r.sealAndUploadDays(ctx, t.Target, dev, now); err != nil {
-		r.fail(ctx, t, err)
+	// A local problem sealing a day (reading the database, the active-time
+	// source, encoding) is not the server's: it is shown and retried on the
+	// next run without backing off the uploads.
+	local := ""
+	if err != nil {
+		if ctx.Err() == nil {
+			r.opt.Logger.ErrorContext(ctx, "sealing evidence day", "err", err)
+		}
+		local = err.Error()
+	}
+	r.show(ctx, keyEvidenceLocal, local)
+	r.succeed(ctx, t.Target, now)
+}
+
+// refusedError is a minutes batch the server refused as a whole for a
+// reason other than its size (such as an unknown rules version).
+type refusedError struct{ err error }
+
+func (e *refusedError) Error() string { return e.err.Error() }
+func (e *refusedError) Unwrap() error { return e.err }
+
+func refusedText(err error) string {
+	return "the server refused credited minutes (" + serverMessage(err) +
+		"); they are kept and retried later. Updating Logbook may help."
+}
+
+// isServerError reports whether err came from the server API (and so
+// drives backoff), as opposed to local storage or computation.
+func isServerError(err error) bool {
+	var e *serverapi.Error
+	return errors.As(err, &e)
+}
+
+// show persists a status value when it differs from what was last written.
+func (r *Runner) show(ctx context.Context, key, value string) {
+	if old, ok := r.shown[key]; ok && old == value {
 		return
 	}
-	r.succeed(ctx, now)
+	if r.shown == nil {
+		r.shown = map[string]string{}
+	}
+	if err := r.opt.Store.SetMany(ctx, localdb.KV{Key: key, Value: value}); err != nil {
+		if ctx.Err() == nil {
+			r.opt.Logger.WarnContext(ctx, "saving crediting state", "err", err)
+		}
+		return
+	}
+	r.shown[key] = value
 }
 
 // prune drops old local rows.

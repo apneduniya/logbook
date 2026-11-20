@@ -49,7 +49,15 @@ func TestRender(t *testing.T) {
 			}},
 			want: []string{"0b7c2f1e-3a4d-4e5f-8a9b-0c1d2e3f4a5b", "Revoked", "device revoked", "signed through 2026-11-19",
 				"4592bad6f724<", "Evidence stopped", "refused &lt;x&gt;", ">12<", ">3<"},
-			not: []string{"<x>"},
+			not: []string{"<x>", "Minutes on hold", "Sealing failed"},
+		},
+		{
+			name: "crediting held and sealing failing",
+			snap: status.Snapshot{Crediting: crediting.Status{
+				Minutes:  crediting.MinutesStatus{Refused: "the server refused credited minutes (unknown rules_version)"},
+				Evidence: crediting.EvidenceStatus{LocalError: "reading active time: disk I/O error"},
+			}},
+			want: []string{"Minutes on hold", "unknown rules_version", "Sealing failed (retrying)", "disk I/O error"},
 		},
 		{
 			name: "no hooks detected",

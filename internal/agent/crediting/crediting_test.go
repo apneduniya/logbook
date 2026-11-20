@@ -33,7 +33,7 @@ type env struct {
 	mu      sync.Mutex
 	now     time.Time
 	apiKey  string
-	script  map[time.Time]struggle.Minute // minute → output
+	script  map[time.Time][]struggle.Minute // minute → output
 	inputs  []struggle.Input
 	active  ActiveTimeSource
 	runner  *Runner
@@ -42,7 +42,7 @@ type env struct {
 
 func newEnv(t *testing.T, start time.Time) *env {
 	t.Helper()
-	e := &env{t: t, dir: t.TempDir(), now: start, apiKey: "key-1", script: map[time.Time]struggle.Minute{}}
+	e := &env{t: t, dir: t.TempDir(), now: start, apiKey: "key-1", script: map[time.Time][]struggle.Minute{}}
 	e.srv = newFakeServer(e.clock)
 	ts := httptest.NewServer(e.srv)
 	t.Cleanup(ts.Close)
@@ -113,11 +113,26 @@ func (e *env) credit(at time.Time, project string, secs int) {
 		delete(e.script, at)
 		return
 	}
+	e.script[at] = []struggle.Minute{scripted(at, project, secs)}
+}
+
+// creditSplit scripts one minute credited to several projects.
+func (e *env) creditSplit(at time.Time, secs map[string]int) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	var ms []struggle.Minute
+	for p, s := range secs {
+		ms = append(ms, scripted(at, p, s))
+	}
+	e.script[at] = ms
+}
+
+func scripted(at time.Time, project string, secs int) struggle.Minute {
 	label := struggle.LabelYou
 	if secs == 0 {
 		label = struggle.LabelIdle
 	}
-	e.script[at] = struggle.Minute{Minute: at, Project: project, Label: label, Credited: secs, Flags: []string{struggle.FlagLowSignal}}
+	return struggle.Minute{Minute: at, Project: project, Label: label, Credited: secs, Flags: []string{struggle.FlagLowSignal}}
 }
 
 func (e *env) compute(in struggle.Input) struggle.Result {
@@ -125,9 +140,9 @@ func (e *env) compute(in struggle.Input) struggle.Result {
 	defer e.mu.Unlock()
 	e.inputs = append(e.inputs, in)
 	var out []struggle.Minute
-	for at, m := range e.script {
+	for at, ms := range e.script {
 		if !at.Before(in.Window.From) && at.Before(in.Window.To) {
-			out = append(out, m)
+			out = append(out, ms...)
 		}
 	}
 	// Plus an empty idle minute, which must never be uploaded.
@@ -620,11 +635,13 @@ func TestNotSignedInComputesLocallyOnly(t *testing.T) {
 }
 
 func BenchmarkRunOnce(b *testing.B) {
-	// Two hours of a busy session on one device: a 5 s activity sample, a
-	// heartbeat every 15 s, an AI event every 20 s. Uploads are off so the
-	// benchmark measures the per-minute local work. "warm" is every run but
-	// the first after a start (the event cache holds the window); "cold"
-	// reads the whole window from the database.
+	// Two weeks of history (8 busy hours a day) plus the last two hours of
+	// a busy session on one device: a 5 s activity sample, a heartbeat every
+	// 15 s, an AI event every 20 s (about 90 000 activity rows). Uploads are
+	// off so the benchmark measures the per-minute local work. "warm" is
+	// every run but the first after a start (the event cache holds the
+	// window); "cold" is the first run, which reads the window from a
+	// database holding weeks of rows.
 	sixty := func(in struggle.Input) struggle.Result {
 		out := make([]struggle.Minute, 0, 60)
 		for m := in.Window.From; m.Before(in.Window.To); m = m.Add(time.Minute) {
@@ -650,24 +667,30 @@ func BenchmarkRunOnce(b *testing.B) {
 				b.Fatal(err)
 			}
 			defer func() { _ = db.Close() }()
-			var evs []wire.LocalEvent
-			var hbs []wire.Heartbeat
-			for i := range 2 * 60 * 12 {
-				ts := now.Add(-2*time.Hour + time.Duration(i)*5*time.Second)
-				evs = append(evs, wire.LocalEvent{Type: "activity", Activity: &wire.ActivitySample{Time: ts, FocusKind: "editor", FocusApp: "Code"}})
-				if i%3 == 0 {
-					hbs = append(hbs, wire.Heartbeat{Entity: "/src/app/main.go", Time: float64(ts.UnixMicro()) / 1e6, Project: "app", IsWrite: i%2 == 0})
+			session := func(start time.Time, d time.Duration) {
+				var evs []wire.LocalEvent
+				var hbs []wire.Heartbeat
+				for i := range int(d / (5 * time.Second)) {
+					ts := start.Add(time.Duration(i) * 5 * time.Second)
+					evs = append(evs, wire.LocalEvent{Type: "activity", Activity: &wire.ActivitySample{Time: ts, FocusKind: "editor", FocusApp: "Code"}})
+					if i%3 == 0 {
+						hbs = append(hbs, wire.Heartbeat{Entity: "/src/app/main.go", Time: float64(ts.UnixMicro()) / 1e6, Project: "app", IsWrite: i%2 == 0})
+					}
+					if i%4 == 0 {
+						evs = append(evs, wire.LocalEvent{Type: "ai", AI: &wire.AIEvent{Time: ts, Harness: wire.HarnessClaudeCode, Kind: wire.AIToolStart, SessionID: "s", Cwd: "/src/app"}})
+					}
 				}
-				if i%4 == 0 {
-					evs = append(evs, wire.LocalEvent{Type: "ai", AI: &wire.AIEvent{Time: ts, Harness: wire.HarnessClaudeCode, Kind: wire.AIToolStart, SessionID: "s", Cwd: "/src/app"}})
+				if err := db.InsertEvents(ctx, evs); err != nil {
+					b.Fatal(err)
+				}
+				if err := db.Enqueue(ctx, hbs, false); err != nil {
+					b.Fatal(err)
 				}
 			}
-			if err := db.InsertEvents(ctx, evs); err != nil {
-				b.Fatal(err)
+			for day := 14; day >= 1; day-- {
+				session(now.Add(-time.Duration(day)*24*time.Hour-10*time.Hour), 8*time.Hour)
 			}
-			if err := db.Enqueue(ctx, hbs, false); err != nil {
-				b.Fatal(err)
-			}
+			session(now.Add(-2*time.Hour), 2*time.Hour)
 			opts := Options{Store: db, Compute: bc.compute, Now: func() time.Time { return now },
 				Target: func() Target { return Target{Disabled: "benchmark"} }}
 			r := New(opts)

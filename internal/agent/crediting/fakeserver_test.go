@@ -21,8 +21,10 @@ type fakeServer struct {
 	now func() time.Time
 
 	mu       sync.Mutex
+	users    map[string]string            // API key → user
 	keys     map[string]ed25519.PublicKey // device id → key
 	byKey    map[string]string            // public key → device id
+	owner    map[string]string            // device id → user
 	revoked  map[string]bool
 	minutes  map[string]serverMinute // device|minute|project
 	days     map[string]map[string]storedDay
@@ -34,7 +36,11 @@ type fakeServer struct {
 	// forceDayConflict answers 409 for that day.
 	forceDayConflict string
 	// maxBatch, when non-zero, refuses larger minute batches with 413.
-	maxBatch      int
+	maxBatch int
+	// rulesVersion, when set, is the only rules version the server knows.
+	rulesVersion string
+	// deviceLimit, when set, refuses new devices with the limit 409.
+	deviceLimit   bool
 	minuteBatches [][]serverMinute
 }
 
@@ -58,7 +64,10 @@ type storedDay struct {
 }
 
 func newFakeServer(now func() time.Time) *fakeServer {
-	return &fakeServer{now: now, keys: map[string]ed25519.PublicKey{}, byKey: map[string]string{},
+	return &fakeServer{now: now,
+		// key-1 and key-1b are two API keys of one user; key-2 is another user.
+		users: map[string]string{"key-1": "u1", "key-1b": "u1", "key-2": "u2"},
+		keys:  map[string]ed25519.PublicKey{}, byKey: map[string]string{}, owner: map[string]string{},
 		revoked: map[string]bool{}, minutes: map[string]serverMinute{}, days: map[string]map[string]storedDay{}}
 }
 
@@ -78,7 +87,8 @@ func (f *fakeServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.requests = append(f.requests, r.URL.Path)
-	if r.Header.Get("Authorization") != "Bearer key-1" {
+	user, ok := f.users[strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")]
+	if !ok {
 		writeErr(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
@@ -88,11 +98,19 @@ func (f *fakeServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		_ = json.NewDecoder(r.Body).Decode(&req)
 		if id, ok := f.byKey[string(req.PublicKey)]; ok {
+			if f.owner[id] != user {
+				writeErr(w, http.StatusConflict, "public key is registered to another account")
+				return
+			}
 			writeJSON(w, http.StatusOK, map[string]string{"id": id})
 			return
 		}
+		if f.deviceLimit {
+			writeErr(w, http.StatusConflict, "you already have 20 active devices; revoke one first")
+			return
+		}
 		id := fmt.Sprintf("00000000-0000-4000-8000-%012d", len(f.keys)+1)
-		f.keys[id], f.byKey[string(req.PublicKey)] = req.PublicKey, id
+		f.keys[id], f.byKey[string(req.PublicKey)], f.owner[id] = req.PublicKey, id, user
 		writeJSON(w, http.StatusCreated, map[string]string{"id": id})
 		return
 	}
@@ -106,7 +124,7 @@ func (f *fakeServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, f.status, "scripted failure")
 		return
 	}
-	if _, ok := f.keys[id]; !ok {
+	if _, ok := f.keys[id]; !ok || f.owner[id] != user {
 		writeErr(w, http.StatusNotFound, "device not found")
 		return
 	}
@@ -137,6 +155,10 @@ func (f *fakeServer) handleMinutes(w http.ResponseWriter, r *http.Request, id st
 		writeErr(w, http.StatusRequestEntityTooLarge, "too many minutes")
 		return
 	}
+	if f.rulesVersion != "" && req.RulesVersion != f.rulesVersion {
+		writeErr(w, http.StatusBadRequest, "unknown rules_version")
+		return
+	}
 	f.minuteBatches = append(f.minuteBatches, req.Minutes)
 	type rej struct {
 		Index int    `json:"index"`
@@ -144,8 +166,26 @@ func (f *fakeServer) handleMinutes(w http.ResponseWriter, r *http.Request, id st
 	}
 	var rejected []rej
 	accepted := 0
-	for i, m := range req.Minutes {
-		k := id + "|" + m.Minute.Format(time.RFC3339) + "|" + m.Project
+	// Like the server, apply decreases before increases (then by index),
+	// so credit can move between projects of a minute in one request.
+	key := func(m serverMinute) string { return id + "|" + m.Minute.Format(time.RFC3339) + "|" + m.Project }
+	raises := func(i int) bool { return req.Minutes[i].Credited >= f.minutes[key(req.Minutes[i])].Credited }
+	order := make([]int, len(req.Minutes))
+	for i := range order {
+		order[i] = i
+	}
+	slices.SortStableFunc(order, func(a, b int) int {
+		switch {
+		case raises(a) == raises(b):
+			return 0
+		case raises(a):
+			return 1
+		}
+		return -1
+	})
+	for _, i := range order {
+		m := req.Minutes[i]
+		k := key(m)
 		old, exists := f.minutes[k]
 		sum := m.Credited
 		for k2, o := range f.minutes {

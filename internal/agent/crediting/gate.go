@@ -2,6 +2,7 @@ package crediting
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/apneduniya/logbook/internal/agent/localdb"
@@ -24,6 +25,10 @@ type gate struct {
 	synced bool
 	// revokedKey is the API key in use when the device was found revoked.
 	revokedKey string
+	// blocked, when non-empty, is why the server refused to register the
+	// device (such as the active-device limit). It is shown while retrying
+	// with backoff and cleared by a successful run or a new API key.
+	blocked string
 }
 
 // reasonRevoked is the pause reason for a revoked device.
@@ -54,6 +59,8 @@ func (r *Runner) ready(ctx context.Context, t Target, now time.Time) bool {
 	case now.Before(g.nextTry):
 		ok = false
 		reason = g.reason // keep whatever was shown
+	default:
+		reason = g.blocked
 	}
 	changed := !g.synced || g.reason != reason
 	g.synced, g.reason = true, reason
@@ -89,13 +96,29 @@ func (r *Runner) fail(ctx context.Context, t Target, err error) {
 			localdb.KV{Key: keyLastError, Value: err.Error()}, localdb.KV{Key: keyLastErrorAt, Value: formatTime(now)})
 		return
 	case serverapi.KindRevoked:
-		if merr := r.opt.Identity.MarkRevoked(ctx, t.Target); merr != nil {
+		repaired, merr := r.opt.Identity.MarkRevoked(ctx, t.Target)
+		if merr != nil {
 			r.opt.Logger.ErrorContext(ctx, "recording device revocation", "err", merr)
 		}
-		r.opt.Logger.ErrorContext(ctx, "the server revoked this device; uploads stopped", "err", err)
-		r.setRevoked(ctx, t.APIKey)
-		r.persist(ctx, localdb.KV{Key: keyLastError, Value: err.Error()}, localdb.KV{Key: keyLastErrorAt, Value: formatTime(now)})
-		return
+		if !repaired {
+			r.opt.Logger.ErrorContext(ctx, "the server revoked this device; uploads stopped", "err", err)
+			r.setRevoked(ctx, t.APIKey)
+			r.persist(ctx, localdb.KV{Key: keyLastError, Value: err.Error()}, localdb.KV{Key: keyLastErrorAt, Value: formatTime(now)})
+			return
+		}
+		// The device was revoked before this API key was ever used with it
+		// (the user already ran `logbook login`): a new device registers
+		// after the usual backoff.
+	case serverapi.KindConflict:
+		// Only registration answers 409 here (evidence conflicts are handled
+		// per day), and not for a key of another account, which Identity
+		// handles: the server refuses another device, e.g. the active-device
+		// limit. Show it and retry with backoff; the key is kept.
+		blocked := "the server refused to register this device: " + serverMessage(err)
+		r.mu.Lock()
+		r.gate.blocked, r.gate.reason = blocked, blocked
+		r.mu.Unlock()
+		r.persist(ctx, localdb.KV{Key: keyPaused, Value: blocked})
 	case serverapi.KindUnknownDevice:
 		// Register again on the next attempt (after backoff, so a server
 		// that keeps forgetting the device isn't hammered).
@@ -117,13 +140,26 @@ func (r *Runner) fail(ctx context.Context, t Target, err error) {
 	r.persist(ctx, localdb.KV{Key: keyLastError, Value: err.Error()}, localdb.KV{Key: keyLastErrorAt, Value: formatTime(now)})
 }
 
-// succeed clears backoff and pause after a fully successful run.
-func (r *Runner) succeed(ctx context.Context, now time.Time) {
+// serverMessage is the server's own error text when there is one.
+func serverMessage(err error) string {
+	var e *serverapi.Error
+	if errors.As(err, &e) && e.Message != "" {
+		return e.Message
+	}
+	return err.Error()
+}
+
+// succeed clears backoff and pause after a fully successful run, and tells
+// the identity that t's API key works for this device.
+func (r *Runner) succeed(ctx context.Context, t serverapi.Target, now time.Time) {
+	if err := r.opt.Identity.Confirm(ctx, t); err != nil {
+		r.opt.Logger.WarnContext(ctx, "recording the working API key", "err", err)
+	}
 	r.mu.Lock()
 	wasPaused := r.gate.paused
 	r.gate.failures, r.gate.nextTry = 0, time.Time{}
 	r.gate.paused, r.gate.pausedKey, r.gate.probeAt = false, "", time.Time{}
-	r.gate.reason = ""
+	r.gate.reason, r.gate.blocked = "", ""
 	r.batch = min(r.batch*2, r.opt.Batch)
 	r.mu.Unlock()
 	if wasPaused {

@@ -115,6 +115,11 @@ type fakeServer struct {
 	owner map[string]string // public key → api key
 	ids   map[string]string // public key → id
 	calls int
+	// full refuses new keys with the active-device limit 409.
+	full bool
+	// takeNext answers the next takeNext new keys "registered to another
+	// account".
+	takeNext int
 }
 
 func (f *fakeServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -139,11 +144,23 @@ func (f *fakeServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if owner, ok := f.owner[pk]; ok {
 		if owner != user {
 			w.WriteHeader(http.StatusConflict)
-			_, _ = w.Write([]byte(`{"error":"public key registered to another user"}`))
+			_, _ = w.Write([]byte(`{"error":"public key is registered to another account"}`))
 			return
 		}
 		w.WriteHeader(http.StatusOK)
 		_, _ = fmt.Fprintf(w, `{"id":%q}`, f.ids[pk])
+		return
+	}
+	if f.takeNext > 0 {
+		f.takeNext--
+		f.owner[pk] = "someone-else"
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte(`{"error":"public key is registered to another account"}`))
+		return
+	}
+	if f.full {
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte(`{"error":"you already have 20 active devices; revoke one first"}`))
 		return
 	}
 	f.owner[pk] = user
@@ -233,13 +250,162 @@ func TestEnsureKeyOfAnotherAccountRotates(t *testing.T) {
 	if err := e.id.Forget(context.Background()); err != nil {
 		t.Fatal(err)
 	}
+	// The account switch: an upload under user-b answered 404 for user-a's
+	// device id (Forget), then the old key is refused with 409. The new
+	// device replaces the old one even though Forget cleared the id first.
 	d2, err := e.ensure(t, "user-b")
-	if err != nil || d2.ID == d1.ID || d2.Key.Public().Equal(d1.Key.Public()) {
+	if err != nil || d2.ID == d1.ID || d2.Key.Public().Equal(d1.Key.Public()) || !d2.Replaced {
 		t.Fatalf("Ensure as another user = %+v, %v", d2, err)
 	}
 	retired, _ := filepath.Glob(filepath.Join(e.dir, "device.key.retired-*"))
 	if len(retired) != 1 {
 		t.Fatalf("retired keys = %v", retired)
+	}
+	if d3, err := e.ensure(t, "user-b"); err != nil || d3.ID != d2.ID || d3.Replaced {
+		t.Fatalf("next Ensure = %+v, %v", d3, err)
+	}
+}
+
+func TestDeviceLimitKeepsTheKey(t *testing.T) {
+	e := newIdentityEnv(t)
+	e.srv.full = true
+	var first []byte
+	for i := range 5 {
+		_, err := e.ensure(t, "user-a")
+		if serverapi.KindOf(err) != serverapi.KindConflict || serverapi.IsKeyTaken(err) {
+			t.Fatalf("Ensure %d = %v, want the device-limit conflict", i, err)
+		}
+		b, rerr := os.ReadFile(filepath.Join(e.dir, "device.key"))
+		if rerr != nil {
+			t.Fatal(rerr)
+		}
+		if first == nil {
+			first = b
+		} else if !bytes.Equal(b, first) {
+			t.Fatalf("Ensure %d replaced the key after a device-limit refusal", i)
+		}
+	}
+	if retired, _ := filepath.Glob(filepath.Join(e.dir, "device.key.retired-*")); len(retired) != 0 {
+		t.Fatalf("retired keys = %v; a device-limit refusal must not retire the key", retired)
+	}
+	// Once the user revokes another device, the same key registers.
+	e.srv.full = false
+	if d, err := e.ensure(t, "user-a"); err != nil || d.Replaced {
+		t.Fatalf("Ensure after the limit cleared = %+v, %v", d, err)
+	}
+}
+
+func TestRetireNeverOverwrites(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "device.key")
+	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
+	var pubs []ed25519.PublicKey
+	for range 3 {
+		k, err := Create(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pubs = append(pubs, k.Public())
+		if err := Retire(path, now); err != nil { // the same second every time
+			t.Fatal(err)
+		}
+	}
+	retired, _ := filepath.Glob(filepath.Join(dir, "device.key.retired-*"))
+	if len(retired) != 3 {
+		t.Fatalf("retired keys = %v, want 3", retired)
+	}
+	for _, p := range retired {
+		k, err := Load(p)
+		if err != nil {
+			t.Fatalf("Load(%s) = %v", p, err)
+		}
+		found := false
+		for _, pub := range pubs {
+			found = found || k.Public().Equal(pub)
+		}
+		if !found {
+			t.Fatalf("%s holds an unknown key", p)
+		}
+	}
+	if err := Retire(path, now); err != nil {
+		t.Fatalf("Retire(missing) = %v", err)
+	}
+	if retired, _ := filepath.Glob(filepath.Join(dir, "device.key.retired-*")); len(retired) != 3 {
+		t.Fatalf("Retire of a missing key made a file: %v", retired)
+	}
+}
+
+func TestRevokedThenKeyTakenInOneEnsureKeepsBothKeys(t *testing.T) {
+	e := newIdentityEnv(t)
+	if _, err := e.ensure(t, "user-a"); err != nil {
+		t.Fatal(err)
+	}
+	if repaired, err := e.id.MarkRevoked(context.Background(), serverapi.Target{BaseURL: e.url, APIKey: "user-a"}); err != nil || repaired {
+		t.Fatalf("MarkRevoked = %v, %v", repaired, err)
+	}
+	// A frozen clock: both retirements in one Ensure share a second.
+	e.id.opt.Now = func() time.Time { return e.now }
+	// The key made after the revocation is answered "registered to another
+	// account", so one Ensure retires two keys.
+	e.srv.mu.Lock()
+	e.srv.takeNext = 1
+	e.srv.mu.Unlock()
+	d, err := e.ensure(t, "user-a-2")
+	if err != nil || !d.Replaced {
+		t.Fatalf("Ensure = %+v, %v", d, err)
+	}
+	retired, _ := filepath.Glob(filepath.Join(e.dir, "device.key.retired-*"))
+	if len(retired) != 2 {
+		t.Fatalf("retired keys = %v, want 2 (none overwritten)", retired)
+	}
+}
+
+func TestRevokedAfterNewLoginRepairs(t *testing.T) {
+	e := newIdentityEnv(t)
+	d1, err := e.ensure(t, "user-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	// The user revoked the device and ran `logbook login` (user-a-2)
+	// before the next upload: the 403 arrives under a key that never
+	// worked with this device. That is not a fresh revocation.
+	repaired, err := e.id.MarkRevoked(ctx, serverapi.Target{BaseURL: e.url, APIKey: "user-a-2"})
+	if err != nil || !repaired {
+		t.Fatalf("MarkRevoked = %v, %v; want repaired", repaired, err)
+	}
+	d2, err := e.ensure(t, "user-a-2")
+	if err != nil || d2.ID == d1.ID || !d2.Replaced || d2.Key.Public().Equal(d1.Key.Public()) {
+		t.Fatalf("Ensure after repair = %+v, %v", d2, err)
+	}
+
+	// A key that has uploaded for this device: a 403 is a real revocation.
+	if err := e.id.Confirm(ctx, serverapi.Target{BaseURL: e.url, APIKey: "user-a-3"}); err != nil {
+		t.Fatal(err)
+	}
+	repaired, err = e.id.MarkRevoked(ctx, serverapi.Target{BaseURL: e.url, APIKey: "user-a-3"})
+	if err != nil || repaired {
+		t.Fatalf("MarkRevoked after Confirm = %v, %v; want a revocation", repaired, err)
+	}
+	if _, err := e.ensure(t, "user-a-3"); !errors.Is(err, ErrRevoked) {
+		t.Fatalf("Ensure = %v, want ErrRevoked", err)
+	}
+}
+
+func TestDeviceLabels(t *testing.T) {
+	tests := []struct{ name, os, wantName, wantOS string }{
+		{"", "linux", DefaultName, "linux"},
+		{"   ", "", DefaultName, "unknown"},
+		{"\x00\x01", "darwin", DefaultName, "darwin"},
+		{" laptop\u202e ", "windows", "laptop", "windows"},
+		{strings.Repeat("é", 70), strings.Repeat("o", 40), strings.Repeat("é", 64), strings.Repeat("o", 32)},
+		{"bad\xffutf8", "linux", "badutf8", "linux"},
+	}
+	for _, tt := range tests {
+		id := NewIdentity(Options{Name: tt.name, OS: tt.os})
+		if id.opt.Name != tt.wantName || id.opt.OS != tt.wantOS {
+			t.Errorf("NewIdentity(%q, %q) = %q, %q; want %q, %q", tt.name, tt.os, id.opt.Name, id.opt.OS, tt.wantName, tt.wantOS)
+		}
 	}
 }
 
@@ -249,8 +415,8 @@ func TestRevokedStaysRevokedUntilKeyChanges(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := e.id.MarkRevoked(context.Background(), serverapi.Target{BaseURL: e.url, APIKey: "user-a"}); err != nil {
-		t.Fatal(err)
+	if repaired, err := e.id.MarkRevoked(context.Background(), serverapi.Target{BaseURL: e.url, APIKey: "user-a"}); err != nil || repaired {
+		t.Fatalf("MarkRevoked = %v, %v", repaired, err)
 	}
 	if _, err := e.ensure(t, "user-a"); !errors.Is(err, ErrRevoked) {
 		t.Fatalf("Ensure after revoke = %v, want ErrRevoked", err)

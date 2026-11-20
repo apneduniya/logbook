@@ -14,7 +14,7 @@ How the agent runs the struggle engine and keeps the evidence chain (ADR 0010, A
 
 | What | Where | Bound |
 |---|---|---|
-| Device key | `<data dir>/device.key`, PKCS#8 PEM, 0600 | one file; retired keys are kept as `device.key.retired-<unix>` |
+| Device key | `<data dir>/device.key`, PKCS#8 PEM, 0600 | one file; retired keys are kept as `device.key.retired-<unix>[-n]`, never overwritten |
 | Full heartbeats | `heartbeats` (payload as received, deduplicated) | 90 days, 3 000 000 rows |
 | Credited minutes | `credited_minutes` (minute, project, label, credit, cuts, flags, rules version, upload state) | 90 days |
 | Evidence days | `evidence_days` (signed values, event counts, high-water ids, state) | one row per day, kept |
@@ -37,12 +37,17 @@ All requests use `Authorization: Bearer <api key>` and the agent's User-Agent, t
 |---|---|
 | 200/201 | done |
 | per-minute rejection | logged, counted in `crediting.rejected`, never retried unless the minute changes |
-| 400/413/422 with a JSON error on a minutes batch | split the batch; a single refused minute is counted as rejected |
+| 413, or 400 "minutes per request", on a minutes batch | split the batch (never inside a minute); a single refused minute is counted as rejected |
+| any other 400/422 with a JSON error on a minutes batch (e.g. unknown `rules_version`) | minutes kept and put on hold for 30 min; status shows "on hold" with the server's reason |
 | 400 or 409 on an evidence day | day marked `rejected`/`conflict`; the chain stops; status shows it |
 | 401 | pause until the API key changes; one retry every 30 min |
-| 403 with a JSON error | device revoked: no more uploads until the API key changes, then a new key and device |
+| 403 with a JSON error | device revoked: no more uploads until the API key changes, then a new key and device. If the current API key never worked with the device (revoked, then `logbook login`), a new key and device at once |
 | 404 with a JSON error | device unknown: forget the id, back off, register the same key again |
+| 409 "public key is registered to another account" on registration | retire the key, make a new one, register |
+| any other 409 with a JSON error on registration (device limit) | keep the key, show the message as the pause reason, back off |
 | anything else (network, 429, 5xx, 3xx, proxy pages) | back off 5 s → 10 min with jitter; `Retry-After` wins (≤ 30 min) |
+
+A local failure while sealing a day (database, active-time source) is shown as "sealing failed" and retried next run; it does not back off uploads.
 
 ## Evidence days
 

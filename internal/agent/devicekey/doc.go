@@ -10,10 +10,16 @@
 // Identity registers the public key (POST /api/v1/devices) and keeps the
 // device id, the server it belongs to and the registration time in the
 // local key-value table. It re-registers when the server URL changes or the
-// server forgets the device, and moves to a fresh key when the key is
-// registered to another account. A device the server revoked stays revoked
-// until the API key changes (`logbook login`); then the old key is retired
-// and a new device is registered.
+// server forgets the device, and moves to a fresh key only when the server
+// says the key is registered to another account (any other 409, such as the
+// active-device limit, keeps the key). A device the server revoked stays
+// revoked until the API key changes (`logbook login`); then the old key is
+// retired and a new device is registered. A revocation first seen under an
+// API key that never worked with the device means the user already logged
+// in again, so the key is retired at once. Retired keys are kept under
+// unique names (device.key.retired-<unix>[-n]) and never overwritten.
+//
+// An empty or invalid host name is registered as DefaultName.
 //
 // It does not decide when to register or what to sign
 // (internal/agent/crediting), and it never logs or uploads the private key.

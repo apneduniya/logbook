@@ -19,12 +19,18 @@ const (
 	keyPaused       = "crediting.paused"
 	keyRejected     = "crediting.rejected"
 	keyWaiting      = "crediting.waiting"
+	// keyRefused says why minute uploads are on hold after the server
+	// refused a batch as a whole ("" when not).
+	keyRefused = "crediting.refused"
 
 	keyEvidenceDevice = "evidence.device"
 	keyEvidenceDay    = "evidence.last_day"
 	keyEvidenceHash   = "evidence.chain_hash"
 	keyEvidenceState  = "evidence.state"
 	keyEvidenceError  = "evidence.error"
+	// keyEvidenceLocal is the last local failure sealing a day ("" when
+	// the last attempt worked).
+	keyEvidenceLocal = "evidence.local_error"
 	// keyEvidenceCursor is "<device id> <day>": every day up to and
 	// including <day> has been sealed or found empty for that device.
 	keyEvidenceCursor = "evidence.cursor"
@@ -55,6 +61,10 @@ type MinutesStatus struct {
 	LastErrorAt  time.Time `json:"last_error_at,omitzero"`
 	// Paused, when non-empty, says why nothing is uploaded.
 	Paused string `json:"paused,omitempty"`
+	// Refused, when non-empty, says why minute uploads are on hold: the
+	// server refused a batch as a whole (not for its size). Minutes are
+	// kept and retried later.
+	Refused string `json:"refused,omitempty"`
 	// NextAttempt is when a backing-off uploader tries again (live only).
 	NextAttempt time.Time `json:"next_attempt,omitzero"`
 	// Waiting counts minutes not yet accepted by the server.
@@ -73,6 +83,9 @@ type EvidenceStatus struct {
 	// either until fixed.
 	State string `json:"state,omitempty"`
 	Error string `json:"error,omitempty"`
+	// LocalError is the last local failure sealing a day (reading the
+	// database, hashing); sealing is retried every run.
+	LocalError string `json:"local_error,omitempty"`
 }
 
 // StateReader reads persisted key-value state. *localdb.DB satisfies it.
@@ -98,6 +111,7 @@ func LoadStatus(ctx context.Context, r StateReader) (Status, error) {
 	s.Minutes = MinutesStatus{
 		LastComputed: parseTime(m[keyLastComputed]), LastSuccess: parseTime(m[keyLastSuccess]),
 		LastError: m[keyLastError], LastErrorAt: parseTime(m[keyLastErrorAt]), Paused: m[keyPaused],
+		Refused: m[keyRefused],
 	}
 	for _, c := range []struct {
 		key string
@@ -118,6 +132,7 @@ func LoadStatus(ctx context.Context, r StateReader) (Status, error) {
 		s.Evidence = EvidenceStatus{LastDay: ev[keyEvidenceDay], ChainHash: ev[keyEvidenceHash],
 			State: ev[keyEvidenceState], Error: ev[keyEvidenceError]}
 	}
+	s.Evidence.LocalError = ev[keyEvidenceLocal]
 	return s, nil
 }
 

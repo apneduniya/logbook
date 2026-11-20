@@ -112,13 +112,41 @@ func LoadOrCreate(path string) (k *Key, created bool, err error) {
 	return k, false, err
 }
 
-// Retire renames the key at path to path.retired-<unix seconds>, so the next
-// LoadOrCreate makes a new one. The old key is kept, not deleted: it signed
-// evidence the server still holds.
+// maxRetiredNames bounds the search for a free retired-key name.
+const maxRetiredNames = 1000
+
+// Retire renames the key at path to path.retired-<unix seconds>[-n], so the
+// next LoadOrCreate makes a new one. The old key is kept, not deleted: it
+// signed evidence the server still holds. The name is reserved with an
+// exclusive create first, so a rename never replaces an earlier retired key
+// (os.Rename overwrites on every platform).
 func Retire(path string, now time.Time) error {
-	dst := path + ".retired-" + strconv.FormatInt(now.Unix(), 10)
-	if err := os.Rename(path, dst); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("retiring device key: %w", err)
+	if _, err := os.Stat(path); errors.Is(err, fs.ErrNotExist) {
+		return nil
 	}
-	return nil
+	base := path + ".retired-" + strconv.FormatInt(now.Unix(), 10)
+	for n := range maxRetiredNames {
+		dst := base
+		if n > 0 {
+			dst += "-" + strconv.Itoa(n)
+		}
+		f, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) //nolint:gosec // path is built from the agent's data dir
+		if errors.Is(err, fs.ErrExist) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("reserving retired key name: %w", err)
+		}
+		if err := f.Close(); err != nil {
+			return fmt.Errorf("reserving retired key name: %w", err)
+		}
+		if err := os.Rename(path, dst); err != nil {
+			// The placeholder is empty and ours; the rename error is the one
+			// that matters.
+			_ = os.Remove(dst)
+			return fmt.Errorf("retiring device key: %w", err)
+		}
+		return nil
+	}
+	return fmt.Errorf("retiring device key: no free name after %d tries", maxRetiredNames)
 }

@@ -13,9 +13,12 @@ import (
 const maxLoggedRejections = 5
 
 // uploadMinutes sends every stored minute whose current content the server
-// doesn't have, in batches. Per-item rejections are logged, counted and
-// never retried (unless the minute changes). A batch the server refuses as
-// a whole is split, down to single minutes, which are then rejected.
+// doesn't have, in batches of whole minutes (all projects of a minute go in
+// one request, so the server can apply decreases before increases under its
+// 60-second cap). Per-item rejections are logged, counted and never retried
+// (unless the minute changes). A batch refused for its size is split, down
+// to single minutes, which are then rejected; a batch refused as a whole
+// for any other reason returns a *refusedError and nothing is marked sent.
 func (r *Runner) uploadMinutes(ctx context.Context, t serverapi.Target, dev devicekey.Device, now time.Time) error {
 	final := finalBefore(now)
 	for range maxBatchesPerRun {
@@ -29,13 +32,16 @@ func (r *Runner) uploadMinutes(ctx context.Context, t serverapi.Target, dev devi
 		}
 		rows = sameRules(rows)
 		res, err := r.opt.Server.UploadMinutes(ctx, t, dev.ID, minutesRequest(rows))
-		if serverapi.KindOf(err) == serverapi.KindInvalid {
-			if len(rows) > 1 {
-				r.shrink(len(rows))
-				r.opt.Logger.WarnContext(ctx, "server refused a minutes batch; splitting it", "size", len(rows), "err", err)
-				continue
-			}
-			res, err = serverapi.MinutesResult{Rejected: []serverapi.ItemError{{Index: 0, Error: err.Error()}}}, nil
+		switch {
+		case serverapi.IsTooLarge(err) && size > 1:
+			r.shrink(len(rows))
+			r.opt.Logger.WarnContext(ctx, "server refused a minutes batch as too large; splitting it", "size", len(rows), "err", err)
+			continue
+		case serverapi.IsTooLarge(err):
+			// Even a single minute is too large: it can never be sent.
+			res, err = rejectAll(len(rows), err), nil
+		case serverapi.KindOf(err) == serverapi.KindInvalid:
+			return &refusedError{err: err}
 		}
 		if err != nil {
 			return err
@@ -44,11 +50,17 @@ func (r *Runner) uploadMinutes(ctx context.Context, t serverapi.Target, dev devi
 			return err
 		}
 		r.countRejections(ctx, rows, res.Rejected)
-		if len(rows) < size {
-			return nil
-		}
 	}
 	return nil
+}
+
+// rejectAll is a result rejecting all n minutes with err.
+func rejectAll(n int, err error) serverapi.MinutesResult {
+	res := serverapi.MinutesResult{Rejected: make([]serverapi.ItemError, n)}
+	for i := range res.Rejected {
+		res.Rejected[i] = serverapi.ItemError{Index: i, Error: err.Error()}
+	}
+	return res
 }
 
 // sameRules keeps the leading rows that share the first row's rules version,

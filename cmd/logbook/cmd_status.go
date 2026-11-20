@@ -157,6 +157,9 @@ func printCrediting(p func(string, ...any), c crediting.Status) {
 	if c.Minutes.LastError != "" {
 		p("            last error: %s", c.Minutes.LastError)
 	}
+	if c.Minutes.Refused != "" {
+		p("            on hold: %s", c.Minutes.Refused)
+	}
 	if c.Minutes.Rejected > 0 {
 		p("            %d minutes rejected by the server", c.Minutes.Rejected)
 	}
@@ -167,6 +170,9 @@ func printCrediting(p func(string, ...any), c crediting.Status) {
 		p("Evidence:   signed through %s", c.Evidence.LastDay)
 	default:
 		p("Evidence:   no day sealed yet")
+	}
+	if c.Evidence.LocalError != "" {
+		p("            sealing failed (retrying): %s", c.Evidence.LocalError)
 	}
 }
 
