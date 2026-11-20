@@ -1,6 +1,6 @@
 # 0003: SvelteKit static UI embedded in the server binary
 
-- Status: accepted
+- Status: accepted; hosting superseded by 0011 (UI on Vercel, API on its own origin)
 - Date: 2026-11-20
 
 ## Context
