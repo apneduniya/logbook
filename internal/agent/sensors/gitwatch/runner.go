@@ -30,7 +30,8 @@ type ExecRunner struct {
 	Timeout time.Duration
 }
 
-// hardening is passed before every git subcommand.
+// hardening is passed before every git subcommand. The git diff call adds
+// -c options that turn off the repo's filter drivers (see repoConfig).
 var hardening = []string{
 	"--no-pager",
 	"-c", "core.fsmonitor=false", // never start or query a filesystem monitor
@@ -55,13 +56,28 @@ func (r ExecRunner) Git(ctx context.Context, dir string, args ...string) ([]byte
 	err := cmd.Run()
 	switch {
 	case ctx.Err() != nil:
-		return nil, fmt.Errorf("git %s: timed out after %v: %w", args[0], r.Timeout, ctx.Err())
+		return nil, fmt.Errorf("git %s: timed out after %v: %w", subcommand(args), r.Timeout, ctx.Err())
 	case stdout.overflow:
-		return nil, fmt.Errorf("git %s: %w", args[0], ErrOutputTooLarge)
+		return nil, fmt.Errorf("git %s: %w", subcommand(args), ErrOutputTooLarge)
 	case err != nil:
-		return nil, fmt.Errorf("git %s: %w: %s", args[0], err, firstLine(stderr.String()))
+		return nil, fmt.Errorf("git %s: %w: %s", subcommand(args), err, firstLine(stderr.String()))
 	}
 	return stdout.Bytes(), nil
+}
+
+// subcommand returns the git subcommand in args, skipping leading global
+// options such as "-c key=value" (which may hold config values, so they are
+// never put in errors or logs).
+func subcommand(args []string) string {
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "-c":
+			i++
+		case !strings.HasPrefix(args[i], "-"):
+			return args[i]
+		}
+	}
+	return "?"
 }
 
 // gitEnv returns env with the variables that make git safe and predictable

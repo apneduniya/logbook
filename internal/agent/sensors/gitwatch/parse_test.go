@@ -29,24 +29,26 @@ func TestParseShortstat(t *testing.T) {
 func TestParseLog(t *testing.T) {
 	h1 := strings.Repeat("a", 40)
 	h2 := strings.Repeat("b", 64) // SHA-256 repository
-	out := recordSep + h1 + fieldSep + "1795000000" + fieldSep + "me@example.com\n\n" +
+	p1, p2 := strings.Repeat("1", 40), strings.Repeat("2", 40)
+	out := recordSep + h1 + fieldSep + "1795000000" + fieldSep + "me@example.com" + fieldSep + p1 + " " + p2 + "\n\n" +
 		" 2 files changed, 5 insertions(+), 1 deletion(-)\n" +
-		recordSep + h2 + fieldSep + "1794999000" + fieldSep + "Other@Example.com\n" // empty commit: no stat line
+		recordSep + h2 + fieldSep + "1794999000" + fieldSep + "Other@Example.com" + fieldSep + "\n" // root, empty: no stat line
 	got, err := parseLog([]byte(out))
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := []commit{
-		{h1, time.Unix(1795000000, 0).UTC(), "me@example.com", diffStat{2, 5, 1}},
-		{h2, time.Unix(1794999000, 0).UTC(), "Other@Example.com", diffStat{}},
+		{h1, time.Unix(1795000000, 0).UTC(), "me@example.com", false, diffStat{2, 5, 1}},
+		{h2, time.Unix(1794999000, 0).UTC(), "Other@Example.com", true, diffStat{}},
 	}
 	if !slices.Equal(got, want) {
 		t.Fatalf("parseLog = %+v\nwant %+v", got, want)
 	}
 
 	for _, bad := range []string{
-		recordSep + "nothex" + fieldSep + "1" + fieldSep + "x\n",
-		recordSep + h1 + fieldSep + "notatime" + fieldSep + "x\n",
+		recordSep + "nothex" + fieldSep + "1" + fieldSep + "x" + fieldSep + "\n",
+		recordSep + h1 + fieldSep + "notatime" + fieldSep + "x" + fieldSep + "\n",
+		recordSep + h1 + fieldSep + "1" + fieldSep + "x\n", // old three-field format
 		recordSep + h1 + fieldSep + "1\n",
 	} {
 		if _, err := parseLog([]byte(bad)); err == nil {
@@ -55,6 +57,58 @@ func TestParseLog(t *testing.T) {
 	}
 	if got, err := parseLog(nil); err != nil || len(got) != 0 {
 		t.Errorf("parseLog(empty) = %v, %v", got, err)
+	}
+}
+
+func TestParseConfig(t *testing.T) {
+	tests := []struct {
+		name    string
+		in      string
+		email   string
+		filters []string
+		bad     bool
+	}{
+		{"empty", "", "", nil, false},
+		{"email only", "user.email\nme@example.com\x00", "me@example.com", nil, false},
+		{"last email wins", "user.email\nold@x.org\x00user.email\nme@x.org\x00", "me@x.org", nil, false},
+		{"lfs and a custom filter, values ignored", "user.email\nme@x.org\x00filter.lfs.clean\ngit-lfs clean -- %f\x00" +
+			"filter.lfs.process\ngit-lfs filter-process\x00filter.lfs.required\ntrue\x00filter.My.Tool.clean\nevil\nmultiline\x00",
+			"me@x.org", []string{"lfs", "My.Tool"}, false},
+		{"filter variable without driver", "filter.clean\nx\x00", "", nil, false},
+		{"name that can't be overridden", "filter.a=b.clean\nx\x00", "", nil, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseConfig([]byte(tt.in))
+			if (err != nil) != tt.bad {
+				t.Fatalf("err = %v", err)
+			}
+			if got.email != tt.email || !slices.Equal(got.filters, tt.filters) {
+				t.Fatalf("parseConfig = %+v", got)
+			}
+		})
+	}
+	cfg := repoConfigOut{filters: []string{"lfs"}}
+	want := []string{"-c", "filter.lfs.clean=", "-c", "filter.lfs.smudge=", "-c", "filter.lfs.process=", "-c", "filter.lfs.required=false"}
+	if got := cfg.filterOverrides(); !slices.Equal(got, want) {
+		t.Fatalf("filterOverrides = %v", got)
+	}
+}
+
+func TestSubcommand(t *testing.T) {
+	tests := []struct {
+		args []string
+		want string
+	}{
+		{[]string{"log", "HEAD"}, "log"},
+		{[]string{"-c", "filter.x.clean=", "diff", "--shortstat"}, "diff"},
+		{[]string{"--no-pager", "status"}, "status"},
+		{[]string{"-c"}, "?"},
+	}
+	for _, tt := range tests {
+		if got := subcommand(tt.args); got != tt.want {
+			t.Errorf("subcommand(%v) = %q, want %q", tt.args, got, tt.want)
+		}
 	}
 }
 

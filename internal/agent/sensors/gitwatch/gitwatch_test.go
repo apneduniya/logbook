@@ -215,10 +215,23 @@ func TestEdgeCaseRepos(t *testing.T) {
 		}
 		git(t, t.TempDir(), nil, "clone", "-q", "--depth", "1", "file://"+u, dst)
 		git(t, dst, nil, "config", "user.email", me)
+		git(t, dst, nil, "config", "user.name", "Me")
 		sink := &fakeSink{}
-		newWatcher(staticRepos(Repo{Path: dst, Project: "shallow"}), mustRunner(t)).Poll(t.Context(), sink)
-		if kinds(sink.events) != "commit,worktree" {
+		w := newWatcher(staticRepos(Repo{Path: dst, Project: "shallow"}), mustRunner(t))
+		w.Poll(t.Context(), sink)
+		// The boundary commit has no parents in the clone, so git would
+		// report the whole tree (a.txt and b.txt) as its diff. It came
+		// from the fetch, not from work here: skipped, not recorded.
+		if kinds(sink.events) != "worktree" {
 			t.Fatalf("events = %+v", sink.events)
+		}
+		// Work done in the clone is recorded with its own stats.
+		sink.take()
+		h := commitFile(t, dst, "c.txt", "c1\nc2\nc3\n")
+		w.Poll(t.Context(), sink)
+		ev := sink.take()
+		if kinds(ev) != "commit" || ev[0].CommitHash != h || ev[0].FilesChanged != 1 || ev[0].Insertions != 3 {
+			t.Fatalf("commit in shallow clone = %+v", ev)
 		}
 	})
 
@@ -229,6 +242,16 @@ func TestEdgeCaseRepos(t *testing.T) {
 		sink := &fakeSink{}
 		newWatcher(staticRepos(Repo{Path: dir, Project: "anon"}), mustRunner(t)).Poll(t.Context(), sink)
 		if kinds(sink.events) != "worktree" {
+			t.Fatalf("events = %+v", sink.events)
+		}
+	})
+
+	t.Run("root commit of a full repo is recorded", func(t *testing.T) {
+		dir := newRepo(t)
+		h := commitFile(t, dir, "a.txt", "a\nb\n")
+		sink := &fakeSink{}
+		newWatcher(staticRepos(Repo{Path: dir, Project: "root"}), mustRunner(t)).Poll(t.Context(), sink)
+		if kinds(sink.events) != "commit,worktree" || sink.events[0].CommitHash != h || sink.events[0].Insertions != 2 {
 			t.Fatalf("events = %+v", sink.events)
 		}
 	})
@@ -343,8 +366,9 @@ func (e exitErr) Error() string { return "exit status " + strconv.Itoa(int(e)) }
 func (e exitErr) ExitCode() int { return int(e) }
 
 func (f *fakeRunner) Git(_ context.Context, _ string, args ...string) ([]byte, error) {
-	f.calls = append(f.calls, args[0])
-	a := f.answers[args[0]]
+	sub := subcommand(args)
+	f.calls = append(f.calls, sub)
+	a := f.answers[sub]
 	return []byte(a.out), a.err
 }
 
@@ -353,9 +377,9 @@ func TestFailedPollRetriesFully(t *testing.T) {
 	now := time.Now()
 	r := &fakeRunner{answers: map[string]fakeAnswer{
 		"rev-parse": {out: h + "\n"},
-		"config":    {out: me + "\n"},
-		"log": {out: recordSep + h + fieldSep + strconv.FormatInt(now.Unix(), 10) + fieldSep + me + "\n\n" +
-			" 1 file changed, 3 insertions(+)\n"},
+		"config":    {out: "user.email\n" + me + "\x00"},
+		"log": {out: recordSep + h + fieldSep + strconv.FormatInt(now.Unix(), 10) + fieldSep + me + fieldSep +
+			strings.Repeat("d", 40) + "\n\n 1 file changed, 3 insertions(+)\n"},
 		"diff": {err: errors.New("index locked")},
 	}}
 	clock := now
