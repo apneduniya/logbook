@@ -9,7 +9,7 @@ Code: `internal/agent/harness/` (one package per harness, plus shared packages) 
 1. `logbook install` calls `harness.All()`. For each harness whose `Detect()` is true, it calls `Install(<absolute path of logbook>)`. Each installer merges Logbook's hook entries into the harness's **user-level** config file. Project files are never touched.
 2. When the AI tool fires a hook, it runs `<logbook> hook <harness> <event>` with a JSON payload on stdin.
 3. The hook command:
-   - reads stdin, keeping at most 1 MiB and discarding the rest (up to 64 MiB, so the tool's write doesn't fail). It waits at most 1 s for stdin to close; on timeout, or when the payload is over 1 MiB, it still uses the top-level scalar fields from the part it read (ids come first in every payload);
+   - reads stdin, keeping at most 1 MiB and discarding the rest (up to 64 MiB, so the tool's write doesn't fail). It waits at most 1 s for stdin to close; on timeout, or when the payload is over 1 MiB, it still uses the top-level scalar fields from the part it read (ids come first in every payload). A prompt cut off by the cap (a giant paste) still reports `PromptChars`: the runes read before the cut, a lower bound of roughly 0.25 to 1 million characters;
    - prints the response the tool's hook protocol requires (see each harness), and nothing else to stdout or stderr;
    - maps the payload to zero, one or two `wire.AIEvent`s (`Time` = now, `SessionID`, `Cwd`, `Project`, `Model`, `Tool` name, `PromptChars`, `Decision`);
    - POSTs them as a JSON array of `wire.LocalEvent` to `http://<local_addr>/local/v1/events` with `X-Logbook-Token`, with a 300 ms timeout and no proxy;

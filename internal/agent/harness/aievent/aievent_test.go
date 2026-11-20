@@ -115,12 +115,57 @@ func TestReadInputTimeout(t *testing.T) {
 func TestSalvage(t *testing.T) {
 	prefix := `{"session_id":"s1","n":3,"ok":true,"nested":{"a":[1,{"b":2}]},"cwd":"/w","tool_response":"cut her`
 	got := string(Salvage([]byte(prefix)))
-	want := `{"cwd":"/w","n":3,"ok":true,"session_id":"s1"}`
+	want := `{"cwd":"/w","n":3,"ok":true,"session_id":"s1","tool_response":7}`
 	if got != want {
 		t.Fatalf("Salvage = %s, want %s", got, want)
 	}
 	if string(Salvage([]byte(`[1,2`))) != "{}" || string(Salvage(nil)) != "{}" {
 		t.Fatal("non-object prefix should salvage to {}")
+	}
+}
+
+// A prompt cut off by the payload cap still reports the length read so far,
+// and none of its text.
+func TestSalvageCutPrompt(t *testing.T) {
+	tests := []struct {
+		name   string
+		prefix string
+		want   int
+	}{
+		{"ascii", `{"session_id":"s1","prompt":"abcdef`, 6},
+		{"spaces around colon", `{"session_id":"s1", "prompt" :  "abc`, 3},
+		{"escapes count once", `{"session_id":"s1","prompt":"a\n\"éb`, 5},
+		{"cut inside escape", `{"session_id":"s1","prompt":"ab\u00`, 2},
+		{"cut inside multibyte rune", "{\"session_id\":\"s1\",\"prompt\":\"h\xc3\xa9\xe2\x82", 2},
+		{"nested value cut", `{"session_id":"s1","prompt":{"text":"abc`, 0},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var p struct {
+				SessionID string  `json:"session_id"`
+				Prompt    TextLen `json:"prompt"`
+			}
+			if err := Decode(Input{Data: []byte(tc.prefix), Truncated: true}, &p); err != nil {
+				t.Fatal(err)
+			}
+			if p.SessionID != "s1" || int(p.Prompt) != tc.want {
+				t.Fatalf("decoded %+v, want prompt %d", p, tc.want)
+			}
+			if s := string(Salvage([]byte(tc.prefix))); strings.Contains(s, "abc") {
+				t.Fatalf("salvage kept text: %s", s)
+			}
+		})
+	}
+	big := `{"session_id":"s1","prompt":"` + strings.Repeat("é", MaxPayload) // over the cap
+	in := ReadInput(context.Background(), strings.NewReader(big))
+	var p struct {
+		Prompt TextLen `json:"prompt"`
+	}
+	if err := Decode(in, &p); err != nil {
+		t.Fatal(err)
+	}
+	if !in.Truncated || p.Prompt < (MaxPayload-64)/2 {
+		t.Fatalf("Truncated=%v prompt=%d, want a lower bound near %d", in.Truncated, p.Prompt, MaxPayload/2)
 	}
 }
 

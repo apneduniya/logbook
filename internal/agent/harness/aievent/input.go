@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"unicode/utf8"
 )
 
 // MaxPayload is the most stdin a hook command keeps in memory. Harness
@@ -80,10 +81,12 @@ func ReadInput(ctx context.Context, r io.Reader) Input {
 
 // Salvage pulls the top-level string, number and boolean fields out of the
 // start of a JSON object that was cut off, and re-encodes them as a small
-// complete object. Nested values and the field that was cut are skipped, so
-// a parser can still find ids like session_id even when a huge prompt or tool
-// output made the payload too big to read whole. The parser's payload struct
-// decides which of the salvaged fields are kept.
+// complete object. Nested values are skipped, so a parser can still find ids
+// like session_id even when a huge prompt or tool output made the payload too
+// big to read whole. A string cut off mid-value becomes the number of runes
+// read before the cut (a lower bound on its length), which TextLen accepts,
+// so a giant pasted prompt still reports a length; its text is dropped. The
+// parser's payload struct decides which of the salvaged fields are kept.
 func Salvage(prefix []byte) []byte {
 	dec := json.NewDecoder(bytes.NewReader(prefix))
 	dec.UseNumber()
@@ -100,7 +103,11 @@ func Salvage(prefix []byte) []byte {
 		if !ok {
 			break
 		}
+		valueAt := dec.InputOffset()
 		if !skipOrTake(dec, key, out) {
+			if n, ok := cutStringRunes(prefix[valueAt:]); ok {
+				out[key] = n
+			}
 			break
 		}
 	}
@@ -109,6 +116,44 @@ func Salvage(prefix []byte) []byte {
 		return []byte("{}")
 	}
 	return b
+}
+
+// cutStringRunes counts the runes of a JSON string value that was cut off.
+// rest starts right after the member's key: optional whitespace, ':', then
+// the value. An escape sequence counts as one rune; a rune split by the cut
+// isn't counted. ok is false when the value isn't a string.
+func cutStringRunes(rest []byte) (n int, ok bool) {
+	rest = bytes.TrimLeft(rest, " \t\r\n")
+	if len(rest) == 0 || rest[0] != ':' {
+		return 0, false
+	}
+	rest = bytes.TrimLeft(rest[1:], " \t\r\n")
+	if len(rest) == 0 || rest[0] != '"' {
+		return 0, false
+	}
+	for i := 1; i < len(rest); n++ {
+		switch c := rest[i]; {
+		case c == '"':
+			return n, true // not cut after all; Token failed for another reason
+		case c == '\\' && i+1 < len(rest) && rest[i+1] == 'u':
+			if i+6 > len(rest) {
+				return n, true
+			}
+			i += 6
+		case c == '\\':
+			if i+2 > len(rest) {
+				return n, true
+			}
+			i += 2
+		default:
+			r, size := utf8.DecodeRune(rest[i:])
+			if r == utf8.RuneError && size <= 1 && !utf8.FullRune(rest[i:]) {
+				return n, true // a multi-byte rune split by the cut
+			}
+			i += size
+		}
+	}
+	return n, true
 }
 
 // skipOrTake reads one value, storing it in out if it is a scalar. It
@@ -169,16 +214,22 @@ func Decode(in Input, v any) error {
 }
 
 // TextLen decodes a JSON string as its length in runes, so a parser can learn
-// how long a prompt was without keeping its text. Non-strings decode as 0.
+// how long a prompt was without keeping its text. A non-negative integer is
+// taken as an already-counted length (Salvage writes one for a string cut
+// off by the payload cap). Anything else decodes as 0.
 type TextLen int
 
 // UnmarshalJSON implements json.Unmarshaler.
 func (t *TextLen) UnmarshalJSON(b []byte) error {
+	*t = 0
 	var s string
-	if json.Unmarshal(b, &s) != nil {
-		*t = 0
+	if json.Unmarshal(b, &s) == nil {
+		*t = TextLen(Runes(s))
 		return nil
 	}
-	*t = TextLen(Runes(s))
+	var n int
+	if json.Unmarshal(b, &n) == nil && n > 0 {
+		*t = TextLen(n)
+	}
 	return nil
 }
