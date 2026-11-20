@@ -84,7 +84,7 @@ func ReadInput(ctx context.Context, r io.Reader) Input {
 // complete object. Nested values are skipped, so a parser can still find ids
 // like session_id even when a huge prompt or tool output made the payload too
 // big to read whole. A string cut off mid-value becomes the number of runes
-// read before the cut (a lower bound on its length), which TextLen accepts,
+// read before the cut (a lower bound on its length), which TextLen and Prompt accept,
 // so a giant pasted prompt still reports a length; its text is dropped. The
 // parser's payload struct decides which of the salvaged fields are kept.
 func Salvage(prefix []byte) []byte {

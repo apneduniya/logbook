@@ -4,6 +4,9 @@
 // the hook's stdin with a size cap and a time limit, and salvages the small
 // top-level fields of a payload too big to read whole.
 //
-// Parsers hand it metadata only. Nothing here ever sees prompt text or tool
-// input or output except as a length (ADR 0009).
+// Parsers hand it metadata only. Prompt text is seen only inside
+// Prompt.UnmarshalJSON, which keeps the prompt's length and the SHA-256 of
+// its normalised form (NormalizePrompt) and drops the text; the hook then
+// keys that digest into wire.AIEvent.PromptHash (PromptDigest.Keyed). Tool
+// input and output are never read (ADR 0009).
 package aievent

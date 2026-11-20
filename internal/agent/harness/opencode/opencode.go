@@ -132,14 +132,16 @@ func (in *Installer) read() (path string, data []byte, existed bool, err error) 
 }
 
 // payload is the metadata the plugin sends. It never contains prompt text,
-// tool arguments or output; the plugin computes prompt_chars itself.
+// tool arguments or output; the plugin computes prompt_chars and
+// prompt_sha256 (aievent.DigestPrompt, in JavaScript) itself.
 type payload struct {
-	SessionID   string `json:"session_id"`
-	Cwd         string `json:"cwd"`
-	Model       string `json:"model"`
-	Tool        string `json:"tool"`
-	PromptChars int    `json:"prompt_chars"`
-	Decision    string `json:"decision"`
+	SessionID    string `json:"session_id"`
+	Cwd          string `json:"cwd"`
+	Model        string `json:"model"`
+	Tool         string `json:"tool"`
+	PromptChars  int    `json:"prompt_chars"`
+	PromptSHA256 string `json:"prompt_sha256"`
+	Decision     string `json:"decision"`
 }
 
 // Parse maps the plugin's payload to AI event fields, or nil for an unknown
@@ -161,6 +163,7 @@ func Parse(event string, in aievent.Input, _ func(string) string) []aievent.Fiel
 		if p.PromptChars > 0 {
 			f.PromptChars = p.PromptChars
 		}
+		f.PromptDigest = aievent.ParsePromptDigest(p.PromptSHA256)
 	case wire.AIPermissionAsk:
 		if event == "permission-reply" {
 			f.Decision = p.Decision

@@ -103,7 +103,7 @@ func (in *Installer) Install(binPath string) error {
 	if err != nil {
 		return fmt.Errorf("%s: %w", in.spec.Harness, err)
 	}
-	if err := backupOnce(dir, in.spec.Harness, path, original, existed); err != nil {
+	if err := BackupOnce(dir, in.spec.Harness, path, original, existed); err != nil {
 		return fmt.Errorf("%s: %w", in.spec.Harness, err)
 	}
 	return in.save(path, original, doc, mode)
@@ -203,7 +203,7 @@ func (in *Installer) load() (path string, doc *jsonedit.Object, original []byte,
 	if err != nil {
 		return "", nil, nil, false, 0, fmt.Errorf("%s: finding config: %w", in.spec.Harness, err)
 	}
-	path, err = resolve(p)
+	path, err = Resolve(p)
 	if err != nil {
 		return "", nil, nil, false, 0, fmt.Errorf("%s: %w", in.spec.Harness, err)
 	}

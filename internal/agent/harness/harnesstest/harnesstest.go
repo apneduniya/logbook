@@ -126,7 +126,7 @@ func JSONInstallRoundTrip(t *testing.T, newInstaller func(hostenv.Env) Installer
 			if ok, err := in.Installed(); err != nil || !ok {
 				t.Fatalf("Installed() after install = %v, %v; want true, nil", ok, err)
 			}
-			backupsAfterFirst := listDir(t, backups)
+			backupsAfterFirst := listBackups(t, backups)
 			if len(backupsAfterFirst) != 1 {
 				t.Fatalf("backups after first install = %v, want exactly one", backupsAfterFirst)
 			}
@@ -143,7 +143,7 @@ func JSONInstallRoundTrip(t *testing.T, newInstaller func(hostenv.Env) Installer
 			if again := ReadFile(t, path); !bytes.Equal(again, first) {
 				t.Fatalf("re-install changed the file:\n%s", again)
 			}
-			if got := listDir(t, backups); !reflect.DeepEqual(got, backupsAfterFirst) {
+			if got := listBackups(t, backups); !reflect.DeepEqual(got, backupsAfterFirst) {
 				t.Fatalf("re-install changed backups: %v", got)
 			}
 
@@ -278,7 +278,8 @@ func readMaybe(t *testing.T, path string) ([]byte, bool) {
 	return b, true
 }
 
-func listDir(t *testing.T, dir string) []string {
+// listBackups lists the backup files in dir.
+func listBackups(t *testing.T, dir string) []string {
 	t.Helper()
 	entries, err := os.ReadDir(dir)
 	if os.IsNotExist(err) {
@@ -289,7 +290,12 @@ func listDir(t *testing.T, dir string) []string {
 	}
 	names := make([]string, 0, len(entries))
 	for _, e := range entries {
-		names = append(names, e.Name())
+		// Only copies of original files and "no original" markers are
+		// backups; installers may keep other records here (Claude Code's
+		// telemetry ownership file).
+		if n := e.Name(); strings.HasSuffix(n, ".orig") || strings.HasSuffix(n, ".absent") {
+			names = append(names, n)
+		}
 	}
 	return names
 }

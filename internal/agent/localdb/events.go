@@ -74,7 +74,7 @@ func (d *DB) RecordGit(ctx context.Context, g wire.GitEvent) error {
 
 func insertAI(ctx context.Context, tx *sql.Tx, e wire.AIEvent) error {
 	_, err := tx.ExecContext(ctx, qAIInsert, e.Time.UnixMilli(), string(e.Harness), string(e.Kind),
-		e.SessionID, e.Project, e.Cwd, e.Model, e.Tool, e.PromptChars, e.Decision)
+		e.SessionID, e.Project, e.Cwd, e.Model, e.Tool, e.PromptChars, e.Decision, e.PromptHash)
 	return err
 }
 

@@ -40,7 +40,9 @@ const ctx = {
 const cleanup = await plugin.setup(ctx)
 await new Promise((r) => setTimeout(r, 50))
 hooks["session.prompt"]({ sessionID: "ses_v2", prompt: { text: "héllo " + S, files: [{ uri: "file:///" + S }] } })
-hooks["session.prompt"]({ sessionID: "ses_resumed", prompt: { text: "ok" } })
+// White space and case variants Go's NormalizePrompt folds (NBSP, ideographic
+// space, dotted capital I, final sigma) must digest the same in JavaScript.
+hooks["session.prompt"]({ sessionID: "ses_resumed", prompt: { text: " OK\u00a0\u0130stanbul\tΣΑΣ\u3000\r\n" } })
 hooks["tool.execute.before"]({ sessionID: "ses_v2", tool: "bash", input: { command: S } })
 hooks["tool.execute.after"]({ sessionID: "ses_v2", tool: "bash", input: { command: S }, status: "completed", result: S })
 finish()

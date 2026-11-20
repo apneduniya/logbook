@@ -1,7 +1,9 @@
 package claudecode
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 
 	"github.com/apneduniya/logbook/internal/agent/harness/aievent"
@@ -47,9 +49,16 @@ func SettingsPath(env hostenv.Env) (string, error) {
 	return filepath.Join(dir, "settings.json"), nil
 }
 
+// Installer installs Logbook's hooks into Claude Code's settings.json and
+// points its OpenTelemetry metrics exporter at the agent (telemetry.go).
+type Installer struct {
+	*hookfile.Installer
+	env hostenv.Env
+}
+
 // NewInstaller returns the Claude Code installer.
-func NewInstaller(env hostenv.Env) *hookfile.Installer {
-	return hookfile.New(hookfile.Spec{
+func NewInstaller(env hostenv.Env) *Installer {
+	return &Installer{env: env, Installer: hookfile.New(hookfile.Spec{
 		Harness: Name,
 		Path:    func() (string, error) { return SettingsPath(env) },
 		Layout:  hookfile.Nested,
@@ -60,8 +69,34 @@ func NewInstaller(env hostenv.Env) *hookfile.Installer {
 			return (err == nil && hostenv.Exists(dir)) || env.OnPath("claude")
 		},
 		BackupDir: env.BackupDir,
-	})
+	})}
 }
+
+// Install adds the hooks, then the telemetry env entries unless the user
+// has their own OpenTelemetry setup.
+func (in *Installer) Install(binPath string) error {
+	if err := in.Installer.Install(binPath); err != nil {
+		return err
+	}
+	// The Installer interface carries no context; the reads are local and
+	// the one subprocess (macOS plutil) has its own deadline.
+	if err := installTelemetry(context.Background(), in.env); err != nil {
+		return fmt.Errorf("%s: telemetry: %w", Name, err)
+	}
+	return nil
+}
+
+// Uninstall removes the telemetry entries Logbook added, then the hooks
+// (which deletes settings.json if Logbook created it and nothing is left).
+func (in *Installer) Uninstall() error {
+	if err := uninstallTelemetry(context.Background(), in.env); err != nil {
+		return fmt.Errorf("%s: telemetry: %w", Name, err)
+	}
+	return in.Installer.Uninstall()
+}
+
+// Notes says when telemetry was left alone, and why.
+func (in *Installer) Notes() []string { return telemetryNotes(context.Background(), in.env) }
 
 // handler is a command hook in exec form: Claude Code (v2.1.139+) spawns
 // the binary directly with args, so no shell quoting is involved on any OS.
@@ -89,12 +124,12 @@ func entries(binPath string) []hookfile.Entry {
 // prompt, tool_input, tool_response, last_assistant_message, transcript_path
 // and session_title, is never decoded into a field.
 type payload struct {
-	SessionID     string          `json:"session_id"`
-	Cwd           string          `json:"cwd"`
-	Model         string          `json:"model"`
-	ToolName      string          `json:"tool_name"`
-	Prompt        aievent.TextLen `json:"prompt"`
-	CursorVersion string          `json:"cursor_version"`
+	SessionID     string         `json:"session_id"`
+	Cwd           string         `json:"cwd"`
+	Model         string         `json:"model"`
+	ToolName      string         `json:"tool_name"`
+	Prompt        aievent.Prompt `json:"prompt"`
+	CursorVersion string         `json:"cursor_version"`
 }
 
 // Parse maps a hook payload to AI event fields. It returns nil for events
@@ -117,7 +152,7 @@ func Parse(event string, in aievent.Input, getenv func(string) string) []aievent
 	case wire.AIToolStart, wire.AIToolEnd, wire.AIPermissionAsk:
 		f.Tool = p.ToolName
 	case wire.AIPromptSubmit:
-		f.PromptChars = int(p.Prompt)
+		f.PromptChars, f.PromptDigest = p.Prompt.Len(), p.Prompt.Digest()
 	}
 	return []aievent.Fields{f}
 }

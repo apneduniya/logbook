@@ -15,6 +15,8 @@ import (
 	"github.com/apneduniya/logbook/internal/agent/config"
 	"github.com/apneduniya/logbook/internal/agent/localapi"
 	"github.com/apneduniya/logbook/internal/agent/localdb"
+	"github.com/apneduniya/logbook/internal/agent/localkey"
+	"github.com/apneduniya/logbook/internal/agent/otlp"
 	"github.com/apneduniya/logbook/internal/agent/status"
 	"github.com/apneduniya/logbook/internal/agent/statuspage"
 	"github.com/apneduniya/logbook/internal/agent/upload"
@@ -66,6 +68,10 @@ type Options struct {
 	RepoSensors []func(RepoSource) Sensor
 	// Harnesses report AI hook installation for the status page; nil shows "unknown".
 	Harnesses []status.Harness
+	// Jobs run at start and then on their own interval, each bounded by
+	// the housekeeping timeout (for example re-checking that Claude Code's
+	// telemetry still belongs to Logbook). A job logs its own outcome.
+	Jobs      []Job
 	Logger    *slog.Logger
 	Version   string
 	UserAgent string
@@ -75,6 +81,12 @@ type Options struct {
 	restartFloor   time.Duration
 	spoolGrace     time.Duration
 	settingsEvery  time.Duration
+}
+
+// Job is periodic work cmd/ wires into the daemon.
+type Job struct {
+	Every time.Duration
+	Run   func(ctx context.Context)
 }
 
 // Run runs the daemon until ctx is done, then shuts down gracefully:
@@ -142,9 +154,11 @@ func Run(ctx context.Context, o Options) error {
 		s.Hackatime.Worker.NextAttempt = workers[1].State().NextAttempt
 		return s, nil
 	}
+	activeTime := otlp.New(otlp.Options{Store: db, Token: otlpToken(set.Get), Logger: log})
 	api := localapi.New(localapi.Options{
 		Settings: set.Get, Store: db, Status: snapshot, Page: page, Client: client,
 		UserAgent: o.UserAgent, Logger: log, MirrorEnabled: upload.MirrorEnabled,
+		OTLP: activeTime.Handler(),
 		OnEnqueue: func() {
 			for _, w := range workers {
 				w.Kick()
@@ -178,6 +192,18 @@ func Run(ctx context.Context, o Options) error {
 		return every(gctx, spoolEvery, func(ctx context.Context) { drainSpool(ctx, log, spool) })
 	})
 	g.Go(func() error { return every(gctx, pruneEvery, func(ctx context.Context) { prune(ctx, log, db) }) })
+	g.Go(func() error {
+		return every(gctx, localdb.UptimeMarkEvery, func(ctx context.Context) { markReceiverUp(ctx, log, db, started) })
+	})
+	for _, j := range o.Jobs {
+		g.Go(func() error {
+			return every(gctx, j.Every, func(ctx context.Context) {
+				ctx, cancel := context.WithTimeout(ctx, housekeepingMax)
+				defer cancel()
+				j.Run(ctx)
+			})
+		})
+	}
 	for _, s := range sensors {
 		g.Go(func() error {
 			supervise(gctx, log, "sensor "+s.Name(), restartFloor, func(ctx context.Context) error { return s.Run(ctx, db) })
@@ -190,6 +216,30 @@ func Run(ctx context.Context, o Options) error {
 		return err
 	}
 	return nil
+}
+
+// otlpToken returns the token Claude Code's OTLP exporter must send, derived
+// from the current config's local token ("" without one, which refuses every
+// export).
+func otlpToken(cfg func() config.Config) func() string {
+	return func() string {
+		tok, err := localkey.OTLPToken(cfg().LocalToken)
+		if err != nil {
+			return ""
+		}
+		return tok
+	}
+}
+
+// markReceiverUp records that the OTLP receiver is running, so missing
+// Claude Code exports while the agent was stopped aren't read as zero
+// active time (localdb.ActiveTimes).
+func markReceiverUp(ctx context.Context, log *slog.Logger, db *localdb.DB, started time.Time) {
+	ctx, cancel := context.WithTimeout(ctx, housekeepingMax)
+	defer cancel()
+	if err := db.MarkReceiverUp(ctx, started, time.Now()); err != nil && ctx.Err() == nil {
+		log.WarnContext(ctx, "recording receiver uptime", "err", err)
+	}
 }
 
 func drainSpool(ctx context.Context, log *slog.Logger, s *Spool) {
@@ -214,7 +264,7 @@ func prune(ctx context.Context, log *slog.Logger, db *localdb.DB) {
 	}
 	if r != (localdb.PruneResult{}) {
 		log.InfoContext(ctx, "pruned old local events", "ai", r.AIEvents, "activity", r.ActivitySamples,
-			"git", r.GitEvents, "heartbeat_log", r.HeartbeatLog)
+			"git", r.GitEvents, "heartbeat_log", r.HeartbeatLog, "active_time", r.ActiveTime, "otlp_uptime", r.OTLPUptime)
 	}
 }
 

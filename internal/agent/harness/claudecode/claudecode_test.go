@@ -49,11 +49,38 @@ const sharedGroup = `{
 
 func newInstaller(env hostenv.Env) harnesstest.Installer { return NewInstaller(env) }
 
+// A user with env entries of their own (not telemetry).
+const userEnv = `{
+  "env": {"BASH_DEFAULT_TIMEOUT_MS": "120000", "DISABLE_AUTOUPDATER": "1"},
+  "model": "sonnet"
+}
+`
+
+// A user who exports Claude Code telemetry to their own collector.
+const userOTel = `{
+  "env": {
+    "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
+    "OTEL_METRICS_EXPORTER": "otlp",
+    "OTEL_EXPORTER_OTLP_ENDPOINT": "https://otel.example.com:4318",
+    "OTEL_EXPORTER_OTLP_HEADERS": "Authorization=Bearer user-secret"
+  }
+}
+`
+
+// The install round trip covers telemetry too: added to "env" on a fresh or
+// non-telemetry setup, left alone when the user has their own, unchanged by
+// a re-install, and removed exactly by uninstall.
 func TestInstallRoundTrip(t *testing.T) {
 	harnesstest.JSONInstallRoundTrip(t, newInstaller, SettingsPath, false, []harnesstest.InstallCase{
 		{Name: "missing"},
 		{Name: "empty_file", Existing: "\n"},
 		{Name: "existing", Existing: userSettings},
+		{Name: "existing_env", Existing: userEnv},
+		{Name: "user_otel", Existing: userOTel},
+		{Name: "otel_headers_helper", Existing: `{"otelHeadersHelper": "/usr/local/bin/otel-headers"}`},
+		{Name: "exporter_console", Existing: `{"env": {"OTEL_METRICS_EXPORTER": "console"}}`},
+		{Name: "telemetry_flag_only", Existing: `{"env": {"CLAUDE_CODE_ENABLE_TELEMETRY": "1"}}`},
+		{Name: "env_not_object", Existing: `{"env": "oops"}`},
 	})
 }
 

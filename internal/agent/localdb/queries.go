@@ -42,7 +42,7 @@ const (
 
 const (
 	qAIInsert = `INSERT INTO ai_events (time, harness, kind, session_id, project, cwd, model, tool,
-		prompt_chars, decision) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+		prompt_chars, decision, prompt_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	qActivityInsert = `INSERT INTO activity_samples (time, idle_seconds, focus_app, focus_kind)
 		VALUES (?, ?, ?, ?)`
 	qGitInsert = `INSERT OR IGNORE INTO git_events (time, project, kind, commit_hash, files_changed,
@@ -60,6 +60,40 @@ const (
 	qActivityTrim = `DELETE FROM activity_samples WHERE id <= (SELECT MAX(id) FROM activity_samples) - ?`
 	qGitTrim      = `DELETE FROM git_events WHERE id <= (SELECT MAX(id) FROM git_events) - ?`
 	qLogTrim      = `DELETE FROM heartbeat_log WHERE id <= (SELECT MAX(id) FROM heartbeat_log) - ?`
+)
+
+// Claude Code active time (migration 0003).
+const (
+	qActiveInsert = `INSERT OR IGNORE INTO active_time (from_ms, to_ms, session_id, type, secs, repository,
+		series_start, cumulative) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+	// qActiveLastCumulative is a cumulative series' latest stored point.
+	qActiveLastCumulative = `SELECT to_ms, cumulative FROM active_time
+		WHERE session_id = ? AND type = ? AND series_start = ? AND cumulative IS NOT NULL
+		ORDER BY to_ms DESC LIMIT 1`
+	// qActiveRange lists points overlapping [from, to); a zero-length point
+	// counts when it lies inside. Zero-second points (kept only to track
+	// cumulative series) are left out. Parameters: from, to, from.
+	qActiveRange = `SELECT from_ms, to_ms, session_id, type, secs FROM active_time
+		WHERE to_ms >= ? AND from_ms < ? AND (to_ms > ? OR to_ms = from_ms) AND secs > 0
+		ORDER BY from_ms, to_ms, session_id, type`
+	// qSessionCwd is the latest working directory Claude Code's hooks
+	// reported for a session before a time.
+	qSessionCwd = `SELECT cwd FROM ai_events
+		WHERE session_id = ? AND harness = 'claude-code' AND cwd <> '' AND time < ?
+		ORDER BY time DESC LIMIT 1`
+	qActivePrune = `DELETE FROM active_time WHERE to_ms < ?`
+	// qSessionSpan is the first and last Claude Code hook event of a session
+	// in [from, to) (NULLs when there is none).
+	qSessionSpan = `SELECT MIN(time), MAX(time) FROM ai_events
+		WHERE session_id = ? AND harness = 'claude-code' AND time >= ? AND time < ?`
+	// qUptimeMark records that the receiver run started at from_ms was up
+	// at to_ms.
+	qUptimeMark = `INSERT INTO otlp_uptime (from_ms, to_ms) VALUES (?, ?)
+		ON CONFLICT (from_ms) DO UPDATE SET to_ms = MAX(otlp_uptime.to_ms, excluded.to_ms)`
+	// qUptimeRange lists receiver runs overlapping [from, to].
+	qUptimeRange = `SELECT from_ms, to_ms FROM otlp_uptime WHERE to_ms >= ? AND from_ms <= ? ORDER BY from_ms, to_ms`
+	qUptimePrune = `DELETE FROM otlp_uptime WHERE to_ms < ?`
+	qActiveTrim  = `DELETE FROM active_time WHERE id <= (SELECT MAX(id) FROM active_time) - ?`
 )
 
 const (

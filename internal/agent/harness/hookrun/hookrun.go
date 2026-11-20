@@ -37,6 +37,11 @@ type Runner struct {
 	// Sender returns the sender to use; it is called only when there are
 	// events, so a hook that records nothing doesn't load config.
 	Sender func() (Sender, error)
+	// PromptKey returns the key prompt hashes are made with
+	// (localkey.PromptKey of the local token). It is called only for a
+	// prompt_submit that carries a prompt digest. With no key (nil func,
+	// error or empty key) the event is recorded without a PromptHash.
+	PromptKey func() ([]byte, error)
 	// Log reports problems (to the agent log, never stdout/stderr).
 	Log func(msg string, args ...any)
 }
@@ -80,6 +85,9 @@ func (r *Runner) events(h wire.Harness, p Parser, event string, in aievent.Input
 	out := make([]wire.LocalEvent, 0, len(fields))
 	for _, f := range fields {
 		ev := aievent.Build(h, f, now, r.Project)
+		if ev.Kind == wire.AIPromptSubmit && f.PromptDigest.IsSet() {
+			ev.PromptHash = aievent.PromptHash(f, r.promptKey())
+		}
 		if err := ev.Validate(); err != nil {
 			r.Log("skipping invalid hook event", "harness", string(h), "event", event, "err", err)
 			continue
@@ -87,4 +95,17 @@ func (r *Runner) events(h wire.Harness, p Parser, event string, in aievent.Input
 		out = append(out, wire.LocalEvent{Type: "ai", AI: &ev})
 	}
 	return out
+}
+
+// promptKey returns the prompt key, or nil (logged) when there is none.
+func (r *Runner) promptKey() []byte {
+	if r.PromptKey == nil {
+		return nil
+	}
+	k, err := r.PromptKey()
+	if err != nil {
+		r.Log("prompt hash skipped", "err", err)
+		return nil
+	}
+	return k
 }

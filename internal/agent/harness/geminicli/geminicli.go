@@ -101,11 +101,11 @@ func entries(sh cmdline.Shell, binPath string) []hookfile.Entry {
 // length; tool_input, tool_response, prompt_response, message, details and
 // transcript_path are never decoded.
 type payload struct {
-	SessionID        string          `json:"session_id"`
-	Cwd              string          `json:"cwd"`
-	ToolName         string          `json:"tool_name"`
-	Prompt           aievent.TextLen `json:"prompt"`
-	NotificationType string          `json:"notification_type"`
+	SessionID        string         `json:"session_id"`
+	Cwd              string         `json:"cwd"`
+	ToolName         string         `json:"tool_name"`
+	Prompt           aievent.Prompt `json:"prompt"`
+	NotificationType string         `json:"notification_type"`
 }
 
 // Parse maps a hook payload to AI event fields, or nil if Logbook doesn't
@@ -127,7 +127,7 @@ func Parse(event string, in aievent.Input, _ func(string) string) []aievent.Fiel
 	case wire.AIToolStart, wire.AIToolEnd:
 		f.Tool = p.ToolName
 	case wire.AIPromptSubmit:
-		f.PromptChars = int(p.Prompt)
+		f.PromptChars, f.PromptDigest = p.Prompt.Len(), p.Prompt.Digest()
 	}
 	return []aievent.Fields{f}
 }

@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 
 	"github.com/apneduniya/logbook/internal/agent/config"
 )
@@ -24,7 +25,28 @@ type Env struct {
 	LookPath func(string) (string, error)
 	// BackupDir returns the directory for config backups, creating it.
 	BackupDir func() (string, error)
+	// Agent returns the local agent's address and token from the agent
+	// config, for installers that point a harness at the daemon (Claude
+	// Code's telemetry exporter).
+	Agent func() (Agent, error)
+	// SystemRoot, when set, is where machine-wide paths (an admin's policy
+	// files, see SystemPath) are looked up instead of the real filesystem,
+	// and OS policy stores such as the Windows registry are not read. ""
+	// means the real system. ForTest sets it so tests never see the test
+	// machine's own policies.
+	SystemRoot string
 }
+
+// Agent is what an installer needs to know about the local daemon.
+type Agent struct {
+	// LocalAddr is the daemon's loopback address (config.Config.LocalAddr).
+	LocalAddr string
+	// LocalToken is the agent's local secret (config.Config.LocalToken).
+	LocalToken string
+}
+
+// TestAgent is the agent ForTest reports.
+var TestAgent = Agent{LocalAddr: "127.0.0.1:47231", LocalToken: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}
 
 // ErrNoHome means the home directory is unknown, so no harness config can be
 // found.
@@ -48,11 +70,22 @@ func FromOS() Env {
 			}
 			return ensureDir(filepath.Join(dir, "backups"))
 		},
+		Agent: func() (Agent, error) {
+			dir, err := config.Dir()
+			if err != nil {
+				return Agent{}, err
+			}
+			cfg, err := config.Load(dir)
+			if err != nil {
+				return Agent{}, fmt.Errorf("reading agent config: %w", err)
+			}
+			return Agent{LocalAddr: cfg.LocalAddr, LocalToken: cfg.LocalToken}, nil
+		},
 	}
 }
 
 // ForTest returns an Env rooted at home, with an empty environment, nothing
-// on PATH and backups under backupDir.
+// on PATH, backups under backupDir and TestAgent as the agent.
 func ForTest(home, goos, backupDir string) Env {
 	return Env{
 		Home:      home,
@@ -60,8 +93,28 @@ func ForTest(home, goos, backupDir string) Env {
 		Getenv:    func(string) string { return "" },
 		LookPath:  func(string) (string, error) { return "", exec.ErrNotFound },
 		BackupDir: func() (string, error) { return ensureDir(backupDir) },
+		Agent:     func() (Agent, error) { return TestAgent, nil },
+		// Inside home so it's private to the test; nothing creates it
+		// unless a test writes policy files there.
+		SystemRoot: filepath.Join(home, "system-root"),
 	}
 }
+
+// SystemPath returns the machine-wide path abs (such as
+// /etc/claude-code/managed-settings.json or C:\Program Files\...): abs
+// itself on the real system, or abs re-rooted under SystemRoot, with the
+// volume colon and backslashes turned into plain path elements.
+func (e Env) SystemPath(abs string) string {
+	if e.SystemRoot == "" {
+		return abs
+	}
+	rel := strings.NewReplacer(`\`, "/", ":", "").Replace(abs)
+	return filepath.Join(e.SystemRoot, filepath.FromSlash(rel))
+}
+
+// ReadsOSPolicy reports whether OS policy stores (the Windows registry,
+// macOS managed preferences tools) may be read: only on the real system.
+func (e Env) ReadsOSPolicy() bool { return e.SystemRoot == "" }
 
 func ensureDir(dir string) (string, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil { //nolint:gosec // dir is inside the agent's own data dir
