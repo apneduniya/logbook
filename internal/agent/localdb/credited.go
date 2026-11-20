@@ -276,7 +276,8 @@ type CreditPruneResult struct{ Heartbeats, CreditedMinutes int64 }
 // PruneCrediting deletes full heartbeats and credited minutes older than the
 // retention period (90 days by default). Evidence days are kept (one small
 // row per day), without the active-time records of days wholly before the
-// cut.
+// cut. Repo mapping rows go once a newer row for the same path is older
+// than the cut.
 func (d *DB) PruneCrediting(ctx context.Context) (CreditPruneResult, error) {
 	cut := d.now().Add(-d.retention)
 	var r CreditPruneResult
@@ -299,6 +300,9 @@ func (d *DB) PruneCrediting(ctx context.Context) (CreditPruneResult, error) {
 		// time goes with them.
 		if _, err := tx.ExecContext(ctx, qEvidenceForget, cut.UTC().Format(time.DateOnly)); err != nil {
 			return fmt.Errorf("pruning evidence active time: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, qRepoPrune, cut.UnixMilli()); err != nil {
+			return fmt.Errorf("pruning repo mapping: %w", err)
 		}
 		return nil
 	})

@@ -8,7 +8,7 @@ How the agent runs the struggle engine and keeps the evidence chain (ADR 0010, A
 | `internal/agent/devicekey` | The device's ed25519 key file and its registration with the server |
 | `internal/agent/serverapi` | HTTP client for `/api/v1/devices`, `/minutes`, `/evidence-days` |
 | `internal/agent/crediting` | The per-minute pipeline: engine input, local minutes, uploads, sealing days |
-| `internal/agent/localdb` | Tables `heartbeats`, `credited_minutes`, `evidence_days` (migration 0002) |
+| `internal/agent/localdb` | Tables `heartbeats`, `credited_minutes`, `evidence_days` (migrations 0002, 0004), `repo_map` (0005) |
 
 ## Files and tables
 
@@ -18,13 +18,14 @@ How the agent runs the struggle engine and keeps the evidence chain (ADR 0010, A
 | Full heartbeats | `heartbeats` (payload as received, deduplicated) | 90 days, 3 000 000 rows |
 | Credited minutes | `credited_minutes` (minute, project, label, credit, cuts, flags, rules version, upload state) | 90 days |
 | Evidence days | `evidence_days` (signed values, event counts, high-water ids, the active-time records hashed, state) | one row per day, kept; active-time records cleared after 90 days |
+| Repo mapping journal | `repo_map` (since, repository path, project), append-only | a row is pruned once a newer row for its path is 90 days old |
 | State | `kv` keys `device.*`, `crediting.*`, `evidence.*` | small |
 
 ## Each minute
 
 1. Read new local events since the last run (by row id) into an in-memory window of the last 90 minutes.
-2. Run `struggle.Compute` for `[now−60 min, now)`, with optional Claude Code active time and the active repos.
-3. Store the result: open minutes (< 30 min old) are rewritten when they change; final ones are only added if missing.
+2. Record the active repos in the repo mapping journal (`repo_map`), then run `struggle.Compute` for `[now−60 min, now)`, with optional Claude Code active time and, for each minute, the repo mapping recorded before that minute became final (`ReposAt`; one engine call per group of minutes sharing a mapping).
+3. Store the result: open minutes (< 30 min old) are rewritten when they change; a final minute is frozen whole and only filled in if it has no rows at all.
 4. If signed in: register the device if needed, upload minutes the server doesn't have (batches of 1000, at most 20 a run), then seal and upload ended days whose minutes the server has all answered for.
 
 Runs never overlap, are bounded to 2 minutes, and run a few seconds past each minute. Old heartbeats and minutes are pruned every 6 hours.
