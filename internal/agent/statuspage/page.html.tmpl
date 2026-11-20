@@ -48,6 +48,23 @@ code { font-size: .9em; }
 <h2>Mirror to Hackatime</h2>
 <table>{{template "uploader" .Hackatime}}</table>
 
+<h2>Credited time and evidence</h2>
+<table>
+{{with .Crediting}}
+<tr><th>Device</th><td>{{if .Device.ID}}<code>{{.Device.ID}}</code> <span class="muted">(registered {{ago .Device.RegisteredAt}})</span>{{else}}<span class="muted">not registered yet</span>{{end}}</td></tr>
+{{if not .Device.RevokedAt.IsZero}}<tr><th>Revoked</th><td class="bad">{{ago .Device.RevokedAt}}</td></tr>{{end}}
+<tr><th>Minutes computed</th><td>{{ago .Minutes.LastComputed}}</td></tr>
+<tr><th>Minutes waiting to send</th><td>{{.Minutes.Waiting}}</td></tr>
+<tr><th>Last upload</th><td>{{ago .Minutes.LastSuccess}}</td></tr>
+{{if .Minutes.Paused}}<tr><th>Paused</th><td class="bad">{{.Minutes.Paused}}</td></tr>{{end}}
+{{if .Minutes.LastError}}<tr><th>Last error</th><td><span class="bad">{{.Minutes.LastError}}</span> <span class="muted">{{ago .Minutes.LastErrorAt}}</span></td></tr>{{end}}
+{{if not .Minutes.NextAttempt.IsZero}}<tr><th>Next try</th><td>{{ago .Minutes.NextAttempt}}</td></tr>{{end}}
+{{if .Minutes.Rejected}}<tr><th>Minutes rejected by server</th><td>{{.Minutes.Rejected}}</td></tr>{{end}}
+<tr><th>Evidence chain</th><td>{{if .Evidence.LastDay}}signed through {{.Evidence.LastDay}} <span class="muted"><code>{{printf "%.12s" .Evidence.ChainHash}}</code></span>{{else}}<span class="muted">no day sealed yet</span>{{end}}</td></tr>
+{{if .Evidence.State}}<tr><th>Evidence stopped</th><td class="bad">{{.Evidence.Error}}</td></tr>{{end}}
+{{end}}
+</table>
+
 <h2>AI tool hooks</h2>
 <table>
 {{if .Hooks}}{{range .Hooks}}<tr><th>{{.Name}}</th><td>{{.State}}</td></tr>{{end}}
@@ -64,6 +81,6 @@ code { font-size: .9em; }
 <tr><th>Git events</th><td>{{.Today.GitEvents}}</td></tr>
 {{if .SpoolBytes}}<tr><th>Hook events waiting</th><td>{{bytes .SpoolBytes}}</td></tr>{{end}}
 </table>
-<p class="muted">AI events, activity and git events stay on this device. Only heartbeats are uploaded.</p>
+<p class="muted">AI events, activity and git events stay on this device. Only heartbeats, credited minutes and one signed hash per day are uploaded.</p>
 </body>
 </html>

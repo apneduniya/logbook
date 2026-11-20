@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/apneduniya/logbook/internal/agent/crediting"
 	"github.com/apneduniya/logbook/internal/agent/localdb"
 	"github.com/apneduniya/logbook/internal/agent/status"
 	"github.com/apneduniya/logbook/internal/agent/upload"
@@ -38,6 +39,17 @@ func TestRender(t *testing.T) {
 				Hooks: []status.Hook{{Name: "claude-code", State: "installed"}}},
 			want: []string{"claude-code", "installed", "on (hackatime.hackclub.com)", "not running"},
 			not:  []string{"unknown", "<script"},
+		},
+		{
+			name: "crediting",
+			snap: status.Snapshot{Crediting: crediting.Status{
+				Device:   crediting.DeviceStatus{ID: "0b7c2f1e-3a4d-4e5f-8a9b-0c1d2e3f4a5b", RevokedAt: now.Add(-time.Hour)},
+				Minutes:  crediting.MinutesStatus{Waiting: 12, Rejected: 3, Paused: "device revoked"},
+				Evidence: crediting.EvidenceStatus{LastDay: "2026-11-19", ChainHash: "4592bad6f7249eaaf98f", State: "conflict", Error: "refused <x>"},
+			}},
+			want: []string{"0b7c2f1e-3a4d-4e5f-8a9b-0c1d2e3f4a5b", "Revoked", "device revoked", "signed through 2026-11-19",
+				"4592bad6f724<", "Evidence stopped", "refused &lt;x&gt;", ">12<", ">3<"},
+			not: []string{"<x>"},
 		},
 		{
 			name: "no hooks detected",
