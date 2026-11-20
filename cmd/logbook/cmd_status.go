@@ -169,6 +169,13 @@ func printCrediting(p func(string, ...any), c crediting.Status) {
 	if c.Minutes.Clock != "" {
 		p("            clock: %s", c.Minutes.Clock)
 	}
+	if c.Minutes.Settling != "" {
+		p("            settling: %s", c.Minutes.Settling)
+	}
+	if c.Minutes.LateIgnored > 0 {
+		p("            %d late events kept as evidence but not credited (latest %s)",
+			c.Minutes.LateIgnored, c.Minutes.LateLatest.Local().Format("2006-01-02 15:04"))
+	}
 	switch {
 	case c.Evidence.State != "":
 		p("Evidence:   stopped: %s", c.Evidence.Error)
