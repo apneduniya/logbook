@@ -69,7 +69,7 @@ Auth: session. Returns today's summary in the user's time zone, plus their strea
 
 - A day counts towards a streak when it has at least 15 minutes of credited time.
 - `current` counts back from today. If today hasn't reached 15 minutes yet, it counts back from yesterday, so the streak isn't broken before the day ends.
-- `longest` covers all of the user's history.
+- `longest` covers all of the user's history. The server caches each user's qualifying days and re-reads only the days whose minutes changed, so polling this endpoint is cheap.
 
 Errors: `401`.
 
@@ -159,7 +159,11 @@ Auth: public. `{username}` is case-insensitive.
 - `last_7_days` is the last 168 hours, not 7 calendar days.
 - Email, HCA id and time zone are never included.
 
-Errors: `404 {"error": "not found"}`. The response is identical whether the user doesn't exist, the username is malformed, or the profile is private.
+- Time totals can lag by up to 30 seconds (they are cached per user). Privacy changes apply at once: a private profile returns `404` on the next request, and a project hidden through `PATCH /api/v1/me/projects/{name}` disappears at once.
+
+Errors:
+- `404 {"error": "not found"}`. The response is identical whether the user doesn't exist, the username is malformed, or the profile is private.
+- `429 {"error": "too many requests"}` with `Retry-After` when the client (IP address) is over the rate limit.
 
 ### `GET /api/v1/me/profile`
 
@@ -236,9 +240,12 @@ event: minutes
 data: {}
 ```
 
-The event carries no time range or project. The stream is closed when the profile is made private.
+- The event carries no time range or project.
+- It is sent only when what the public profile shows has changed. Time in hidden projects, and agent or idle time, never triggers it.
+- The server checks for changes at most once a minute per stream, so viewers refetch the profile at most once a minute.
+- The stream is closed when the profile is made private.
 
 Errors:
 - `404` (same as the profile endpoint).
-- `429` when 100 viewers are already watching this profile.
-- `503`.
+- `429` when 100 viewers are already watching this profile, when this client (IP address) already has 20 public streams open, or when the client is over the per-IP request rate limit (with `Retry-After`).
+- `503` when the server is at its public stream limit or shutting down. Public streams have their own limit, so they never stop signed-in users from opening `/api/v1/me/live`.
