@@ -15,6 +15,28 @@ type Querier interface {
 	GetUserByID(ctx context.Context, id uuid.UUID) (User, error)
 	GetUserByUsername(ctx context.Context, username string) (User, error)
 	InsertAuditLog(ctx context.Context, arg InsertAuditLogParams) error
+	ProfileGetByID(ctx context.Context, id uuid.UUID) (ProfileGetByIDRow, error)
+	ProfileGetByUsername(ctx context.Context, username string) (ProfileGetByUsernameRow, error)
+	// Per (project, language) totals for a public profile, excluding hidden projects.
+	ProfilePublicTotals(ctx context.Context, arg ProfilePublicTotalsParams) ([]ProfilePublicTotalsRow, error)
+	ProfileTimezoneKnown(ctx context.Context, name string) (bool, error)
+	// Partial update: a NULL argument keeps the current value.
+	ProfileUpdate(ctx context.Context, arg ProfileUpdateParams) (ProfileUpdateRow, error)
+	// Per (project, language): credited seconds and last activity of any label.
+	ProjectsMinuteTotals(ctx context.Context, arg ProjectsMinuteTotalsParams) ([]ProjectsMinuteTotalsRow, error)
+	ProjectsSettingsGet(ctx context.Context, arg ProjectsSettingsGetParams) (Project, error)
+	ProjectsSettingsList(ctx context.Context, userID uuid.UUID) ([]Project, error)
+	// Partial update: a NULL argument keeps the current (or default) value.
+	ProjectsSettingsUpsert(ctx context.Context, arg ProjectsSettingsUpsertParams) (Project, error)
+	// One pass over the range, returned as (dimension, key, seconds) rows.
+	// Days are local dates in the given IANA time zone.
+	StatsBreakdown(ctx context.Context, arg StatsBreakdownParams) ([]StatsBreakdownRow, error)
+	// Local dates on which the user was credited at least min_seconds.
+	StatsQualifyingDays(ctx context.Context, arg StatsQualifyingDaysParams) ([]string, error)
+	// Queries for the stats, projects and profiles packages.
+	// Aggregates read user_minutes only, never heartbeats (ADR 0002).
+	// Credited time is label = 'you'; other labels are reported separately.
+	StatsUserTimezone(ctx context.Context, id uuid.UUID) (string, error)
 }
 
 var _ Querier = (*Queries)(nil)
