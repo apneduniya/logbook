@@ -5,13 +5,15 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"github.com/apneduniya/logbook/internal/agent/version"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
 	"time"
+
+	"github.com/apneduniya/logbook/internal/agent/harness"
+	"github.com/apneduniya/logbook/internal/agent/version"
 
 	"github.com/apneduniya/logbook/internal/agent/config"
 	"github.com/apneduniya/logbook/internal/agent/install"
@@ -57,12 +59,29 @@ func uninstallCommand() Command {
 	}
 }
 
-// harnessInstallers lists the AI harness hook installers. The harness
-// module provides them through harness.All(); this list is replaced with
-// that call when the modules are merged, and until then install and
-// uninstall simply have no harnesses to visit.
+// harnessInstallers lists the AI harness hook installers (Claude Code,
+// Codex, Gemini CLI, OpenCode, Cursor, Copilot).
 func harnessInstallers() []install.HarnessInstaller {
-	return nil
+	hs := harness.All()
+	out := make([]install.HarnessInstaller, 0, len(hs))
+	for _, h := range hs {
+		out = append(out, h)
+	}
+	return out
+}
+
+// printHarnessNotes shows extra steps some harnesses need after install,
+// such as trusting new hooks inside Codex.
+func printHarnessNotes(w io.Writer) {
+	for _, h := range harness.All() {
+		n, ok := h.(harness.Noter)
+		if !ok || !h.Detect() {
+			continue
+		}
+		for _, note := range n.Notes() {
+			_, _ = fmt.Fprintf(w, "note (%s): %s\n", h.Name(), note) // best-effort console output
+		}
+	}
 }
 
 func runInstall(ctx context.Context, args []string) error {
@@ -112,6 +131,7 @@ func runInstall(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	printHarnessNotes(os.Stdout)
 	fmt.Printf("\nDone. Logbook is tracking. Status page: http://%s/\n", cfg.LocalAddr)
 	fmt.Println("Restart your editors so their WakaTime plugins pick up the new settings.")
 	fmt.Print(pathHint(runtime.GOOS, svc.BinaryPath(), os.Getenv("PATH")))
