@@ -44,7 +44,7 @@ Heartbeats are partitioned because they are many per minute and raw. Credited mi
 - At most 8 projects per device-minute, so rows with no credit can't grow without bound.
 - Within a batch, items that lower a minute's credit are applied before the rest, so the agent can move a minute from one project to another in one request.
 - Only rules versions the server knows are accepted, for minutes and evidence days, because step 5 re-runs the engine at the stored version.
-- Project names are normalised exactly like heartbeat projects (`pkg/projectname`), so raw and credited totals, and profile project hiding, use the same names.
+- Project names are normalised exactly like heartbeat projects (`pkg/projectname`), so raw and credited totals, and profile project hiding, use the same names. The engine (`pkg/struggle`) applies the same `projectname.Normalize` before it counts projects, so a correct agent never sends two spellings of one project for a minute; the server still normalises, as a guard.
 
 **Evidence days.** The signature is checked before anything is compared, so only validly signed conflicts are treated as conflicts. A different record for a stored day is rejected with `409` and written to the audit log (`evidence_conflict`), because it means the device key signed two histories for one day. A day may not be inserted before a stored later day (the later day's `prev_chain_hash` already skips it).
 

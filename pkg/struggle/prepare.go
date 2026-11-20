@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/apneduniya/logbook/pkg/projectname"
 	"github.com/apneduniya/logbook/pkg/wire"
 )
 
@@ -21,7 +22,8 @@ type sample struct {
 	hasInput bool
 }
 
-// heartbeat is an editor heartbeat with its project resolved.
+// heartbeat is an editor heartbeat with its project resolved and normalised
+// (pkg/projectname), so the engine emits project names in the server's form.
 type heartbeat struct {
 	t       time.Time
 	project string
@@ -32,7 +34,7 @@ type heartbeat struct {
 	ai    bool
 }
 
-// aiEvent is an AI event with its project resolved.
+// aiEvent is an AI event with its project resolved and normalised.
 type aiEvent struct {
 	t       time.Time
 	kind    wire.AIEventKind
@@ -186,7 +188,7 @@ func prepareHeartbeats(in []Heartbeat, repos repoIndex) []heartbeat {
 		r := &raw[i]
 		h := heartbeat{t: r.Time.UTC(), ai: r.AI, project: repos.project(r.Entity)}
 		if h.project == "" {
-			h.project = r.Project
+			h.project = projectname.Normalize(r.Project)
 		}
 		if !r.AI {
 			prev := last[r.Entity]
@@ -224,7 +226,7 @@ func prepareAI(in []wire.AIEvent, repos repoIndex) []aiEvent {
 			decided: r.Kind == wire.AIPermissionAsk && r.Decision != "",
 		}
 		if e.project == "" {
-			e.project = r.Project
+			e.project = projectname.Normalize(r.Project)
 		}
 		out = append(out, e)
 	}

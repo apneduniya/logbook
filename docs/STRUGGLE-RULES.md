@@ -116,6 +116,7 @@ The thresholds (3 min, 15 s, 25 characters, and so on) are first guesses. They'l
 **Projects**
 - AI events take the project of the longest repo path containing their cwd. Matching is on path boundaries, with `\` read as `/`, and Windows drive paths compared case-insensitively. Without a match they keep `AIEvent.Project`.
 - Heartbeats are matched on their file path first, and keep `Heartbeat.Project` otherwise. Events without a project don't count for attribution.
+- Every project name (repo projects, `Heartbeat.Project`, `AIEvent.Project`) is normalised the way the server stores it (`pkg/projectname`): control characters removed, surrounding white space trimmed, and WakaTime's `<<LAST_PROJECT>>` read as no project. This happens before anything is counted, so `app` and ` app ` are one project and the engine's rows are already in the server's form.
 - `you` minute with project events in it: 60 s are split by the count of the person's own signals per project (human heartbeats, prompts, permission answers); only when the minute has none of those, by the count of all heartbeats and AI events. The split is by largest remainder, with ties going to the smaller project name. A project left with 0 s is dropped.
 - `you` minute with no event in it: it goes to the latest project of the last 5 minutes, else of the last 15 minutes (for example while reading docs in the browser), else of the person's first signal in the next 5 minutes (for example while composing the first prompt of a session). Otherwise the project is `""`.
 - `agent` minute: it goes to the project of the latest event, at or before the end of the minute and at most 10 minutes before its start, of any turn busy in it (ties: the smaller name), or to the last 5 minutes' project.
@@ -153,3 +154,6 @@ The thresholds (3 min, 15 s, 25 characters, and so on) are first guesses. They'l
 **Changes after review (still rules v1, before any release)**
 
 These changed the meaning of the rules above, not only the code, and need the owner's sign-off: presence now follows the "idle < 60 s at a sample" wording (about one more credited minute after each pause); browser and unknown focus need the person's own signals, not an agent's; input with no project and no active session isn't credited; minutes are split by the person's own signals; the loop rule ignores short prompts and repeats with editing between them; turn cuts reach 25 minutes after the prompt and spare minutes with human editing; `otel_mismatch` compares against user + cli time; a file switch is no longer movement on low-signal devices.
+
+Later fixes from a second review, also still rules v1:
+- Project names are normalised as the server does before projects are counted. Before, `app` and ` app ` in one minute became two 30 s rows; the server merged them into one name, rejected the second as a duplicate and stored 30 s. `<<LAST_PROJECT>>` now means no project instead of a project of that name.
