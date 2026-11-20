@@ -1,0 +1,90 @@
+{
+  "description": "A person starts a /loop and leaves: the scheduled prompts every 10 minutes have no input before them and are flagged automated_session; the person's own first prompt is not.",
+  "date": "2026-11-20",
+  "window": {
+    "From": "10:00:00",
+    "To": "11:00:00"
+  },
+  "seed": 1,
+  "repos": [
+    {
+      "path": "/home/sam/app",
+      "project": "app"
+    },
+    {
+      "path": "/home/sam/lib",
+      "project": "lib"
+    }
+  ],
+  "inputs": [
+    {
+      "from": "09:50:00",
+      "to": "10:01:30",
+      "gap_min": 0.2,
+      "gap_max": 2
+    }
+  ],
+  "samples": [
+    {
+      "from": "09:50:00",
+      "to": "11:01:00",
+      "focus": "terminal"
+    }
+  ],
+  "turns": [
+    {
+      "session": "s3",
+      "cwd": "/home/sam/app",
+      "start": "10:01:30",
+      "end": "10:04:00",
+      "chars": 30,
+      "tool_every": 20,
+      "hash": "start"
+    },
+    {
+      "session": "s3",
+      "cwd": "/home/sam/app",
+      "start": "10:10:00",
+      "end": "10:13:00",
+      "chars": 30,
+      "tool_every": 20,
+      "hash": "loop"
+    },
+    {
+      "session": "s3",
+      "cwd": "/home/sam/app",
+      "start": "10:20:00",
+      "end": "10:23:00",
+      "chars": 30,
+      "tool_every": 20,
+      "hash": "loop"
+    },
+    {
+      "session": "s3",
+      "cwd": "/home/sam/app",
+      "start": "10:30:00",
+      "end": "10:33:00",
+      "chars": 30,
+      "tool_every": 20,
+      "hash": "loop"
+    },
+    {
+      "session": "s3",
+      "cwd": "/home/sam/app",
+      "start": "10:40:00",
+      "end": "10:43:00",
+      "chars": 30,
+      "tool_every": 20,
+      "hash": "loop"
+    },
+    {
+      "session": "s3",
+      "cwd": "/home/sam/app",
+      "start": "10:50:00",
+      "end": "10:53:00",
+      "chars": 30,
+      "tool_every": 20,
+      "hash": "loop"
+    }
+  ]
+}

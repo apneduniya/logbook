@@ -1,0 +1,56 @@
+{
+  "description": "Edits in two projects within the same minutes: seconds are split by event count. A heartbeat's project name is overridden by the repo its file is in.",
+  "date": "2026-11-20",
+  "window": {
+    "From": "10:00:00",
+    "To": "10:20:00"
+  },
+  "seed": 1,
+  "repos": [
+    {
+      "path": "/home/sam/app",
+      "project": "app"
+    },
+    {
+      "path": "/home/sam/lib",
+      "project": "lib"
+    }
+  ],
+  "inputs": [
+    {
+      "from": "09:50:00",
+      "to": "10:21:00",
+      "gap_min": 0.2,
+      "gap_max": 2
+    }
+  ],
+  "samples": [
+    {
+      "from": "09:50:00",
+      "to": "10:21:00",
+      "focus": "editor"
+    }
+  ],
+  "heartbeats": [
+    {
+      "from": "09:50:00",
+      "to": "10:21:00",
+      "every_min": 18,
+      "every_max": 22,
+      "project": "App (display name)",
+      "entity": "/home/sam/app/a.go",
+      "write_every": 3,
+      "cursor": true
+    },
+    {
+      "from": "09:50:00",
+      "to": "10:21:00",
+      "every_min": 28,
+      "every_max": 32,
+      "project": "lib",
+      "entity": "/home/sam/lib/b.go",
+      "write_every": 3,
+      "cursor": true
+    }
+  ]
+}

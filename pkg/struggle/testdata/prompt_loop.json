@@ -1,0 +1,90 @@
+{
+  "description": "The same prompt (same keyed hash) is sent five times in 30 minutes in one session: the 3rd, 4th and 5th turns are cut as a loop.",
+  "date": "2026-11-20",
+  "window": {
+    "From": "10:00:00",
+    "To": "10:40:00"
+  },
+  "seed": 1,
+  "repos": [
+    {
+      "path": "/home/sam/app",
+      "project": "app"
+    },
+    {
+      "path": "/home/sam/lib",
+      "project": "lib"
+    }
+  ],
+  "inputs": [
+    {
+      "from": "09:55:00",
+      "to": "10:41:00",
+      "gap_min": 0.5,
+      "gap_max": 30
+    }
+  ],
+  "samples": [
+    {
+      "from": "09:50:00",
+      "to": "10:41:00",
+      "focus": "terminal"
+    }
+  ],
+  "turns": [
+    {
+      "session": "s2",
+      "cwd": "/home/sam/app",
+      "start": "10:00:00",
+      "end": "10:04:00",
+      "chars": 40,
+      "tool_every": 20,
+      "hash": "fix"
+    },
+    {
+      "session": "s2",
+      "cwd": "/home/sam/app",
+      "start": "10:06:00",
+      "end": "10:10:00",
+      "chars": 40,
+      "tool_every": 20,
+      "hash": "fix"
+    },
+    {
+      "session": "s2",
+      "cwd": "/home/sam/app",
+      "start": "10:12:00",
+      "end": "10:16:00",
+      "chars": 40,
+      "tool_every": 20,
+      "hash": "fix"
+    },
+    {
+      "session": "s2",
+      "cwd": "/home/sam/app",
+      "start": "10:18:00",
+      "end": "10:22:00",
+      "chars": 40,
+      "tool_every": 20,
+      "hash": "fix"
+    },
+    {
+      "session": "s2",
+      "cwd": "/home/sam/app",
+      "start": "10:24:00",
+      "end": "10:28:00",
+      "chars": 40,
+      "tool_every": 20,
+      "hash": "fix"
+    },
+    {
+      "session": "s2",
+      "cwd": "/home/sam/app",
+      "start": "10:30:00",
+      "end": "10:34:00",
+      "chars": 90,
+      "tool_every": 20,
+      "hash": "new"
+    }
+  ]
+}

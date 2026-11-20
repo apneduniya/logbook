@@ -1,0 +1,41 @@
+{
+  "description": "A device with no idle source (e.g. some Wayland desktops): presence comes from heartbeats with writes or cursor movement and is flagged low_signal; an editor that keeps sending still heartbeats is cut as background_editor after 5 minutes.",
+  "date": "2026-11-20",
+  "window": {
+    "From": "10:00:00",
+    "To": "10:45:00"
+  },
+  "seed": 1,
+  "repos": [
+    {
+      "path": "/home/sam/app",
+      "project": "app"
+    },
+    {
+      "path": "/home/sam/lib",
+      "project": "lib"
+    }
+  ],
+  "heartbeats": [
+    {
+      "from": "09:40:00",
+      "to": "10:20:00",
+      "every_min": 30,
+      "every_max": 60,
+      "project": "app",
+      "entity": "/home/sam/app/main.go",
+      "write_every": 4,
+      "cursor": true
+    },
+    {
+      "from": "10:20:30",
+      "to": "10:45:00",
+      "every_min": 55,
+      "every_max": 65,
+      "project": "app",
+      "entity": "/home/sam/app/main.go",
+      "write_every": 0,
+      "still": true
+    }
+  ]
+}

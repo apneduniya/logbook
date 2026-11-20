@@ -1,0 +1,35 @@
+rules v1
+rows 30: you=10 agent=9 idle=11; credited 600s (10.0 min)
+cuts: agent_alone=9 idle=11
+flags: -
+
+2026-11-20T10:00Z  you   60  app      cuts=- flags=-
+2026-11-20T10:01Z  you   60  app      cuts=- flags=-
+2026-11-20T10:02Z  you   60  app      cuts=- flags=-
+2026-11-20T10:03Z  you   60  app      cuts=- flags=-
+2026-11-20T10:04Z  you   60  app      cuts=- flags=-
+2026-11-20T10:05Z  idle   0  app      cuts=idle flags=-
+2026-11-20T10:06Z  idle   0  app      cuts=idle flags=-
+2026-11-20T10:07Z  idle   0  app      cuts=idle flags=-
+2026-11-20T10:08Z  idle   0  app      cuts=idle flags=-
+2026-11-20T10:09Z  idle   0  app      cuts=idle flags=-
+2026-11-20T10:10Z  idle   0  app      cuts=idle flags=-
+2026-11-20T10:11Z  you   60  app      cuts=- flags=-
+2026-11-20T10:12Z  you   60  app      cuts=- flags=-
+2026-11-20T10:13Z  you   60  app      cuts=- flags=-
+2026-11-20T10:14Z  you   60  app      cuts=- flags=-
+2026-11-20T10:15Z  you   60  app      cuts=- flags=-
+2026-11-20T10:16Z  agent  0  app      cuts=agent_alone flags=-
+2026-11-20T10:17Z  agent  0  app      cuts=agent_alone flags=-
+2026-11-20T10:18Z  agent  0  app      cuts=agent_alone flags=-
+2026-11-20T10:19Z  agent  0  app      cuts=agent_alone flags=-
+2026-11-20T10:20Z  agent  0  app      cuts=agent_alone flags=-
+2026-11-20T10:21Z  agent  0  app      cuts=agent_alone flags=-
+2026-11-20T10:22Z  agent  0  app      cuts=agent_alone flags=-
+2026-11-20T10:23Z  agent  0  app      cuts=agent_alone flags=-
+2026-11-20T10:24Z  agent  0  app      cuts=agent_alone flags=-
+2026-11-20T10:25Z  idle   0  app      cuts=idle flags=-
+2026-11-20T10:26Z  idle   0  app      cuts=idle flags=-
+2026-11-20T10:27Z  idle   0  app      cuts=idle flags=-
+2026-11-20T10:28Z  idle   0  app      cuts=idle flags=-
+2026-11-20T10:29Z  idle   0  app      cuts=idle flags=-

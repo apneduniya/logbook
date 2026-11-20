@@ -1,0 +1,90 @@
+{
+  "description": "Four short approvals ('yes', 'ok', 'continue') each sent within 15 s of the agent finishing, with no editing: the streak's turns after the first stamp are cut.",
+  "date": "2026-11-20",
+  "window": {
+    "From": "10:00:00",
+    "To": "10:30:00"
+  },
+  "seed": 1,
+  "repos": [
+    {
+      "path": "/home/sam/app",
+      "project": "app"
+    },
+    {
+      "path": "/home/sam/lib",
+      "project": "lib"
+    }
+  ],
+  "inputs": [
+    {
+      "from": "09:55:00",
+      "to": "10:31:00",
+      "gap_min": 0.5,
+      "gap_max": 20
+    }
+  ],
+  "samples": [
+    {
+      "from": "09:50:00",
+      "to": "10:31:00",
+      "focus": "terminal"
+    }
+  ],
+  "turns": [
+    {
+      "session": "s1",
+      "cwd": "/home/sam/app",
+      "start": "10:00:00",
+      "end": "10:04:00",
+      "chars": 240,
+      "tool_every": 20,
+      "hash": "a1"
+    },
+    {
+      "session": "s1",
+      "cwd": "/home/sam/app",
+      "start": "10:04:05",
+      "end": "10:07:00",
+      "chars": 3,
+      "tool_every": 20,
+      "hash": "y1"
+    },
+    {
+      "session": "s1",
+      "cwd": "/home/sam/app",
+      "start": "10:07:04",
+      "end": "10:10:00",
+      "chars": 8,
+      "tool_every": 20,
+      "hash": "c1"
+    },
+    {
+      "session": "s1",
+      "cwd": "/home/sam/app",
+      "start": "10:10:06",
+      "end": "10:13:00",
+      "chars": 2,
+      "tool_every": 20,
+      "hash": "o1"
+    },
+    {
+      "session": "s1",
+      "cwd": "/home/sam/app",
+      "start": "10:13:03",
+      "end": "10:16:00",
+      "chars": 3,
+      "tool_every": 20,
+      "hash": "y2"
+    },
+    {
+      "session": "s1",
+      "cwd": "/home/sam/app",
+      "start": "10:16:30",
+      "end": "10:20:00",
+      "chars": 120,
+      "tool_every": 20,
+      "hash": "a2"
+    }
+  ]
+}

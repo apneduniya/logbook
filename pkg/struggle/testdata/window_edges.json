@@ -1,0 +1,72 @@
+{
+  "description": "Events before Window.From are context only: a pause that began before the window is still within grace, and a turn that started before it is still open; no minute before 10:00 is emitted.",
+  "date": "2026-11-20",
+  "window": {
+    "From": "10:00:00",
+    "To": "10:30:00"
+  },
+  "seed": 1,
+  "repos": [
+    {
+      "path": "/home/sam/app",
+      "project": "app"
+    },
+    {
+      "path": "/home/sam/lib",
+      "project": "lib"
+    }
+  ],
+  "inputs": [
+    {
+      "from": "09:30:00",
+      "to": "09:59:20",
+      "gap_min": 0.2,
+      "gap_max": 3
+    },
+    {
+      "from": "10:02:10",
+      "to": "10:31:00",
+      "gap_min": 0.2,
+      "gap_max": 3
+    }
+  ],
+  "samples": [
+    {
+      "from": "09:30:00",
+      "to": "10:31:00",
+      "focus": "editor"
+    }
+  ],
+  "heartbeats": [
+    {
+      "from": "09:30:00",
+      "to": "09:59:20",
+      "every_min": 20,
+      "every_max": 90,
+      "project": "app",
+      "entity": "/home/sam/app/main.go",
+      "write_every": 3,
+      "cursor": true
+    },
+    {
+      "from": "10:02:10",
+      "to": "10:31:00",
+      "every_min": 20,
+      "every_max": 90,
+      "project": "app",
+      "entity": "/home/sam/app/main.go",
+      "write_every": 3,
+      "cursor": true
+    }
+  ],
+  "turns": [
+    {
+      "session": "s5",
+      "cwd": "/home/sam/app",
+      "start": "09:50:00",
+      "end": "10:08:00",
+      "chars": 100,
+      "tool_every": 30
+    }
+  ]
+}

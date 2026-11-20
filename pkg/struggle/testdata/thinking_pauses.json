@@ -1,0 +1,94 @@
+{
+  "description": "Thinking pauses of up to 3 minutes between bursts of typing are credited (3-minute grace).",
+  "date": "2026-11-20",
+  "window": {
+    "From": "10:00:00",
+    "To": "11:00:00"
+  },
+  "seed": 1,
+  "repos": [
+    {
+      "path": "/home/sam/app",
+      "project": "app"
+    },
+    {
+      "path": "/home/sam/lib",
+      "project": "lib"
+    }
+  ],
+  "inputs": [
+    {
+      "from": "09:30:00",
+      "to": "10:10:00",
+      "gap_min": 0.3,
+      "gap_max": 2.5
+    },
+    {
+      "from": "10:12:55",
+      "to": "10:25:00",
+      "gap_min": 0.3,
+      "gap_max": 2.5
+    },
+    {
+      "from": "10:27:55",
+      "to": "10:40:00",
+      "gap_min": 0.3,
+      "gap_max": 2.5
+    },
+    {
+      "from": "10:42:58",
+      "to": "11:01:00",
+      "gap_min": 0.3,
+      "gap_max": 2.5
+    }
+  ],
+  "samples": [
+    {
+      "from": "09:30:00",
+      "to": "11:02:00",
+      "focus": "editor"
+    }
+  ],
+  "heartbeats": [
+    {
+      "from": "09:30:00",
+      "to": "10:10:00",
+      "every_min": 30,
+      "every_max": 110,
+      "project": "app",
+      "entity": "/home/sam/app/main.go",
+      "write_every": 3,
+      "cursor": true
+    },
+    {
+      "from": "10:13:00",
+      "to": "10:25:00",
+      "every_min": 30,
+      "every_max": 110,
+      "project": "app",
+      "entity": "/home/sam/app/main.go",
+      "write_every": 3,
+      "cursor": true
+    },
+    {
+      "from": "10:28:00",
+      "to": "10:40:00",
+      "every_min": 30,
+      "every_max": 110,
+      "project": "app",
+      "entity": "/home/sam/app/main.go",
+      "write_every": 3,
+      "cursor": true
+    },
+    {
+      "from": "10:43:00",
+      "to": "11:01:00",
+      "every_min": 30,
+      "every_max": 110,
+      "project": "app",
+      "entity": "/home/sam/app/main.go",
+      "write_every": 3,
+      "cursor": true
+    }
+  ]
+}

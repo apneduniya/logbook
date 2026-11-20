@@ -1,0 +1,48 @@
+{
+  "description": "13 hours of continuous work in one local day (UTC+05:30): minutes after the 12th credited hour are flagged long_day.",
+  "date": "2026-11-20",
+  "window": {
+    "From": "2026-11-19T18:30:00Z",
+    "To": "2026-11-20T07:30:00Z"
+  },
+  "seed": 1,
+  "repos": [
+    {
+      "path": "/home/sam/app",
+      "project": "app"
+    },
+    {
+      "path": "/home/sam/lib",
+      "project": "lib"
+    }
+  ],
+  "tz_offset_minutes": 330,
+  "inputs": [
+    {
+      "from": "2026-11-19T18:00:00Z",
+      "to": "2026-11-20T07:31:00Z",
+      "gap_min": 0.5,
+      "gap_max": 3
+    }
+  ],
+  "samples": [
+    {
+      "from": "2026-11-19T18:00:00Z",
+      "to": "2026-11-20T07:31:00Z",
+      "focus": "editor",
+      "every": 20
+    }
+  ],
+  "heartbeats": [
+    {
+      "from": "2026-11-19T18:00:00Z",
+      "to": "2026-11-20T07:31:00Z",
+      "every_min": 60,
+      "every_max": 110,
+      "project": "app",
+      "entity": "/home/sam/app/main.go",
+      "write_every": 3,
+      "cursor": true
+    }
+  ]
+}
