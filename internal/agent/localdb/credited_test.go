@@ -156,6 +156,38 @@ func TestSaveMinutesOpenAndFinal(t *testing.T) {
 	}
 }
 
+// A final minute is frozen whole: a recompute can't add another project to
+// it (that would credit the minute twice), only fill a minute that has no
+// rows at all (offline catch-up).
+func TestFinalMinuteTakesNoNewProject(t *testing.T) {
+	ctx := context.Background()
+	d, _ := openTest(t)
+	upd := func(ms ...CreditedMinute) SaveResult {
+		t.Helper()
+		r, err := d.SaveMinutes(ctx, MinuteUpdate{From: minute(-60), To: minute(0), OpenFrom: minute(-30),
+			Minutes: ms, Superseded: superseded})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	upd(cm(-40, "old", 60))
+	if r := upd(cm(-40, "new", 60), cm(-45, "x", 30), cm(-45, "y", 30)); r.Inserted != 2 {
+		t.Fatalf("recompute = %+v, want only the empty minute -45 filled", r)
+	}
+	unsent, err := d.UnsentMinutes(ctx, minute(-30), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, m := range unsent {
+		got = append(got, fmt.Sprintf("%d/%s", int(m.Minute.Sub(testNow).Minutes()), m.Project))
+	}
+	if strings.Join(got, " ") != "-45/x -45/y -40/old" {
+		t.Fatalf("rows = %v", got)
+	}
+}
+
 func TestUnsentMinutesSettlesFinal(t *testing.T) {
 	ctx := context.Background()
 	d, _ := openTest(t)

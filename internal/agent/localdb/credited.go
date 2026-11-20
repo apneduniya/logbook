@@ -44,9 +44,12 @@ type minuteKey struct {
 type minuteState struct{ digest, sentDigest string }
 
 // SaveMinutes applies one engine recompute in a transaction: open minutes are
-// inserted or rewritten when their digest changed, final minutes are only
-// inserted when missing, and open rows missing from the new result are
-// superseded (if the server saw them) or deleted.
+// inserted or rewritten when their digest changed, and open rows missing
+// from the new result are superseded (if the server saw them) or deleted.
+// A final minute is frozen whole: its rows are never rewritten and it takes
+// no new project. Only a final minute with no rows at all is filled in
+// (offline catch-up), so a minute is never credited twice under two
+// projects.
 func (d *DB) SaveMinutes(ctx context.Context, u MinuteUpdate) (SaveResult, error) {
 	var res SaveResult
 	open := u.OpenFrom.Unix()
@@ -55,12 +58,18 @@ func (d *DB) SaveMinutes(ctx context.Context, u MinuteUpdate) (SaveResult, error
 		if err != nil {
 			return err
 		}
+		stored := make(map[int64]bool, len(have)) // minutes with any row
+		for k := range have {
+			stored[k.minute] = true
+		}
 		seen := make(map[minuteKey]bool, len(u.Minutes))
 		for _, m := range u.Minutes {
 			k := minuteKey{m.Minute.Unix(), m.Project}
 			seen[k] = true
 			old, exists := have[k]
 			switch {
+			case k.minute < open && stored[k.minute] && !exists:
+				// A final minute that already has rows: frozen.
 			case !exists:
 				if err := writeMinute(ctx, tx, qMinuteInsert, m); err != nil {
 					return err
