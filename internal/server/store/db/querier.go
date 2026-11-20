@@ -11,10 +11,26 @@ import (
 )
 
 type Querier interface {
+	AdvanceHackatimeImport(ctx context.Context, arg AdvanceHackatimeImportParams) (int64, error)
+	DeleteHackatimeImport(ctx context.Context, userID uuid.UUID) error
+	DeleteHackatimeLink(ctx context.Context, userID uuid.UUID) (HackatimeLink, error)
+	GetHackatimeImport(ctx context.Context, userID uuid.UUID) (HackatimeImport, error)
+	// Hackatime account links and history imports (ADR 0004).
+	// Every query is keyed by the Logbook user id, except the trust sweep, which
+	// runs as a system job over all links.
+	GetHackatimeLink(ctx context.Context, userID uuid.UUID) (HackatimeLink, error)
+	GetHackatimeLinkOwner(ctx context.Context, hackatimeUserID int64) (uuid.UUID, error)
 	GetUserByHCAID(ctx context.Context, hcaID string) (User, error)
 	GetUserByID(ctx context.Context, id uuid.UUID) (User, error)
 	GetUserByUsername(ctx context.Context, username string) (User, error)
 	InsertAuditLog(ctx context.Context, arg InsertAuditLogParams) error
+	ListHackatimeLinksDueForTrustCheck(ctx context.Context, arg ListHackatimeLinksDueForTrustCheckParams) ([]uuid.UUID, error)
+	SetHackatimeImportStatus(ctx context.Context, arg SetHackatimeImportStatusParams) error
+	// Creates the import, or extends an existing one to a new end date and makes
+	// it runnable again. next_date is kept so finished days aren't refetched.
+	StartHackatimeImport(ctx context.Context, arg StartHackatimeImportParams) (HackatimeImport, error)
+	UpdateHackatimeTrust(ctx context.Context, arg UpdateHackatimeTrustParams) (int64, error)
+	UpsertHackatimeLink(ctx context.Context, arg UpsertHackatimeLinkParams) (HackatimeLink, error)
 }
 
 var _ Querier = (*Queries)(nil)
