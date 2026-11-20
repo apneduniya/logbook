@@ -131,6 +131,11 @@ func (in *Installer) Uninstall() error {
 // file's top-level keys (nil if there was no file); known is false when no
 // backup exists, in which case only an empty "hooks" object is removed and
 // header keys are kept.
+//
+// When Logbook created the file, its Header keys go only if nothing else is
+// left: a user who later added their own hooks needs the header (Cursor
+// rejects hooks.json without "version"). When the file existed, a Header key
+// it didn't have is removed so the user's original comes back.
 func (in *Installer) tidy(doc *jsonedit.Object, orig map[string]bool, known bool) {
 	if raw, ok := doc.Get("hooks"); ok && jsonedit.Equal(raw, json.RawMessage("{}")) && (!known || !orig["hooks"]) {
 		doc.Delete("hooks")
@@ -138,11 +143,31 @@ func (in *Installer) tidy(doc *jsonedit.Object, orig map[string]bool, known bool
 	if !known {
 		return
 	}
+	if orig == nil && !in.onlyHeader(doc) {
+		return
+	}
 	for _, f := range in.spec.Header {
 		if v, ok := doc.Get(f.Key); ok && !orig[f.Key] && jsonedit.Equal(v, f.Value) {
 			doc.Delete(f.Key)
 		}
 	}
+}
+
+// onlyHeader reports whether every top-level key in doc is a Header key.
+func (in *Installer) onlyHeader(doc *jsonedit.Object) bool {
+	for _, k := range doc.Keys() {
+		header := false
+		for _, f := range in.spec.Header {
+			if f.Key == k {
+				header = true
+				break
+			}
+		}
+		if !header {
+			return false
+		}
+	}
+	return true
 }
 
 // Installed reports whether any Logbook hook is in the config file.

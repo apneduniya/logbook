@@ -173,3 +173,61 @@ func TestCopilotArgv(t *testing.T) {
 		}
 	}
 }
+
+// A file Logbook created keeps its header on uninstall when the user has
+// since added hooks of their own (Cursor needs "version" to load them).
+func TestUninstallKeepsHeaderForUserHooks(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "conf", "hooks.json")
+	in := New(testSpec(dir))
+	if err := in.Install(bin); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(path) //nolint:gosec // test path
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(b, &doc); err != nil {
+		t.Fatal(err)
+	}
+	hooks, ok := doc["hooks"].(map[string]any)
+	if !ok {
+		t.Fatalf("no hooks object: %s", b)
+	}
+	hooks["afterFileEdit"] = []any{map[string]any{"command": "./format.sh"}}
+	b, err = json.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	write(t, path, string(b), 0o600)
+	if err := in.Uninstall(); err != nil {
+		t.Fatal(err)
+	}
+	b, err = os.ReadFile(path) //nolint:gosec // test path
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["version"] != float64(1) || !strings.Contains(string(b), "format.sh") || strings.Contains(string(b), "logbook") {
+		t.Fatalf("after uninstall: %s", b)
+	}
+}
+
+// A file Logbook created and nobody else touched is deleted on uninstall.
+func TestUninstallDeletesCreatedFile(t *testing.T) {
+	dir := t.TempDir()
+	in := New(testSpec(dir))
+	if err := in.Install(bin); err != nil {
+		t.Fatal(err)
+	}
+	if err := in.Uninstall(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "conf", "hooks.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("created file still exists: %v", err)
+	}
+}
