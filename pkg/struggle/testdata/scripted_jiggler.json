@@ -1,0 +1,46 @@
+{
+  "description": "The person sends a prompt, then a mouse jiggler moves the mouse exactly every 30 s on the terminal while the agent works for an hour: the minutes are credited (presence looks real) but flagged scripted_input once 30 regular intervals are seen.",
+  "date": "2026-11-20",
+  "window": {
+    "From": "10:00:00",
+    "To": "11:00:00"
+  },
+  "seed": 1,
+  "repos": [
+    {
+      "path": "/home/sam/app",
+      "project": "app"
+    }
+  ],
+  "inputs": [
+    {
+      "from": "09:55:00",
+      "to": "09:58:00",
+      "gap_min": 0.2,
+      "gap_max": 1
+    },
+    {
+      "from": "09:58:30",
+      "to": "11:01:00",
+      "gap_min": 30,
+      "gap_max": 30
+    }
+  ],
+  "samples": [
+    {
+      "from": "09:30:00",
+      "to": "11:02:00",
+      "focus": "terminal"
+    }
+  ],
+  "turns": [
+    {
+      "session": "s1",
+      "cwd": "/home/sam/app",
+      "start": "09:58:00",
+      "end": "11:00:00",
+      "chars": 120,
+      "tool_every": 20
+    }
+  ]
+}

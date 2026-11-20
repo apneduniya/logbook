@@ -1,0 +1,20 @@
+{
+  "description": "A low-signal device (no idle source) whose editor sends heartbeats for two files in turn, as when files change on disk, with no write and the cursor of each file unchanged. Switching files is not movement, so nothing is credited and the minutes are cut as background_editor. At 10:20 the person edits again and is credited.",
+  "date": "2026-11-20",
+  "window": {
+    "From": "10:00:00",
+    "To": "10:30:00"
+  },
+  "seed": 8,
+  "repos": [
+    {
+      "path": "/home/sam/app",
+      "project": "app"
+    }
+  ],
+  "heartbeats": [
+    {"from": "09:50:00", "to": "10:20:00", "every_min": 60, "every_max": 60, "project": "app", "entity": "/home/sam/app/a.go", "still": true},
+    {"from": "09:50:30", "to": "10:20:00", "every_min": 60, "every_max": 60, "project": "app", "entity": "/home/sam/app/b.go", "still": true},
+    {"from": "10:20:10", "to": "10:30:00", "every_min": 20, "every_max": 40, "project": "app", "entity": "/home/sam/app/a.go", "cursor": true, "write_every": 3}
+  ]
+}

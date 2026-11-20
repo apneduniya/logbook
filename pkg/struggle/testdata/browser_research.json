@@ -1,0 +1,56 @@
+{
+  "description": "Browsing with nothing open earns nothing; docs in the browser during a coding session are credited to the session's project for up to 15 minutes after the last event.",
+  "date": "2026-11-20",
+  "window": {
+    "From": "10:00:00",
+    "To": "11:00:00"
+  },
+  "seed": 1,
+  "repos": [
+    {
+      "path": "/home/sam/app",
+      "project": "app"
+    },
+    {
+      "path": "/home/sam/lib",
+      "project": "lib"
+    }
+  ],
+  "inputs": [
+    {
+      "from": "09:45:00",
+      "to": "11:01:00",
+      "gap_min": 0.3,
+      "gap_max": 4
+    }
+  ],
+  "samples": [
+    {
+      "from": "09:45:00",
+      "to": "10:15:00",
+      "focus": "browser"
+    },
+    {
+      "from": "10:15:00",
+      "to": "10:30:00",
+      "focus": "editor"
+    },
+    {
+      "from": "10:30:00",
+      "to": "11:02:00",
+      "focus": "browser"
+    }
+  ],
+  "heartbeats": [
+    {
+      "from": "10:15:00",
+      "to": "10:30:00",
+      "every_min": 20,
+      "every_max": 60,
+      "project": "app",
+      "entity": "/home/sam/app/main.go",
+      "write_every": 3,
+      "cursor": true
+    }
+  ]
+}

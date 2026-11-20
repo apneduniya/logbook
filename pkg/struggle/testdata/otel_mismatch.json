@@ -1,0 +1,218 @@
+{
+  "description": "Credited 'you' time in a Claude Code session is far above the active time Claude Code itself measured (user + cli about 7 min vs ~60 min credited), as when hook events are fabricated: flagged otel_mismatch.",
+  "date": "2026-11-20",
+  "window": {
+    "From": "10:00:00",
+    "To": "11:00:00"
+  },
+  "seed": 1,
+  "repos": [
+    {
+      "path": "/home/sam/app",
+      "project": "app"
+    },
+    {
+      "path": "/home/sam/lib",
+      "project": "lib"
+    }
+  ],
+  "inputs": [
+    {
+      "from": "09:55:00",
+      "to": "11:01:00",
+      "gap_min": 0.3,
+      "gap_max": 3
+    }
+  ],
+  "samples": [
+    {
+      "from": "09:55:00",
+      "to": "11:01:00",
+      "focus": "terminal"
+    }
+  ],
+  "turns": [
+    {
+      "session": "s4",
+      "cwd": "/home/sam/app",
+      "start": "10:00:10",
+      "end": "10:04:00",
+      "chars": 60,
+      "tool_every": 20
+    },
+    {
+      "session": "s4",
+      "cwd": "/home/sam/app",
+      "start": "10:05:10",
+      "end": "10:09:00",
+      "chars": 60,
+      "tool_every": 20
+    },
+    {
+      "session": "s4",
+      "cwd": "/home/sam/app",
+      "start": "10:10:10",
+      "end": "10:14:00",
+      "chars": 60,
+      "tool_every": 20
+    },
+    {
+      "session": "s4",
+      "cwd": "/home/sam/app",
+      "start": "10:15:10",
+      "end": "10:19:00",
+      "chars": 60,
+      "tool_every": 20
+    },
+    {
+      "session": "s4",
+      "cwd": "/home/sam/app",
+      "start": "10:20:10",
+      "end": "10:24:00",
+      "chars": 60,
+      "tool_every": 20
+    },
+    {
+      "session": "s4",
+      "cwd": "/home/sam/app",
+      "start": "10:25:10",
+      "end": "10:29:00",
+      "chars": 60,
+      "tool_every": 20
+    },
+    {
+      "session": "s4",
+      "cwd": "/home/sam/app",
+      "start": "10:30:10",
+      "end": "10:34:00",
+      "chars": 60,
+      "tool_every": 20
+    },
+    {
+      "session": "s4",
+      "cwd": "/home/sam/app",
+      "start": "10:35:10",
+      "end": "10:39:00",
+      "chars": 60,
+      "tool_every": 20
+    },
+    {
+      "session": "s4",
+      "cwd": "/home/sam/app",
+      "start": "10:40:10",
+      "end": "10:44:00",
+      "chars": 60,
+      "tool_every": 20
+    },
+    {
+      "session": "s4",
+      "cwd": "/home/sam/app",
+      "start": "10:45:10",
+      "end": "10:49:00",
+      "chars": 60,
+      "tool_every": 20
+    },
+    {
+      "session": "s4",
+      "cwd": "/home/sam/app",
+      "start": "10:50:10",
+      "end": "10:54:00",
+      "chars": 60,
+      "tool_every": 20
+    },
+    {
+      "session": "s4",
+      "cwd": "/home/sam/app",
+      "start": "10:55:10",
+      "end": "10:59:00",
+      "chars": 60,
+      "tool_every": 20
+    }
+  ],
+  "active_time": [
+    {
+      "from": "10:00:00",
+      "to": "10:05:00",
+      "session": "s4",
+      "user_secs": 25,
+      "cli_secs": 10
+    },
+    {
+      "from": "10:05:00",
+      "to": "10:10:00",
+      "session": "s4",
+      "user_secs": 25,
+      "cli_secs": 10
+    },
+    {
+      "from": "10:10:00",
+      "to": "10:15:00",
+      "session": "s4",
+      "user_secs": 25,
+      "cli_secs": 10
+    },
+    {
+      "from": "10:15:00",
+      "to": "10:20:00",
+      "session": "s4",
+      "user_secs": 25,
+      "cli_secs": 10
+    },
+    {
+      "from": "10:20:00",
+      "to": "10:25:00",
+      "session": "s4",
+      "user_secs": 25,
+      "cli_secs": 10
+    },
+    {
+      "from": "10:25:00",
+      "to": "10:30:00",
+      "session": "s4",
+      "user_secs": 25,
+      "cli_secs": 10
+    },
+    {
+      "from": "10:30:00",
+      "to": "10:35:00",
+      "session": "s4",
+      "user_secs": 25,
+      "cli_secs": 10
+    },
+    {
+      "from": "10:35:00",
+      "to": "10:40:00",
+      "session": "s4",
+      "user_secs": 25,
+      "cli_secs": 10
+    },
+    {
+      "from": "10:40:00",
+      "to": "10:45:00",
+      "session": "s4",
+      "user_secs": 25,
+      "cli_secs": 10
+    },
+    {
+      "from": "10:45:00",
+      "to": "10:50:00",
+      "session": "s4",
+      "user_secs": 25,
+      "cli_secs": 10
+    },
+    {
+      "from": "10:50:00",
+      "to": "10:55:00",
+      "session": "s4",
+      "user_secs": 25,
+      "cli_secs": 10
+    },
+    {
+      "from": "10:55:00",
+      "to": "11:00:00",
+      "session": "s4",
+      "user_secs": 25,
+      "cli_secs": 10
+    }
+  ]
+}

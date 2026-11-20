@@ -1,0 +1,45 @@
+rules v1
+rows 40: you=40 agent=0 idle=0; credited 2100s (35.0 min)
+cuts: loop=5
+flags: -
+
+2026-11-20T08:30Z  you   60  app      cuts=- flags=-
+2026-11-20T08:31Z  you   60  app      cuts=- flags=-
+2026-11-20T08:32Z  you   60  app      cuts=- flags=-
+2026-11-20T08:33Z  you   60  app      cuts=- flags=-
+2026-11-20T08:34Z  you   60  app      cuts=- flags=-
+2026-11-20T08:35Z  you   60  app      cuts=- flags=-
+2026-11-20T08:36Z  you   60  app      cuts=- flags=-
+2026-11-20T08:37Z  you   60  app      cuts=- flags=-
+2026-11-20T08:38Z  you   60  app      cuts=- flags=-
+2026-11-20T08:39Z  you   60  app      cuts=- flags=-
+2026-11-20T08:40Z  you   60  app      cuts=- flags=-
+2026-11-20T08:41Z  you   60  app      cuts=- flags=-
+2026-11-20T08:42Z  you   60  app      cuts=- flags=-
+2026-11-20T08:43Z  you   60  app      cuts=- flags=-
+2026-11-20T08:44Z  you   60  app      cuts=- flags=-
+2026-11-20T08:45Z  you   60  app      cuts=- flags=-
+2026-11-20T08:46Z  you   60  app      cuts=- flags=-
+2026-11-20T08:47Z  you   60  app      cuts=- flags=-
+2026-11-20T08:48Z  you   60  app      cuts=- flags=-
+2026-11-20T08:49Z  you   60  app      cuts=- flags=-
+2026-11-20T08:50Z  you    0  app      cuts=loop flags=-
+2026-11-20T08:51Z  you    0  app      cuts=loop flags=-
+2026-11-20T08:52Z  you    0  app      cuts=loop flags=-
+2026-11-20T08:53Z  you    0  app      cuts=loop flags=-
+2026-11-20T08:54Z  you    0  app      cuts=loop flags=-
+2026-11-20T08:55Z  you   60  app      cuts=- flags=-
+2026-11-20T08:56Z  you   60  app      cuts=- flags=-
+2026-11-20T08:57Z  you   60  app      cuts=- flags=-
+2026-11-20T08:58Z  you   60  app      cuts=- flags=-
+2026-11-20T08:59Z  you   60  app      cuts=- flags=-
+2026-11-20T09:00Z  you   60  app      cuts=- flags=-
+2026-11-20T09:01Z  you   60  app      cuts=- flags=-
+2026-11-20T09:02Z  you   60  app      cuts=- flags=-
+2026-11-20T09:03Z  you   60  app      cuts=- flags=-
+2026-11-20T09:04Z  you   60  app      cuts=- flags=-
+2026-11-20T09:05Z  you   60  app      cuts=- flags=-
+2026-11-20T09:06Z  you   60  app      cuts=- flags=-
+2026-11-20T09:07Z  you   60  app      cuts=- flags=-
+2026-11-20T09:08Z  you   60  app      cuts=- flags=-
+2026-11-20T09:09Z  you   60  app      cuts=- flags=-

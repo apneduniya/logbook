@@ -1,0 +1,35 @@
+rules v1
+rows 30: you=10 agent=0 idle=20; credited 600s (10.0 min)
+cuts: background_editor=20
+flags: low_signal=10 scripted_input=20
+
+2026-11-20T10:00Z  idle   0  app      cuts=background_editor flags=scripted_input
+2026-11-20T10:01Z  idle   0  app      cuts=background_editor flags=scripted_input
+2026-11-20T10:02Z  idle   0  app      cuts=background_editor flags=scripted_input
+2026-11-20T10:03Z  idle   0  app      cuts=background_editor flags=scripted_input
+2026-11-20T10:04Z  idle   0  app      cuts=background_editor flags=scripted_input
+2026-11-20T10:05Z  idle   0  app      cuts=background_editor flags=scripted_input
+2026-11-20T10:06Z  idle   0  app      cuts=background_editor flags=scripted_input
+2026-11-20T10:07Z  idle   0  app      cuts=background_editor flags=scripted_input
+2026-11-20T10:08Z  idle   0  app      cuts=background_editor flags=scripted_input
+2026-11-20T10:09Z  idle   0  app      cuts=background_editor flags=scripted_input
+2026-11-20T10:10Z  idle   0  app      cuts=background_editor flags=scripted_input
+2026-11-20T10:11Z  idle   0  app      cuts=background_editor flags=scripted_input
+2026-11-20T10:12Z  idle   0  app      cuts=background_editor flags=scripted_input
+2026-11-20T10:13Z  idle   0  app      cuts=background_editor flags=scripted_input
+2026-11-20T10:14Z  idle   0  app      cuts=background_editor flags=scripted_input
+2026-11-20T10:15Z  idle   0  app      cuts=background_editor flags=scripted_input
+2026-11-20T10:16Z  idle   0  app      cuts=background_editor flags=scripted_input
+2026-11-20T10:17Z  idle   0  app      cuts=background_editor flags=scripted_input
+2026-11-20T10:18Z  idle   0  app      cuts=background_editor flags=scripted_input
+2026-11-20T10:19Z  idle   0  app      cuts=background_editor flags=scripted_input
+2026-11-20T10:20Z  you   60  app      cuts=- flags=low_signal
+2026-11-20T10:21Z  you   60  app      cuts=- flags=low_signal
+2026-11-20T10:22Z  you   60  app      cuts=- flags=low_signal
+2026-11-20T10:23Z  you   60  app      cuts=- flags=low_signal
+2026-11-20T10:24Z  you   60  app      cuts=- flags=low_signal
+2026-11-20T10:25Z  you   60  app      cuts=- flags=low_signal
+2026-11-20T10:26Z  you   60  app      cuts=- flags=low_signal
+2026-11-20T10:27Z  you   60  app      cuts=- flags=low_signal
+2026-11-20T10:28Z  you   60  app      cuts=- flags=low_signal
+2026-11-20T10:29Z  you   60  app      cuts=- flags=low_signal

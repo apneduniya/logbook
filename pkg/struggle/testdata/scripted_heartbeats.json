@@ -1,0 +1,46 @@
+{
+  "description": "Heartbeats arrive exactly every 30 s (a script): flagged scripted_input; credit is unchanged because a person is also present.",
+  "date": "2026-11-20",
+  "window": {
+    "From": "10:00:00",
+    "To": "11:00:00"
+  },
+  "seed": 1,
+  "repos": [
+    {
+      "path": "/home/sam/app",
+      "project": "app"
+    },
+    {
+      "path": "/home/sam/lib",
+      "project": "lib"
+    }
+  ],
+  "inputs": [
+    {
+      "from": "09:30:00",
+      "to": "11:01:00",
+      "gap_min": 0.2,
+      "gap_max": 3
+    }
+  ],
+  "samples": [
+    {
+      "from": "09:30:00",
+      "to": "11:02:00",
+      "focus": "editor"
+    }
+  ],
+  "heartbeats": [
+    {
+      "from": "09:30:00",
+      "to": "11:01:00",
+      "every_min": 30,
+      "every_max": 30,
+      "project": "app",
+      "entity": "/home/sam/app/main.go",
+      "write_every": 1,
+      "cursor": true
+    }
+  ]
+}

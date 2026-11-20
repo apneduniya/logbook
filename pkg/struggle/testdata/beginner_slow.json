@@ -1,0 +1,76 @@
+{
+  "description": "A beginner's slow session: long reading pauses (up to 2.5 min), switching between the editor and docs in the browser, few small edits at irregular times. Fairness: every minute is credited.",
+  "date": "2026-11-20",
+  "window": {
+    "From": "10:00:00",
+    "To": "11:00:00"
+  },
+  "seed": 7,
+  "repos": [
+    {
+      "path": "/home/sam/app",
+      "project": "app"
+    },
+    {
+      "path": "/home/sam/lib",
+      "project": "lib"
+    }
+  ],
+  "inputs": [
+    {
+      "from": "09:40:00",
+      "to": "11:01:00",
+      "gap_min": 0.5,
+      "gap_max": 150
+    }
+  ],
+  "samples": [
+    {
+      "from": "09:40:00",
+      "to": "10:04:00",
+      "focus": "editor"
+    },
+    {
+      "from": "10:04:00",
+      "to": "10:09:00",
+      "focus": "browser"
+    },
+    {
+      "from": "10:09:00",
+      "to": "10:20:00",
+      "focus": "editor"
+    },
+    {
+      "from": "10:20:00",
+      "to": "10:26:00",
+      "focus": "browser"
+    },
+    {
+      "from": "10:26:00",
+      "to": "10:41:00",
+      "focus": "editor"
+    },
+    {
+      "from": "10:41:00",
+      "to": "10:47:00",
+      "focus": "browser"
+    },
+    {
+      "from": "10:47:00",
+      "to": "11:02:00",
+      "focus": "editor"
+    }
+  ],
+  "heartbeats": [
+    {
+      "from": "09:40:00",
+      "to": "11:01:00",
+      "every_min": 40,
+      "every_max": 200,
+      "project": "app",
+      "entity": "/home/sam/app/main.go",
+      "write_every": 2,
+      "cursor": true
+    }
+  ]
+}

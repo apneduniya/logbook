@@ -1,7 +1,3 @@
-// Package struggle is the crediting engine: it turns a device's raw events
-// into labelled, credited minutes (docs/STRUGGLE-RULES.md, ADR 0010). It is
-// pure and deterministic: no I/O, no clock, no randomness. The agent runs it
-// continuously; the server re-runs it on submitted evidence.
 package struggle
 
 import (
@@ -45,10 +41,23 @@ const (
 
 // Input is everything the engine looks at for one device. Slices need not be
 // sorted; the engine sorts copies. Window bounds which minutes are emitted;
-// events before Window.From still provide context (e.g. "input in the last 3
-// minutes"), so callers should include at least 30 minutes of history.
+// events outside it are context only (e.g. "input in the last 3 minutes").
+//
+// A minute's result is final, and the same however the window is chosen, once
+// Input holds every event from ContextBefore before the minute to Lookahead
+// after it (ADR 0012). The agent meets this by computing the last 60 minutes
+// from 90 minutes of events: its rewrites of a minute made when the minute is
+// 25 to 30 minutes old are final. The server re-running closed history passes
+// events from ContextBefore before Window.From to 30 minutes after Window.To,
+// and sets DataEnd.
 type Input struct {
-	Window     Window
+	Window Window
+	// DataEnd, if set, says the events are complete up to this time even if
+	// the latest of them is earlier: an agent turn whose last event is more
+	// than 10 minutes before DataEnd has ended. Zero means the later of
+	// Window.To and the latest event. Added in v1 for server re-runs over
+	// closed history; the agent leaves it zero.
+	DataEnd    time.Time
 	Activity   []wire.ActivitySample
 	Heartbeats []Heartbeat
 	AI         []wire.AIEvent
@@ -95,7 +104,8 @@ type Repo struct {
 	Project string
 }
 
-// Minute is the engine's output for one (minute, project) pair.
+// Minute is the engine's output for one (minute, project) pair. Idle minutes
+// with no project are not emitted: a minute missing from a Result is idle.
 type Minute struct {
 	Minute  time.Time // UTC, truncated to the minute
 	Project string    // "" when the minute has no project (idle with nothing open)

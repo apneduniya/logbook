@@ -1,0 +1,60 @@
+{
+  "description": "A loop repeat at 08:50 runs until 08:55 and never sends turn_end (interrupted, terminal closed); the person keeps typing in the terminal until 09:40. The turn ends at its last event, so 08:56 onwards is credited; a server window ending at 09:00 with data to 09:30 agrees (TestServerSubWindowMatchesFullRun).",
+  "date": "2026-11-20",
+  "window": {
+    "From": "08:30:00",
+    "To": "09:40:00"
+  },
+  "seed": 4,
+  "repos": [
+    {
+      "path": "/home/sam/app",
+      "project": "app"
+    }
+  ],
+  "inputs": [
+    {
+      "from": "08:20:00",
+      "to": "09:41:00",
+      "gap_min": 0.5,
+      "gap_max": 20
+    }
+  ],
+  "samples": [
+    {
+      "from": "08:20:00",
+      "to": "09:41:00",
+      "focus": "terminal"
+    }
+  ],
+  "turns": [
+    {
+      "session": "s1",
+      "cwd": "/home/sam/app",
+      "start": "08:30:00",
+      "end": "08:34:00",
+      "chars": 70,
+      "hash": "h",
+      "tool_every": 20
+    },
+    {
+      "session": "s1",
+      "cwd": "/home/sam/app",
+      "start": "08:40:00",
+      "end": "08:44:00",
+      "chars": 70,
+      "hash": "h",
+      "tool_every": 20
+    },
+    {
+      "session": "s1",
+      "cwd": "/home/sam/app",
+      "start": "08:50:00",
+      "end": "08:55:00",
+      "open": true,
+      "chars": 70,
+      "hash": "h",
+      "tool_every": 20
+    }
+  ]
+}

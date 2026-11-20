@@ -6,3 +6,6 @@ internal/agent/harness/**/testdata/** -text
 # The installer scripts run on other machines straight from GitHub.
 scripts/*.sh text eol=lf
 scripts/*.ps1 text eol=crlf
+
+# Struggle engine golden files are compared byte for byte.
+pkg/struggle/testdata/** -text

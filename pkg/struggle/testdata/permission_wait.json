@@ -1,0 +1,62 @@
+{
+  "description": "The agent waits 7 minutes on a permission ask while the person is away: those minutes are idle, not agent; the person answers, then leaves again.",
+  "date": "2026-11-20",
+  "window": {
+    "From": "10:00:00",
+    "To": "10:30:00"
+  },
+  "seed": 1,
+  "repos": [
+    {
+      "path": "/home/sam/app",
+      "project": "app"
+    },
+    {
+      "path": "/home/sam/lib",
+      "project": "lib"
+    }
+  ],
+  "inputs": [
+    {
+      "from": "09:55:00",
+      "to": "10:00:20",
+      "gap_min": 0.2,
+      "gap_max": 1
+    },
+    {
+      "from": "10:00:20",
+      "to": "10:02:00",
+      "gap_min": 10,
+      "gap_max": 40
+    },
+    {
+      "from": "10:11:55",
+      "to": "10:12:05",
+      "gap_min": 0.5,
+      "gap_max": 2
+    }
+  ],
+  "samples": [
+    {
+      "from": "09:50:00",
+      "to": "10:31:00",
+      "focus": "terminal"
+    }
+  ],
+  "turns": [
+    {
+      "session": "s1",
+      "cwd": "/home/sam/app",
+      "start": "10:00:20",
+      "end": "10:25:00",
+      "chars": 150,
+      "tool_every": 20,
+      "permission": [
+        {
+          "at": "10:05:00",
+          "until": "10:12:00"
+        }
+      ]
+    }
+  ]
+}

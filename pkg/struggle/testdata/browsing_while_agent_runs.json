@@ -1,0 +1,41 @@
+{
+  "description": "The person sends a prompt and then browses for 45 minutes while the agent works. Browser time counts for 15 minutes after the person's last own signal (the prompt); the agent's events alone don't keep the session active, so the rest is agent_alone.",
+  "date": "2026-11-20",
+  "window": {
+    "From": "10:00:00",
+    "To": "10:50:00"
+  },
+  "seed": 7,
+  "repos": [
+    {
+      "path": "/home/sam/app",
+      "project": "app"
+    }
+  ],
+  "inputs": [
+    {
+      "from": "09:55:00",
+      "to": "10:51:00",
+      "gap_min": 0.3,
+      "gap_max": 10
+    }
+  ],
+  "samples": [
+    {
+      "from": "09:55:00",
+      "to": "10:00:30",
+      "focus": "terminal"
+    },
+    {
+      "from": "10:00:30",
+      "to": "10:51:00",
+      "focus": "browser"
+    }
+  ],
+  "heartbeats": [
+    {"from": "10:01:00", "to": "10:45:00", "every_min": 20, "every_max": 40, "project": "app", "entity": "/home/sam/app/main.go", "write_every": 1, "ai": true}
+  ],
+  "turns": [
+    {"session": "s1", "cwd": "/home/sam/app", "start": "10:00:20", "end": "10:45:00", "chars": 150, "tool_every": 15}
+  ]
+}

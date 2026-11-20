@@ -1,0 +1,55 @@
+{
+  "description": "Control for otel_mismatch: the person sends one prompt and watches the agent work for 35 minutes. Claude Code's user time is small (about 2 min) but its cli time covers the run, so nothing is flagged.",
+  "date": "2026-11-20",
+  "window": {
+    "From": "10:00:00",
+    "To": "10:40:00"
+  },
+  "seed": 1,
+  "repos": [
+    {
+      "path": "/home/sam/app",
+      "project": "app"
+    }
+  ],
+  "inputs": [
+    {
+      "from": "09:55:00",
+      "to": "10:00:10",
+      "gap_min": 0.2,
+      "gap_max": 1
+    },
+    {
+      "from": "10:00:10",
+      "to": "10:40:00",
+      "gap_min": 60,
+      "gap_max": 150
+    }
+  ],
+  "samples": [
+    {
+      "from": "09:50:00",
+      "to": "10:41:00",
+      "focus": "terminal"
+    }
+  ],
+  "turns": [
+    {
+      "session": "s1",
+      "cwd": "/home/sam/app",
+      "start": "10:00:10",
+      "end": "10:35:00",
+      "chars": 180,
+      "tool_every": 20
+    }
+  ],
+  "active_time": [
+    {"from": "10:00:00", "to": "10:05:00", "session": "s1", "user_secs": 40, "cli_secs": 280},
+    {"from": "10:05:00", "to": "10:10:00", "session": "s1", "user_secs": 10, "cli_secs": 290},
+    {"from": "10:10:00", "to": "10:15:00", "session": "s1", "user_secs": 10, "cli_secs": 290},
+    {"from": "10:15:00", "to": "10:20:00", "session": "s1", "user_secs": 10, "cli_secs": 290},
+    {"from": "10:20:00", "to": "10:25:00", "session": "s1", "user_secs": 10, "cli_secs": 290},
+    {"from": "10:25:00", "to": "10:30:00", "session": "s1", "user_secs": 10, "cli_secs": 290},
+    {"from": "10:30:00", "to": "10:35:00", "session": "s1", "user_secs": 10, "cli_secs": 290}
+  ]
+}

@@ -1,0 +1,44 @@
+{
+  "description": "The person sends a prompt and walks away while the agent works for 40 minutes: grace, then agent_alone, then idle once the turn ends.",
+  "date": "2026-11-20",
+  "window": {
+    "From": "10:00:00",
+    "To": "10:45:00"
+  },
+  "seed": 1,
+  "repos": [
+    {
+      "path": "/home/sam/app",
+      "project": "app"
+    },
+    {
+      "path": "/home/sam/lib",
+      "project": "lib"
+    }
+  ],
+  "inputs": [
+    {
+      "from": "09:55:00",
+      "to": "10:00:30",
+      "gap_min": 0.2,
+      "gap_max": 1.5
+    }
+  ],
+  "samples": [
+    {
+      "from": "09:50:00",
+      "to": "10:46:00",
+      "focus": "terminal"
+    }
+  ],
+  "turns": [
+    {
+      "session": "s1",
+      "cwd": "/home/sam/app",
+      "start": "10:00:30",
+      "end": "10:40:00",
+      "chars": 300,
+      "tool_every": 15
+    }
+  ]
+}

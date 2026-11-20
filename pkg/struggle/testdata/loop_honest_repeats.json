@@ -1,0 +1,49 @@
+{
+  "description": "Fairness for the loop rule: 'continue' (8 characters) is typed three times in 25 minutes, then a longer prompt is repeated three times, with the person editing code between every send. Nothing is cut: short prompts are left to rubber_stamp, and editing between repeats resets the loop count.",
+  "date": "2026-11-20",
+  "window": {
+    "From": "10:00:00",
+    "To": "11:00:00"
+  },
+  "seed": 5,
+  "repos": [
+    {
+      "path": "/home/sam/app",
+      "project": "app"
+    }
+  ],
+  "inputs": [
+    {
+      "from": "09:55:00",
+      "to": "11:01:00",
+      "gap_min": 0.3,
+      "gap_max": 15
+    }
+  ],
+  "samples": [
+    {
+      "from": "09:50:00",
+      "to": "10:30:00",
+      "focus": "terminal"
+    },
+    {
+      "from": "10:30:00",
+      "to": "11:02:00",
+      "focus": "editor"
+    }
+  ],
+  "heartbeats": [
+    {"from": "10:05:30", "to": "10:09:00", "every_min": 20, "every_max": 40, "project": "app", "entity": "/home/sam/app/main.go", "cursor": true},
+    {"from": "10:15:30", "to": "10:19:00", "every_min": 20, "every_max": 40, "project": "app", "entity": "/home/sam/app/main.go", "cursor": true},
+    {"from": "10:35:30", "to": "10:39:00", "every_min": 20, "every_max": 40, "project": "app", "entity": "/home/sam/app/main.go", "cursor": true, "write_every": 3},
+    {"from": "10:45:30", "to": "10:49:00", "every_min": 20, "every_max": 40, "project": "app", "entity": "/home/sam/app/main.go", "cursor": true, "write_every": 3}
+  ],
+  "turns": [
+    {"session": "s1", "cwd": "/home/sam/app", "start": "10:00:00", "end": "10:05:00", "chars": 8, "hash": "cont", "tool_every": 20},
+    {"session": "s1", "cwd": "/home/sam/app", "start": "10:10:00", "end": "10:15:00", "chars": 8, "hash": "cont", "tool_every": 20},
+    {"session": "s1", "cwd": "/home/sam/app", "start": "10:20:00", "end": "10:25:00", "chars": 8, "hash": "cont", "tool_every": 20},
+    {"session": "s1", "cwd": "/home/sam/app", "start": "10:30:00", "end": "10:35:00", "chars": 60, "hash": "tests", "tool_every": 20},
+    {"session": "s1", "cwd": "/home/sam/app", "start": "10:40:00", "end": "10:45:00", "chars": 60, "hash": "tests", "tool_every": 20},
+    {"session": "s1", "cwd": "/home/sam/app", "start": "10:50:00", "end": "10:55:00", "chars": 60, "hash": "tests", "tool_every": 20}
+  ]
+}
