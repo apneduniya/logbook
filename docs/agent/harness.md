@@ -195,7 +195,7 @@ OpenCode has no command-hook config, only JavaScript/TypeScript plugins, so Logb
 | stdout | nothing (the plugin ignores it) |
 | Version | OpenCode V2 docs (`/docs/build/plugins/server`, `/docs/build/plugins/migrate-v1`) and anomalyco/opencode `packages/schema` on `dev`, read 2026-11-20. V1 via the object form's `server()`, supported from 1.18.29. |
 
-The plugin (`internal/agent/harness/opencode/plugin.go`) default-exports `{id: "logbook", setup, server}`: V2 calls `setup(ctx)`, V1 calls `server()`. For each event it spawns `<logbook> hook opencode <event>` in the background (`stdio` ignored, killed after 5 s, never awaited) and writes a metadata-only JSON object to its stdin: `session_id`, `cwd` (the plugin instance's directory), `model` (tracked per session from `session.created`/`session.model.selected` or V1 `chat.message`), `tool`, `prompt_chars` (counted in the plugin as Unicode code points) and `decision`. Prompt text, tool arguments and output never leave the plugin.
+The plugin (`internal/agent/harness/opencode/plugin.go`) default-exports `{id: "logbook", setup, server}`: V2 calls `setup(ctx)`, V1 calls `server()`. For each event it spawns `<logbook> hook opencode <event>` in the background (`stdio` ignored, killed after 5 s, never awaited) and writes a metadata-only JSON object to its stdin: `session_id`, `cwd` (V2: the session's `location.directory` from `session.created`; V1: the plugin instance's directory), `model` (tracked per session from `session.created`/`session.model.selected` or V1 `chat.message`), `tool`, `prompt_chars` (counted in the plugin as Unicode code points) and `decision`. Prompt text, tool arguments and output never leave the plugin.
 
 | OpenCode source (V2 / V1) | Plugin event | AIEventKind |
 |---|---|---|
@@ -209,6 +209,8 @@ The plugin (`internal/agent/harness/opencode/plugin.go`) default-exports `{id: "
 | event `session.deleted` / `session.deleted` | `session-end` | `session_end` |
 
 A `permission_ask` with a non-empty `Decision` is the answer to the previous ask in that session, not a new ask.
+
+One OpenCode server can host sessions in several directories (the desktop app does), and in V2 `ctx.event.subscribe` streams the whole server's events while `ctx.location` is only the plugin instance's location. So each V2 plugin instance reports only the sessions it owns: a `session.created` whose `location.directory` equals `ctx.location.directory`, or a session its own location-scoped `prompt`/tool hooks have fired for (sessions created before the plugin loaded). Events for any other session are ignored, so each event is reported once, with the right `cwd`, even when the global plugin is loaded once per location.
 
 Limitations:
 - OpenCode sessions don't really end; `session_end` is only sent when a session is deleted.

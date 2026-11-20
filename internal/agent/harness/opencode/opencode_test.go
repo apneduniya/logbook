@@ -196,6 +196,8 @@ func TestPluginInNode(t *testing.T) {
 		"hook opencode permission-ask cwd=/home/teen/my-app,model=claude-sonnet-5-5,session_id=ses_v2",
 		"hook opencode permission-reply cwd=/home/teen/my-app,decision=deny,model=claude-sonnet-5-5,session_id=ses_v2",
 		"hook opencode prompt cwd=/home/teen/my-app,model=claude-sonnet-5-5,prompt_chars=" + strconv.Itoa(aievent.Runes("héllo "+harnesstest.Sentinel)) + ",session_id=ses_v2",
+		"hook opencode prompt cwd=/home/teen/my-app,prompt_chars=2,session_id=ses_resumed",
+		"hook opencode turn-end cwd=/home/teen/my-app,session_id=ses_resumed",
 		"hook opencode prompt cwd=/home/teen/v1-app,model=gpt-5.5,prompt_chars=" + strconv.Itoa(aievent.Runes("abc "+harnesstest.Sentinel)) + ",session_id=ses_v1",
 		"hook opencode session-end cwd=/home/teen/my-app,model=claude-sonnet-5-5,session_id=ses_v2",
 		"hook opencode session-start cwd=/home/teen/my-app,model=claude-sonnet-5-5,session_id=ses_v2",

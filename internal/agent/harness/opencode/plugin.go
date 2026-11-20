@@ -15,7 +15,7 @@ const binPlaceholder = "__LOGBOOK_BIN__"
 // pluginSource is the OpenCode plugin Logbook installs. It works with
 // OpenCode V2 (default export with id and setup) and V1 1.18.29+ (the same
 // object's server function). It sends metadata only: session id, the
-// plugin's project directory, model id, tool name, prompt length in
+// session's directory (V2: from session.created; V1: the plugin's), model id, tool name, prompt length in
 // characters and a permission answer. Prompt text, tool arguments and output
 // never leave the plugin. Each event runs `logbook hook opencode <event>` in
 // the background with the metadata as JSON on stdin; nothing waits for it.
@@ -75,14 +75,26 @@ function safe(fn) {
 
 async function setup(ctx) {
   const dir = () => str(ctx && ctx.location && ctx.location.directory)
+  // ctx.event.subscribe streams every event on the server, including
+  // sessions in other directories that another plugin instance reports.
+  // Only sessions this instance owns are reported: ones created in its
+  // location, or ones its own (location-scoped) hooks have seen.
+  const owned = new Map()
+  const own = (id) => {
+    if (id && !owned.has(id)) owned.set(id, dir())
+    return owned.get(id) || dir()
+  }
   await ctx.session.hook("prompt", safe((ev) => {
-    send("prompt", meta(ev.sessionID, dir(), { prompt_chars: chars(ev.prompt && ev.prompt.text) }))
+    const id = str(ev.sessionID)
+    send("prompt", meta(id, own(id), { prompt_chars: chars(ev.prompt && ev.prompt.text) }))
   }))
   await ctx.tool.hook("execute.before", safe((ev) => {
-    send("tool-start", meta(ev.sessionID, dir(), { tool: str(ev.tool) }))
+    const id = str(ev.sessionID)
+    send("tool-start", meta(id, own(id), { tool: str(ev.tool) }))
   }))
   await ctx.tool.hook("execute.after", safe((ev) => {
-    send("tool-end", meta(ev.sessionID, dir(), { tool: str(ev.tool) }))
+    const id = str(ev.sessionID)
+    send("tool-end", meta(id, own(id), { tool: str(ev.tool) }))
   }))
   const controller = new AbortController()
   const types = [
@@ -93,28 +105,36 @@ async function setup(ctx) {
   const onEvent = safe((e) => {
     const d = (e && e.data) || {}
     const id = str(d.sessionID)
+    if (!id) return
+    if (e.type === "session.created") {
+      const where = str(d.location && d.location.directory) || dir()
+      if (where !== dir()) return
+      owned.set(id, where)
+      if (d.model && d.model.id) models.set(id, str(d.model.id))
+      send("session-start", meta(id, where, {}))
+      return
+    }
+    if (!owned.has(id)) return
+    const where = owned.get(id)
     switch (e.type) {
-      case "session.created":
-        if (d.model && d.model.id) models.set(id, str(d.model.id))
-        send("session-start", meta(id, dir(), {}))
-        break
       case "session.model.selected":
         if (d.model && d.model.id) models.set(id, str(d.model.id))
         break
       case "session.deleted":
-        send("session-end", meta(id, dir(), {}))
+        send("session-end", meta(id, where, {}))
         models.delete(id)
+        owned.delete(id)
         break
       case "session.execution.succeeded":
       case "session.execution.failed":
       case "session.execution.interrupted":
-        send("turn-end", meta(id, dir(), {}))
+        send("turn-end", meta(id, where, {}))
         break
       case "permission.asked":
-        send("permission-ask", meta(id, dir(), {}))
+        send("permission-ask", meta(id, where, {}))
         break
       case "permission.replied":
-        send("permission-reply", meta(id, dir(), { decision: decision(d.reply) }))
+        send("permission-reply", meta(id, where, { decision: decision(d.reply) }))
         break
     }
   })
