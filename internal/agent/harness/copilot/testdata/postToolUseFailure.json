@@ -1,0 +1,10 @@
+{
+  "sessionId": "sess-cp-1",
+  "timestamp": 1763632798123,
+  "cwd": "/home/teen/my-app",
+  "toolName": "edit",
+  "toolArgs": {
+    "path": "SENTINEL-PRIVATE"
+  },
+  "error": "SENTINEL-PRIVATE"
+}

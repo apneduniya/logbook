@@ -1,0 +1,18 @@
+{
+  "session_id": "thr_123",
+  "transcript_path": "/home/teen/.codex/sessions/rollout-SENTINEL-PRIVATE.jsonl",
+  "cwd": "/home/teen/my-app",
+  "model": "gpt-5.5-codex",
+  "permission_mode": "default",
+  "hook_event_name": "PostToolUse",
+  "tool_response": {
+    "output": "SENTINEL-PRIVATE",
+    "exit_code": 0
+  },
+  "turn_id": "turn_1",
+  "tool_name": "Bash",
+  "tool_use_id": "call_1",
+  "tool_input": {
+    "command": "cargo test SENTINEL-PRIVATE"
+  }
+}

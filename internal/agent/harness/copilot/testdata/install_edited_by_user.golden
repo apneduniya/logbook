@@ -1,0 +1,97 @@
+{
+  "version": 1,
+  "hooks": {
+    "preToolUse": [
+      {
+        "type": "command",
+        "bash": "./scripts/check.sh",
+        "powershell": "./scripts/check.ps1",
+        "timeoutSec": 30
+      }
+    ],
+    "sessionStart": [
+      {
+        "type": "command",
+        "exec": "/opt/logbook/bin/logbook",
+        "args": [
+          "hook",
+          "copilot",
+          "sessionStart"
+        ],
+        "timeoutSec": 5
+      }
+    ],
+    "userPromptSubmitted": [
+      {
+        "type": "command",
+        "exec": "/opt/logbook/bin/logbook",
+        "args": [
+          "hook",
+          "copilot",
+          "userPromptSubmitted"
+        ],
+        "timeoutSec": 5
+      }
+    ],
+    "postToolUse": [
+      {
+        "type": "command",
+        "exec": "/opt/logbook/bin/logbook",
+        "args": [
+          "hook",
+          "copilot",
+          "postToolUse"
+        ],
+        "timeoutSec": 5
+      }
+    ],
+    "postToolUseFailure": [
+      {
+        "type": "command",
+        "exec": "/opt/logbook/bin/logbook",
+        "args": [
+          "hook",
+          "copilot",
+          "postToolUseFailure"
+        ],
+        "timeoutSec": 5
+      }
+    ],
+    "notification": [
+      {
+        "type": "command",
+        "exec": "/opt/logbook/bin/logbook",
+        "args": [
+          "hook",
+          "copilot",
+          "notification"
+        ],
+        "timeoutSec": 5
+      }
+    ],
+    "agentStop": [
+      {
+        "type": "command",
+        "exec": "/opt/logbook/bin/logbook",
+        "args": [
+          "hook",
+          "copilot",
+          "agentStop"
+        ],
+        "timeoutSec": 5
+      }
+    ],
+    "sessionEnd": [
+      {
+        "type": "command",
+        "exec": "/opt/logbook/bin/logbook",
+        "args": [
+          "hook",
+          "copilot",
+          "sessionEnd"
+        ],
+        "timeoutSec": 5
+      }
+    ]
+  }
+}

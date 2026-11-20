@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "hooks": {
+    "sessionStart": [
+      {
+        "command": "/opt/logbook/bin/logbook hook cursor sessionStart",
+        "timeout": 5
+      }
+    ],
+    "beforeSubmitPrompt": [
+      {
+        "command": "/opt/logbook/bin/logbook hook cursor beforeSubmitPrompt",
+        "timeout": 5
+      }
+    ],
+    "postToolUse": [
+      {
+        "command": "/opt/logbook/bin/logbook hook cursor postToolUse",
+        "timeout": 5
+      }
+    ],
+    "postToolUseFailure": [
+      {
+        "command": "/opt/logbook/bin/logbook hook cursor postToolUseFailure",
+        "timeout": 5
+      }
+    ],
+    "stop": [
+      {
+        "command": "/opt/logbook/bin/logbook hook cursor stop",
+        "timeout": 5
+      }
+    ],
+    "sessionEnd": [
+      {
+        "command": "/opt/logbook/bin/logbook hook cursor sessionEnd",
+        "timeout": 5
+      }
+    ]
+  },
+  "custom": "kept"
+}

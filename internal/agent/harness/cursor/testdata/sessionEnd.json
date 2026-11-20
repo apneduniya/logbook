@@ -1,0 +1,24 @@
+{
+  "conversation_id": "conv-42",
+  "generation_id": "gen-7",
+  "model": "claude-opus-4-7-thinking-max",
+  "model_id": "claude-opus-4-7",
+  "model_params": [
+    {
+      "id": "effort",
+      "value": "max"
+    }
+  ],
+  "cursor_version": "2.3.1",
+  "workspace_roots": [
+    "/home/teen/my-app"
+  ],
+  "user_email": "teen@example.com",
+  "transcript_path": "/home/teen/.cursor/projects/SENTINEL-PRIVATE/agent-transcripts/conv-42.txt",
+  "hook_event_name": "sessionEnd",
+  "session_id": "conv-42",
+  "reason": "completed",
+  "duration_ms": 45000,
+  "is_background_agent": false,
+  "final_status": "ok"
+}

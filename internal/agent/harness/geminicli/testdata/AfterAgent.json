@@ -1,0 +1,10 @@
+{
+  "session_id": "9f1c-gem",
+  "transcript_path": "/home/teen/.gemini/tmp/SENTINEL-PRIVATE/chats/session.json",
+  "cwd": "/home/teen/my-app",
+  "timestamp": "2026-11-20T09:59:58.123Z",
+  "hook_event_name": "AfterAgent",
+  "prompt": "SENTINEL-PRIVATE",
+  "prompt_response": "SENTINEL-PRIVATE",
+  "stop_hook_active": false
+}

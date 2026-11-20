@@ -1,0 +1,13 @@
+{
+  "sessionId": "sess-cp-1",
+  "timestamp": 1763632798123,
+  "cwd": "/home/teen/my-app",
+  "toolName": "bash",
+  "toolArgs": {
+    "command": "npm run build SENTINEL-PRIVATE"
+  },
+  "toolResult": {
+    "resultType": "success",
+    "textResultForLlm": "SENTINEL-PRIVATE"
+  }
+}

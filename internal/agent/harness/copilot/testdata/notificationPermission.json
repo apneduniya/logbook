@@ -1,0 +1,9 @@
+{
+  "sessionId": "sess-cp-1",
+  "timestamp": 1763632798123,
+  "cwd": "/home/teen/my-app",
+  "hook_event_name": "Notification",
+  "message": "Permission needed: SENTINEL-PRIVATE",
+  "title": "Permission needed",
+  "notification_type": "permission_prompt"
+}
