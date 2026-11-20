@@ -3,6 +3,7 @@ package hackatime
 import (
 	"context"
 	"net/http"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -103,7 +104,8 @@ func TestImportFinishRespectsExtension(t *testing.T) {
 	var fired atomic.Bool
 	relinked := make(chan error, 1)
 	e.fake.setHBHook(func(_ http.ResponseWriter, r *http.Request, _ int) bool {
-		if r.URL.Query().Get("start_time") == "2025-03-03T00:00:00Z" && fired.CompareAndSwap(false, true) {
+		// The window holding the last day ends just before 2025-03-04.
+		if strings.HasPrefix(r.URL.Query().Get("end_time"), "2025-03-03T23:59:59") && fired.CompareAndSwap(false, true) {
 			e.advance(24 * time.Hour)
 			relinked <- e.linkDirect(ctx, alice, 42)
 		}

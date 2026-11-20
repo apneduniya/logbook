@@ -272,6 +272,43 @@ func TestBearerAndQuery(t *testing.T) {
 	}
 }
 
+func TestSpans(t *testing.T) {
+	f := newFakeHackatime(t)
+	f.addUser(42, "green")
+	tok := f.tokenFor(42)
+	from := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	f.addHeartbeat(42, from.Add(time.Hour), "/a.go", nil)
+	f.addHeartbeat(42, from.Add(time.Hour+time.Minute), "/a.go", nil)
+	f.addHeartbeat(42, from.Add(5*time.Hour), "/lone.go", nil) // last and alone: no span
+	c := f.client(t, func(cfg *ClientConfig) { cfg.MaxRetries = -1 })
+
+	spans, err := c.Spans(context.Background(), tok, from, from.Add(24*time.Hour-time.Microsecond))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// One minute of activity plus the two-minute timeout Hackatime adds to a
+	// span that more heartbeats follow.
+	if len(spans) != 1 || !spans[0].Start.Equal(from.Add(time.Hour)) || spans[0].Duration != 3*time.Minute {
+		t.Fatalf("Spans() = %+v", spans)
+	}
+	if calls := f.spanCalls(); len(calls) != 1 || calls[0] != "2025-01-01T00:00:00Z..2025-01-01T23:59:59Z" {
+		t.Fatalf("span calls = %v", calls)
+	}
+	// Hackatime answers an unknown token on this endpoint with 404, not 401.
+	if _, err := c.Spans(context.Background(), "revoked", from, from.Add(time.Hour)); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Spans() with a bad token err = %v, want ErrNotFound", err)
+	}
+	for _, body := range []string{
+		`{}`, `{"spans": [{"duration": 5}]}`, `{"spans": [{"start_time": 1735693200, "duration": -1}]}`,
+		`{"spans": [{"start_time": 1e300, "duration": 5}]}`,
+	} {
+		f.setSpansHook(func(w http.ResponseWriter, _ *http.Request) bool { _, _ = w.Write([]byte(body)); return true })
+		if _, err := c.Spans(context.Background(), tok, from, from.Add(time.Hour)); !errors.Is(err, ErrInvalidResponse) {
+			t.Fatalf("Spans(%s) err = %v, want ErrInvalidResponse", body, err)
+		}
+	}
+}
+
 func TestParseRetryAfter(t *testing.T) {
 	now := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 	tests := []struct {
