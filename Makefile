@@ -9,7 +9,7 @@ export DATABASE_URL
 check: fmt vet lint test vuln ## everything CI runs
 
 fmt:
-	@test -z "$$(gofmt -l cmd internal pkg)" || (gofmt -l cmd internal pkg; echo "run gofmt -w"; exit 1)
+	@set -o pipefail; test -z "$$(gofmt -l cmd internal pkg)" || (gofmt -l cmd internal pkg; echo "run gofmt -w"; exit 1)
 
 vet:
 	go vet ./...
