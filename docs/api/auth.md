@@ -19,7 +19,7 @@ Owned by `internal/server/auth`. Covers sign-in with Hack Club Auth (HCA), brows
 
 The web UI and the API live on different origins (ADR 0011): the UI at `LOGBOOK_WEB_URL` (for example `https://logbook.boogles.dev`), the API at `LOGBOOK_BASE_URL` (for example `https://api.logbook.boogles.dev`). OAuth callbacks are on the API origin.
 
-- `LOGBOOK_WEB_URL` must be an origin: `https://` plus a host and optional port, with no path, query or fragment. Plain `http` is accepted only for `localhost`, `127.0.0.1` or `::1` with `LOGBOOK_DEV_INSECURE_COOKIE=true`, and it then defaults to `http://localhost:5173`. Otherwise it is required.
+- `LOGBOOK_WEB_URL` must be an origin: `https://` plus a host and optional port, with no path, query or fragment. A default port written out (`:443`, or `:80` for `http`) is refused, because browsers leave it out of `Origin` and CORS would never match. CORS and sign-in redirects build the origin with the same function (`config.ParseOrigin`). Plain `http` is accepted only for `localhost`, `127.0.0.1` or `::1` with `LOGBOOK_DEV_INSECURE_COOKIE=true`, and it then defaults to `http://localhost:5173`. Otherwise it is required.
 - After sign-in, the API redirects the browser to `LOGBOOK_WEB_URL` plus the saved `next` path. Only that origin is ever used, so `next` can't send anyone elsewhere.
 
 ### CORS

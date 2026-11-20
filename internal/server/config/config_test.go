@@ -132,6 +132,11 @@ func TestLoadWebURL(t *testing.T) {
 		{name: "user info", web: "https://user@logbook.boogles.dev", wantErr: true},
 		{name: "relative", web: "logbook.boogles.dev", wantErr: true},
 		{name: "other scheme", web: "ftp://logbook.boogles.dev", wantErr: true},
+		// Browsers leave default ports out of Origin, so these would never match.
+		{name: "explicit default https port", web: "https://logbook.boogles.dev:443", wantErr: true},
+		{name: "explicit default http port", web: "http://localhost:80", devCookie: true, wantErr: true},
+		{name: "empty port", web: "https://logbook.boogles.dev:", wantErr: true},
+		{name: "ipv6 loopback in dev", web: "http://[::1]:5173", devCookie: true, wantOrigin: "http://[::1]:5173"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

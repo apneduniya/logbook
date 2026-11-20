@@ -64,7 +64,7 @@ func TestCallbackFailureRedirectsToWebURL(t *testing.T) {
 }
 
 func TestNewRejectsWebURLThatIsNotAnOrigin(t *testing.T) {
-	for _, web := range []string{"https://web.test/app", "https://web.test/?x", "https://u@web.test", "web.test", "ftp://web.test"} {
+	for _, web := range []string{"https://web.test/app", "https://web.test/?x", "https://u@web.test", "web.test", "ftp://web.test", "https://web.test:443"} {
 		t.Run(web, func(t *testing.T) {
 			_, err := auth.New(nil, auth.Options{BaseURL: testBaseURL, WebURL: web, SecretKey: []byte(strings.Repeat("k", 32))})
 			if err == nil {

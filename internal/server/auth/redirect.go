@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+
+	"github.com/apneduniya/logbook/internal/server/config"
 )
 
 const maxNextLen = 512
@@ -37,20 +39,20 @@ func safeNext(next string) string {
 	return s
 }
 
-// originOf turns the configured web URL into an origin
-// (scheme://host[:port], lower case). Empty stays empty. It rejects
-// anything with a path, query, fragment or user info, so the origin can be
-// joined with a safeNext path without surprises.
+// originOf turns the configured web URL into an origin with
+// config.ParseOrigin, the function CORS uses too, so the two always agree.
+// Empty stays empty (the UI shares the API's origin). ParseOrigin rejects
+// anything after the host, so the origin can be joined with a safeNext path
+// without surprises.
 func originOf(webURL string) (string, error) {
 	if webURL == "" {
 		return "", nil
 	}
-	u, err := url.Parse(webURL)
-	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" || u.User != nil ||
-		(u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" || u.ForceQuery {
-		return "", fmt.Errorf("auth: web URL %q is not an origin", webURL)
+	origin, err := config.ParseOrigin(webURL)
+	if err != nil {
+		return "", fmt.Errorf("auth: web URL: %w", err)
 	}
-	return strings.ToLower(u.Scheme + "://" + u.Host), nil
+	return origin, nil
 }
 
 // webLocation is where to send the browser for path, which must be a

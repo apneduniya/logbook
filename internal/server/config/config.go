@@ -142,11 +142,11 @@ func (c Config) validateWebURL() error {
 	if c.WebURL == "" {
 		return errors.New("LOGBOOK_WEB_URL is required (the web UI's origin, e.g. https://logbook.boogles.dev)")
 	}
-	u, err := url.Parse(c.WebURL)
-	if err != nil || u.Host == "" || u.Opaque != "" || u.User != nil ||
-		(u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" || u.ForceQuery {
-		return fmt.Errorf("LOGBOOK_WEB_URL %q must be an origin like https://logbook.boogles.dev", c.WebURL)
+	origin, err := ParseOrigin(c.WebURL)
+	if err != nil {
+		return fmt.Errorf("LOGBOOK_WEB_URL: %w", err)
 	}
+	u, _ := url.Parse(origin) // ParseOrigin has parsed it already
 	switch {
 	case u.Scheme == "https":
 	case u.Scheme == "http" && IsLoopbackHost(u.Hostname()) && c.DevInsecureCookie:
@@ -156,14 +156,35 @@ func (c Config) validateWebURL() error {
 	return nil
 }
 
-// WebOrigin returns WebURL as a browser origin: scheme://host[:port], lower
-// case, with no trailing slash. It is what browsers send in Origin.
+// WebOrigin returns WebURL as a browser origin (see ParseOrigin). It is
+// what browsers send in Origin, and what CORS and sign-in redirects use.
 func (c Config) WebOrigin() string {
-	u, err := url.Parse(c.WebURL)
+	origin, err := ParseOrigin(c.WebURL)
 	if err != nil {
 		return "" // Load has validated WebURL; an empty origin allows nothing
 	}
-	return strings.ToLower(u.Scheme + "://" + u.Host)
+	return origin
+}
+
+// ParseOrigin turns raw, an http or https URL with nothing after the host
+// (a trailing "/" is allowed), into the origin a browser sends in its
+// Origin header: lower-case scheme://host[:port]. A path, query, fragment
+// or user info would make "origin + path" ambiguous, so they are errors.
+// So is an explicit default port (":443" for https, ":80" for http) or an
+// empty one: browsers leave those out of Origin, so the origin would never
+// match.
+func ParseOrigin(raw string) (string, error) {
+	u, err := url.Parse(raw)
+	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" || u.Opaque != "" ||
+		u.User != nil || (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" || u.ForceQuery {
+		return "", fmt.Errorf("%q must be an origin like https://logbook.boogles.dev", raw)
+	}
+	port := u.Port()
+	if strings.HasSuffix(u.Host, ":") ||
+		(u.Scheme == "https" && port == "443") || (u.Scheme == "http" && port == "80") {
+		return "", fmt.Errorf("%q must leave out the default port, as browsers do in Origin", raw)
+	}
+	return strings.ToLower(u.Scheme + "://" + u.Host), nil
 }
 
 // IsLoopbackHost reports whether host (without port) names this machine.
