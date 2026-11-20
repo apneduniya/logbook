@@ -148,7 +148,7 @@ func (c *Client) RegisterDevice(ctx context.Context, t Target, d DeviceRequest) 
 	var resp struct {
 		ID string `json:"id"`
 	}
-	status, _, err := c.post(ctx, t, "/api/v1/devices", d, &resp, http.StatusOK, http.StatusCreated)
+	status, err := c.post(ctx, t, "/api/v1/devices", d, &resp, http.StatusOK, http.StatusCreated)
 	if err != nil {
 		return "", err
 	}
@@ -188,19 +188,32 @@ type ItemError struct {
 type MinutesResult struct {
 	Accepted int         `json:"accepted"`
 	Rejected []ItemError `json:"rejected"`
-	// ServerTime is the server's clock when it answered, from the
-	// response's Date header (zero if it had none).
+	// ServerTime is the server's clock when it answered (UTC), from the
+	// body's server_time. It is zero when the body has none or it isn't
+	// RFC 3339. The Date header is never used: a proxy may drop or
+	// rewrite it.
 	ServerTime time.Time `json:"-"`
 }
 
 // UploadMinutes upserts credited minutes for the device.
 func (c *Client) UploadMinutes(ctx context.Context, t Target, deviceID string, req MinutesRequest) (MinutesResult, error) {
-	var res MinutesResult
-	status, date, err := c.post(ctx, t, "/api/v1/devices/"+url.PathEscape(deviceID)+"/minutes", req, &res, http.StatusOK)
+	var body struct {
+		MinutesResult
+		// Raw, so a malformed value leaves ServerTime zero instead of
+		// failing the upload.
+		ServerTime json.RawMessage `json:"server_time"`
+	}
+	status, err := c.post(ctx, t, "/api/v1/devices/"+url.PathEscape(deviceID)+"/minutes", req, &body, http.StatusOK)
 	if err != nil {
 		return MinutesResult{}, err
 	}
-	res.ServerTime = date
+	res := body.MinutesResult
+	var at string
+	if json.Unmarshal(body.ServerTime, &at) == nil {
+		if parsed, err := time.Parse(time.RFC3339Nano, at); err == nil {
+			res.ServerTime = parsed.UTC()
+		}
+	}
 	if res.Accepted < 0 || res.Accepted+len(res.Rejected) != len(req.Minutes) {
 		return MinutesResult{}, &Error{Kind: KindRetry, Status: status,
 			err: fmt.Errorf("server answered %d with %d accepted and %d rejected for %d minutes",
@@ -230,23 +243,21 @@ type EvidenceDayRequest struct {
 // UploadEvidenceDay uploads one link of the device's evidence chain. An
 // identical re-upload succeeds.
 func (c *Client) UploadEvidenceDay(ctx context.Context, t Target, deviceID string, req EvidenceDayRequest) error {
-	_, _, err := c.post(ctx, t, "/api/v1/devices/"+url.PathEscape(deviceID)+"/evidence-days", req, nil,
+	_, err := c.post(ctx, t, "/api/v1/devices/"+url.PathEscape(deviceID)+"/evidence-days", req, nil,
 		http.StatusOK, http.StatusCreated)
 	return err
 }
 
 // post sends body as JSON and decodes a successful answer into out (unless
-// nil). It returns the status and the server's clock from the Date header
-// (zero when missing), or an *Error.
-func (c *Client) post(ctx context.Context, t Target, path string, body, out any, ok ...int) (int, time.Time, error) {
-	var date time.Time
+// nil). It returns the status, or an *Error.
+func (c *Client) post(ctx context.Context, t Target, path string, body, out any, ok ...int) (int, error) {
 	b, err := json.Marshal(body)
 	if err != nil {
-		return 0, date, &Error{Kind: KindInvalid, err: fmt.Errorf("encoding request: %w", err)}
+		return 0, &Error{Kind: KindInvalid, err: fmt.Errorf("encoding request: %w", err)}
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(t.BaseURL, "/")+path, bytes.NewReader(b))
 	if err != nil {
-		return 0, date, &Error{Kind: KindRetry, err: fmt.Errorf("invalid server URL: %w", redactURLError(err))}
+		return 0, &Error{Kind: KindRetry, err: fmt.Errorf("invalid server URL: %w", redactURLError(err))}
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
@@ -254,15 +265,12 @@ func (c *Client) post(ctx context.Context, t Target, path string, body, out any,
 	req.Header.Set("Authorization", "Bearer "+t.APIKey)
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return 0, date, &Error{Kind: KindRetry, err: fmt.Errorf("sending request: %w", redactURLError(err))}
+		return 0, &Error{Kind: KindRetry, err: fmt.Errorf("sending request: %w", redactURLError(err))}
 	}
 	defer func() { _ = resp.Body.Close() }()
-	if d, err := http.ParseTime(resp.Header.Get("Date")); err == nil {
-		date = d
-	}
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 	if err != nil {
-		return resp.StatusCode, date, &Error{Kind: KindRetry, Status: resp.StatusCode, err: fmt.Errorf("reading response: %w", err)}
+		return resp.StatusCode, &Error{Kind: KindRetry, Status: resp.StatusCode, err: fmt.Errorf("reading response: %w", err)}
 	}
 	for _, s := range ok {
 		if resp.StatusCode != s {
@@ -270,13 +278,13 @@ func (c *Client) post(ctx context.Context, t Target, path string, body, out any,
 		}
 		if out != nil {
 			if err := json.Unmarshal(raw, out); err != nil {
-				return s, date, &Error{Kind: KindRetry, Status: s,
+				return s, &Error{Kind: KindRetry, Status: s,
 					err: fmt.Errorf("unexpected response from server (status %d, not JSON)", s)}
 			}
 		}
-		return s, date, nil
+		return s, nil
 	}
-	return resp.StatusCode, date, classify(resp.StatusCode, resp.Header.Get("Retry-After"), raw, time.Now())
+	return resp.StatusCode, classify(resp.StatusCode, resp.Header.Get("Retry-After"), raw, time.Now())
 }
 
 // classify maps a non-success answer to an *Error. Answers that only the

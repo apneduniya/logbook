@@ -154,6 +154,38 @@ func TestUploadMinutes(t *testing.T) {
 	}
 }
 
+// The server's time comes from the body's server_time, never from the Date
+// header (a proxy may drop or rewrite it). A missing or malformed value is
+// zero and doesn't fail the upload.
+func TestUploadMinutesServerTime(t *testing.T) {
+	tests := []struct {
+		name, body string
+		want       time.Time
+	}{
+		{"utc", `{"accepted":0,"rejected":[],"server_time":"2026-11-20T12:00:30.25Z"}`,
+			time.Date(2026, 11, 20, 12, 0, 30, 250e6, time.UTC)},
+		{"offset", `{"accepted":0,"rejected":[],"server_time":"2026-11-20T17:30:30+05:30"}`,
+			time.Date(2026, 11, 20, 12, 0, 30, 0, time.UTC)},
+		{"missing", `{"accepted":0,"rejected":[]}`, time.Time{}},
+		{"malformed", `{"accepted":0,"rejected":[],"server_time":"yesterday"}`, time.Time{}},
+		{"wrong type", `{"accepted":0,"rejected":[],"server_time":17}`, time.Time{}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Date", "Wed, 25 Nov 2026 12:00:00 GMT")
+				_, _ = io.WriteString(w, tt.body)
+			}))
+			t.Cleanup(srv.Close)
+			res, err := New(srv.Client(), "ua").UploadMinutes(t.Context(), Target{BaseURL: srv.URL}, "d",
+				MinutesRequest{RulesVersion: "v1", Minutes: []Minute{}})
+			if err != nil || !res.ServerTime.Equal(tt.want) || res.ServerTime.Location() != time.UTC {
+				t.Fatalf("UploadMinutes = %+v, %v; want server time %v", res, err, tt.want)
+			}
+		})
+	}
+}
+
 func TestUploadEvidenceDay(t *testing.T) {
 	srv, rec := server(t, 409, `{"error":"chain mismatch"}`)
 	err := New(srv.Client(), "ua").UploadEvidenceDay(t.Context(), Target{BaseURL: srv.URL, APIKey: "k"}, "d",

@@ -91,8 +91,9 @@ type MinutesStatus struct {
 	SealedError    string `json:"sealed_error,omitempty"`
 	// Clock, when non-empty, describes a problem with the system clock:
 	// it is behind the last sealed day (crediting is paused until it
-	// catches up), or it differs from the server's (days are sealed by the
-	// server's clock).
+	// catches up), or it differs from the server's by more than
+	// MaxClockSkew, or the server gave no usable time (no day is sealed
+	// until the clocks agree; minutes are still uploaded).
 	Clock string `json:"clock,omitempty"`
 }
 

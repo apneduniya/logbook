@@ -66,9 +66,13 @@ type Batch struct {
 }
 
 // Result is the outcome of an upload. Rejected is sorted by index.
+// ServerTime is the server's clock (UTC) when it checked the batch: the
+// agent seals evidence days only while it agrees with the system clock, and
+// reads it from the body because a proxy may drop or rewrite Date headers.
 type Result struct {
-	Accepted int         `json:"accepted"`
-	Rejected []Rejection `json:"rejected"`
+	Accepted   int         `json:"accepted"`
+	Rejected   []Rejection `json:"rejected"`
+	ServerTime time.Time   `json:"server_time"`
 }
 
 // Upload validates b and stores the accepted minutes for one of userID's
@@ -146,7 +150,7 @@ func (s *Service) Upload(ctx context.Context, userID, deviceID uuid.UUID, b Batc
 	if rejected == nil {
 		rejected = []Rejection{}
 	}
-	return Result{Accepted: len(b.Minutes) - len(rejected), Rejected: rejected}, nil
+	return Result{Accepted: len(b.Minutes) - len(rejected), Rejected: rejected, ServerTime: now}, nil
 }
 
 // minutesOf returns the distinct minutes of items, sorted.

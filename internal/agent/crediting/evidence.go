@@ -29,7 +29,9 @@ const retentionDays = 89
 // The server refuses first-time minutes in a sealed day, so a new day is
 // sealed only when mayseal (this run's minute uploads went through, not on
 // hold or refused) and the server has answered for every stored minute of
-// it. Otherwise the day waits for a later run. The engine never writes
+// it. Otherwise the day waits for a later run. No day is sealed or skipped
+// unless this run read the server's clock and it agrees with the system
+// clock (sealingClock). The engine never writes
 // minutes into a sealable day again: its window is the last hour, and a day
 // becomes sealable DayGrace (an hour) after it ends.
 func (r *Runner) sealAndUploadDays(ctx context.Context, t serverapi.Target, dev devicekey.Device, now time.Time, mayseal bool) error {
@@ -62,19 +64,22 @@ func (r *Runner) sealAndUploadDays(ctx context.Context, t serverapi.Target, dev 
 	if oldest := utcDay(now.AddDate(0, 0, -retentionDays)); day < oldest {
 		day = oldest
 	}
-	end := lastSealableDay(now)
-	if mayseal && day <= end {
-		// Seal by the earlier of the system clock and the server's, so a
-		// clock far ahead never seals a day that hasn't ended.
-		server, err := r.serverClock(ctx, t, dev)
-		if err != nil {
-			return err
-		}
-		if !server.IsZero() && lastSealableDay(server) < end {
-			end = lastSealableDay(server)
-		}
+	if !mayseal || day > lastSealableDay(now) {
+		return nil
 	}
-	for sealed := 0; mayseal && day <= end && sealed < maxDaysPerRun; day = nextDay(day) {
+	// Seal (or skip) only days that have ended by the earlier of the system
+	// clock and the server's, and only while the two agree: a clock far
+	// ahead must never move the chain past a day that hasn't ended.
+	at, agree, err := r.sealingClock(ctx, t, dev, now)
+	if err != nil {
+		return err
+	}
+	if !agree {
+		r.opt.Logger.DebugContext(ctx, "not sealing evidence days: the server's clock is missing or disagrees", "next_day", day)
+		return nil
+	}
+	end := lastSealableDay(at)
+	for sealed := 0; day <= end && sealed < maxDaysPerRun; day = nextDay(day) {
 		if waiting, err := r.minutesWaiting(ctx, day); err != nil || waiting > 0 {
 			if waiting > 0 {
 				r.opt.Logger.DebugContext(ctx, "evidence day waits for its minutes", "day", day, "minutes", waiting)

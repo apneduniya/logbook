@@ -128,10 +128,10 @@ type Runner struct {
 	// so they are written only when they change.
 	shown map[string]string
 	// clockBehind is set while the clock is before the last sealed day;
-	// clockChecked once a run has found it isn't. serverAt is the server's
-	// clock from this run's latest minutes response (zero if none).
+	// clockChecked once a run has found it isn't. server is the server's
+	// clock from this run's latest minutes response.
 	clockBehind, clockChecked bool
-	serverAt                  time.Time
+	server                    serverClock
 
 	mu    sync.Mutex
 	gate  gate
@@ -341,7 +341,7 @@ func (r *Runner) upload(ctx context.Context, now time.Time) {
 	if !r.ready(ctx, t, now) {
 		return
 	}
-	r.serverAt = time.Time{}
+	r.server = serverClock{}
 	dev, err := r.opt.Identity.Ensure(ctx, t.Target)
 	if errors.Is(err, devicekey.ErrRevoked) {
 		r.setRevoked(ctx, t.APIKey)
