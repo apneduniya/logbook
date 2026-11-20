@@ -45,9 +45,34 @@ func (d *DB) EventsBetween(ctx context.Context, from, to time.Time, upto *HighWa
 	if upto != nil {
 		lim = *upto
 	}
-	f, t := from.UnixMilli(), to.UnixMilli()
+	return d.readEvents(ctx, byTime(), from.UnixMilli(), to.UnixMilli(), HighWater{}, lim)
+}
+
+// eventQueries is one read query per event table.
+type eventQueries struct{ heartbeats, ai, activity, gitEvents string }
+
+// byTime walks the time index: best for a whole range.
+func byTime() eventQueries {
+	return eventQueries{qHeartbeatsRange, qAIRange, qActivityRange, qGitRange}
+}
+
+// byID walks the id range: best for the few rows added since a poll.
+func byID() eventQueries {
+	return eventQueries{qHeartbeatsAfter, qAIAfter, qActivityAfter, qGitAfter}
+}
+
+// EventsAfter returns the events stored since after, up to and including
+// upto, with from <= time < to. Polling it with the previous call's upto
+// reads each event once, so a caller can keep a sliding window in memory
+// instead of re-reading it.
+func (d *DB) EventsAfter(ctx context.Context, after, upto HighWater, from, to time.Time) (Events, error) {
+	return d.readEvents(ctx, byID(), from.UnixMilli(), to.UnixMilli(), after, upto)
+}
+
+// readEvents reads events with f <= time (ms) < t and after < id <= upto.
+func (d *DB) readEvents(ctx context.Context, q eventQueries, f, t int64, after, upto HighWater) (Events, error) {
 	var ev Events
-	err := d.query(ctx, qHeartbeatsRange, []any{f, t, lim.Heartbeats}, func(r *sql.Rows) error {
+	err := d.query(ctx, q.heartbeats, []any{f, t, after.Heartbeats, upto.Heartbeats}, func(r *sql.Rows) error {
 		var payload []byte
 		if err := r.Scan(&payload); err != nil {
 			return err
@@ -61,7 +86,7 @@ func (d *DB) EventsBetween(ctx context.Context, from, to time.Time, upto *HighWa
 	if err != nil {
 		return Events{}, fmt.Errorf("reading heartbeats: %w", err)
 	}
-	err = d.query(ctx, qAIRange, []any{f, t, lim.AI}, func(r *sql.Rows) error {
+	err = d.query(ctx, q.ai, []any{f, t, after.AI, upto.AI}, func(r *sql.Rows) error {
 		var (
 			e             wire.AIEvent
 			at            int64
@@ -78,7 +103,7 @@ func (d *DB) EventsBetween(ctx context.Context, from, to time.Time, upto *HighWa
 	if err != nil {
 		return Events{}, fmt.Errorf("reading ai events: %w", err)
 	}
-	err = d.query(ctx, qActivityRange, []any{f, t, lim.Activity}, func(r *sql.Rows) error {
+	err = d.query(ctx, q.activity, []any{f, t, after.Activity, upto.Activity}, func(r *sql.Rows) error {
 		var (
 			s  wire.ActivitySample
 			at int64
@@ -93,7 +118,7 @@ func (d *DB) EventsBetween(ctx context.Context, from, to time.Time, upto *HighWa
 	if err != nil {
 		return Events{}, fmt.Errorf("reading activity samples: %w", err)
 	}
-	err = d.query(ctx, qGitRange, []any{f, t, lim.Git}, func(r *sql.Rows) error {
+	err = d.query(ctx, q.gitEvents, []any{f, t, after.Git, upto.Git}, func(r *sql.Rows) error {
 		var (
 			g  wire.GitEvent
 			at int64

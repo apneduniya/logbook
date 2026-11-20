@@ -79,20 +79,20 @@ const (
 	qHeartbeatPrune  = `DELETE FROM heartbeats WHERE time < ?`
 )
 
-// Event reads for a time range, up to a high-water row id (migration 0002).
+// Event reads for a time range and a range of row ids (migration 0002).
 const (
 	qHighWater = `SELECT
 		(SELECT COALESCE(MAX(id), 0) FROM heartbeats),
 		(SELECT COALESCE(MAX(id), 0) FROM ai_events),
 		(SELECT COALESCE(MAX(id), 0) FROM activity_samples),
 		(SELECT COALESCE(MAX(id), 0) FROM git_events)`
-	qHeartbeatsRange = `SELECT payload FROM heartbeats WHERE time >= ? AND time < ? AND id <= ? ORDER BY time, id`
+	qHeartbeatsRange = `SELECT payload FROM heartbeats WHERE time >= ? AND time < ? AND id > ? AND id <= ? ORDER BY time, id`
 	qAIRange         = `SELECT time, harness, kind, session_id, project, cwd, model, tool, prompt_chars, decision
-		FROM ai_events WHERE time >= ? AND time < ? AND id <= ? ORDER BY time, id`
+		FROM ai_events WHERE time >= ? AND time < ? AND id > ? AND id <= ? ORDER BY time, id`
 	qActivityRange = `SELECT time, idle_seconds, focus_app, focus_kind
-		FROM activity_samples WHERE time >= ? AND time < ? AND id <= ? ORDER BY time, id`
+		FROM activity_samples WHERE time >= ? AND time < ? AND id > ? AND id <= ? ORDER BY time, id`
 	qGitRange = `SELECT time, project, kind, commit_hash, files_changed, insertions, deletions
-		FROM git_events WHERE time >= ? AND time < ? AND id <= ? ORDER BY time, id`
+		FROM git_events WHERE time >= ? AND time < ? AND id > ? AND id <= ? ORDER BY time, id`
 )
 
 // Credited minutes (migration 0002).
@@ -127,4 +127,17 @@ const (
 		rules_version, event_counts, hw_heartbeats, hw_ai, hw_activity, hw_git, state, error, created_at, updated_at
 		FROM evidence_days WHERE device_id = ? ORDER BY day DESC LIMIT 1`
 	qEvidenceSetState = `UPDATE evidence_days SET state = ?, error = ?, updated_at = ? WHERE device_id = ? AND day = ?`
+)
+
+// The same event reads for new rows only: "+time" stops SQLite from using
+// the time index, so it walks the short id range instead of the whole time
+// range.
+const (
+	qHeartbeatsAfter = `SELECT payload FROM heartbeats WHERE +time >= ? AND +time < ? AND id > ? AND id <= ? ORDER BY time, id`
+	qAIAfter         = `SELECT time, harness, kind, session_id, project, cwd, model, tool, prompt_chars, decision
+		FROM ai_events WHERE +time >= ? AND +time < ? AND id > ? AND id <= ? ORDER BY time, id`
+	qActivityAfter = `SELECT time, idle_seconds, focus_app, focus_kind
+		FROM activity_samples WHERE +time >= ? AND +time < ? AND id > ? AND id <= ? ORDER BY time, id`
+	qGitAfter = `SELECT time, project, kind, commit_hash, files_changed, insertions, deletions
+		FROM git_events WHERE +time >= ? AND +time < ? AND id > ? AND id <= ? ORDER BY time, id`
 )
