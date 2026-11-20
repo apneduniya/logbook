@@ -100,13 +100,49 @@ func (p ActiveTimePoint) validate() error {
 
 // ActiveTimes returns the Claude Code active time overlapping [from, to), as
 // the struggle engine takes it: one entry per stored point, with UserSecs or
-// CLISecs set by its type, sorted by (From, To, SessionID, type).
+// CLISecs set by its type, sorted by (From, To, SessionID, type). Points
+// with zero seconds are left out.
 // ProjectCwd is the latest working directory Claude Code's hooks reported
-// for the session by the point's end ("" when hooks never fired for it);
+// for the session before to ("" when hooks never fired for it);
 // OpenTelemetry itself carries no directory.
 func (d *DB) ActiveTimes(ctx context.Context, from, to time.Time) ([]struggle.ActiveTime, error) {
 	f, t := from.UnixMilli(), to.UnixMilli()
-	rows, err := d.sql.QueryContext(ctx, qActiveRange, f, f, t)
+	out, err := d.activePoints(ctx, f, t)
+	if err != nil {
+		return nil, err
+	}
+	cwds := map[string]string{}
+	for i := range out {
+		id := out[i].SessionID
+		cwd, ok := cwds[id]
+		if !ok {
+			if cwd, err = d.sessionCwd(ctx, id, t); err != nil {
+				return nil, err
+			}
+			cwds[id] = cwd
+		}
+		out[i].ProjectCwd = cwd
+	}
+	return out, nil
+}
+
+// sessionCwd is the latest working directory Claude Code's hooks reported
+// for a session before t (unix ms), or "".
+func (d *DB) sessionCwd(ctx context.Context, sessionID string, t int64) (string, error) {
+	var cwd string
+	err := d.sql.QueryRowContext(ctx, qSessionCwd, sessionID, t).Scan(&cwd)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("reading session directory: %w", err)
+	}
+	return cwd, nil
+}
+
+// activePoints reads the stored points overlapping [f, t) (unix ms).
+func (d *DB) activePoints(ctx context.Context, f, t int64) ([]struggle.ActiveTime, error) {
+	rows, err := d.sql.QueryContext(ctx, qActiveRange, f, t, f)
 	if err != nil {
 		return nil, fmt.Errorf("reading active time: %w", err)
 	}
@@ -119,7 +155,7 @@ func (d *DB) ActiveTimes(ctx context.Context, from, to time.Time) ([]struggle.Ac
 			secs         float64
 			at           struggle.ActiveTime
 		)
-		if err := rows.Scan(&fromMS, &toMS, &at.SessionID, &typ, &secs, &at.ProjectCwd); err != nil {
+		if err := rows.Scan(&fromMS, &toMS, &at.SessionID, &typ, &secs); err != nil {
 			return nil, fmt.Errorf("scanning active time: %w", err)
 		}
 		at.From, at.To = time.UnixMilli(fromMS).UTC(), time.UnixMilli(toMS).UTC()

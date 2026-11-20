@@ -17,7 +17,8 @@ func at(m int) time.Time { return testNow.Add(time.Duration(m) * time.Minute) }
 func TestActiveTimesRangeOrderAndCwd(t *testing.T) {
 	ctx := context.Background()
 	d, _ := openTest(t)
-	// Hook events give session s1 a working directory; it moves later.
+	// Hook events give session s1 a working directory; the latest one before
+	// the window's end applies to all its points.
 	evs := []wire.LocalEvent{
 		{Type: "ai", AI: &wire.AIEvent{Time: at(-50), Harness: wire.HarnessClaudeCode, Kind: wire.AISessionStart, SessionID: "s1", Cwd: "/w/app"}},
 		{Type: "ai", AI: &wire.AIEvent{Time: at(-15), Harness: wire.HarnessClaudeCode, Kind: wire.AIPromptSubmit, SessionID: "s1", Cwd: "/w/app/sub"}},
@@ -49,8 +50,8 @@ func TestActiveTimesRangeOrderAndCwd(t *testing.T) {
 	}
 	cc := wire.HarnessClaudeCode
 	want := []struggle.ActiveTime{
-		{From: at(-30), To: at(-29), SessionID: "s1", CLISecs: 40, Harness: cc, ProjectCwd: "/w/app"},
-		{From: at(-30), To: at(-29), SessionID: "s1", UserSecs: 12.5, Harness: cc, ProjectCwd: "/w/app"},
+		{From: at(-30), To: at(-29), SessionID: "s1", CLISecs: 40, Harness: cc, ProjectCwd: "/w/app/sub"},
+		{From: at(-30), To: at(-29), SessionID: "s1", UserSecs: 12.5, Harness: cc, ProjectCwd: "/w/app/sub"},
 		{From: at(-30), To: at(-29), SessionID: "s2", UserSecs: 5, Harness: cc},
 		{From: at(-10), To: at(-9), SessionID: "s1", UserSecs: 30, Harness: cc, ProjectCwd: "/w/app/sub"},
 		{From: at(-5), To: at(-5), SessionID: "s3", UserSecs: 1, Harness: cc},

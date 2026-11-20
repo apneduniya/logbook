@@ -14,7 +14,7 @@ var now = time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
 
 func minute(m int) time.Time { return now.Add(time.Duration(m) * time.Minute) }
 
-func fixture(t *testing.T, name string) []byte {
+func fixture(t testing.TB, name string) []byte {
 	t.Helper()
 	b, err := os.ReadFile(filepath.Join("testdata", name)) //nolint:gosec // test fixture path
 	if err != nil {

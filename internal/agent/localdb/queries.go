@@ -70,16 +70,17 @@ const (
 	qActiveLastCumulative = `SELECT to_ms, cumulative FROM active_time
 		WHERE session_id = ? AND type = ? AND series_start = ? AND cumulative IS NOT NULL
 		ORDER BY to_ms DESC LIMIT 1`
-	// qActiveRange lists points overlapping [from, to) (a zero-length point
-	// counts when it lies inside), each with the latest working directory
-	// Claude Code's hooks reported for the session by the point's end.
-	qActiveRange = `SELECT a.from_ms, a.to_ms, a.session_id, a.type, a.secs,
-		COALESCE((SELECT e.cwd FROM ai_events e
-			WHERE e.session_id = a.session_id AND e.harness = 'claude-code' AND e.cwd <> '' AND e.time <= a.to_ms
-			ORDER BY e.time DESC LIMIT 1), '') AS cwd
-		FROM active_time a
-		WHERE (a.to_ms > ? OR (a.to_ms = a.from_ms AND a.to_ms >= ?)) AND a.from_ms < ?
-		ORDER BY a.from_ms, a.to_ms, a.session_id, a.type`
+	// qActiveRange lists points overlapping [from, to); a zero-length point
+	// counts when it lies inside. Zero-second points (kept only to track
+	// cumulative series) are left out. Parameters: from, to, from.
+	qActiveRange = `SELECT from_ms, to_ms, session_id, type, secs FROM active_time
+		WHERE to_ms >= ? AND from_ms < ? AND (to_ms > ? OR to_ms = from_ms) AND secs > 0
+		ORDER BY from_ms, to_ms, session_id, type`
+	// qSessionCwd is the latest working directory Claude Code's hooks
+	// reported for a session before a time.
+	qSessionCwd = `SELECT cwd FROM ai_events
+		WHERE session_id = ? AND harness = 'claude-code' AND cwd <> '' AND time < ?
+		ORDER BY time DESC LIMIT 1`
 	qActivePrune = `DELETE FROM active_time WHERE to_ms < ?`
 	qActiveTrim  = `DELETE FROM active_time WHERE id <= (SELECT MAX(id) FROM active_time) - ?`
 )

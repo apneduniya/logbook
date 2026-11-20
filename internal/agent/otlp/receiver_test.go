@@ -28,7 +28,7 @@ type env struct {
 	logs *bytes.Buffer
 }
 
-func newEnv(t *testing.T) *env {
+func newEnv(t testing.TB) *env {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "logbook.db")
 	db, err := localdb.Open(context.Background(), path, localdb.WithClock(func() time.Time { return now }))
@@ -51,7 +51,7 @@ func (e *env) restart() {
 	e.h = e.rcv.Handler()
 }
 
-func (e *env) post(t *testing.T, path string, body []byte, mutate ...func(*http.Request)) *httptest.ResponseRecorder {
+func (e *env) post(t testing.TB, path string, body []byte, mutate ...func(*http.Request)) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, path, bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
