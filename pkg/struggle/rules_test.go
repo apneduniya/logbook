@@ -164,16 +164,42 @@ func TestBuildTurns(t *testing.T) {
 			want:    []want{{0, time.Minute, true, 1}},
 		},
 		{
-			name:    "turn_end and tool_end outside a turn are ignored",
-			events:  []aiEvent{ai(0, wire.AITurnEnd, "s"), ai(time.Minute, wire.AIToolEnd, "s")},
+			name:    "turn_end and session_start outside a turn are ignored",
+			events:  []aiEvent{ai(0, wire.AITurnEnd, "s"), ai(time.Minute, wire.AISessionStart, "s")},
 			horizon: time.Hour,
 			want:    nil,
+		},
+		{
+			// Copilot sends no tool_start, or the prompt is before the
+			// caller's data: the agent is mid-turn.
+			name: "tool_end outside a turn opens an inferred turn",
+			events: []aiEvent{ai(0, wire.AITurnEnd, "s"), ai(time.Minute, wire.AIToolEnd, "s"),
+				ai(6*time.Minute, wire.AIToolEnd, "s"), ai(7*time.Minute, wire.AITurnEnd, "s")},
+			horizon: time.Hour,
+			want:    []want{{time.Minute, 7 * time.Minute, false, 1}},
+		},
+		{
+			name: "session_start doesn't keep a turn running",
+			events: []aiEvent{ai(0, wire.AIPromptSubmit, "s"), ai(5*time.Minute, wire.AISessionStart, "s"),
+				ai(12*time.Minute, wire.AISessionStart, "s"), ai(14*time.Minute, wire.AIToolEnd, "s")},
+			horizon: time.Hour,
+			want:    []want{{0, 0, true, 1}, {14 * time.Minute, 14 * time.Minute, false, 1}},
+		},
+		{
+			name: "a decided ask outside a turn opens a running turn",
+			events: []aiEvent{func() aiEvent {
+				e := ai(0, wire.AIPermissionAsk, "s")
+				e.decided = true
+				return e
+			}(), ai(3*time.Minute, wire.AITurnEnd, "s")},
+			horizon: time.Hour,
+			want:    []want{{0, 3 * time.Minute, false, 1}},
 		},
 		{
 			// The prompt is before the caller's data: the agent is mid-turn,
 			// waiting, and the next event answers.
 			name:    "permission ask outside a turn opens a waiting turn",
-			events:  []aiEvent{ai(0, wire.AIPermissionAsk, "s"), ai(time.Minute, wire.AITurnEnd, "s"), ai(2*time.Minute, wire.AIToolEnd, "s")},
+			events:  []aiEvent{ai(0, wire.AIPermissionAsk, "s"), ai(time.Minute, wire.AITurnEnd, "s")},
 			horizon: time.Hour,
 			want:    []want{{0, time.Minute, false, 1}},
 		},

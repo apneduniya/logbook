@@ -1,0 +1,48 @@
+{
+  "description": "A Copilot turn (its hooks send tool ends, never tool starts) runs from 09:00 to 11:00 with a tool call every 5 minutes. The person watches for 20 minutes, walks away, and comes back at 10:40. The turn is agent time throughout, also for callers whose data no longer holds the 09:00 prompt.",
+  "date": "2026-11-20",
+  "window": {
+    "From": "09:00:00",
+    "To": "11:15:00"
+  },
+  "seed": 7,
+  "repos": [
+    {
+      "path": "/home/sam/app",
+      "project": "app"
+    }
+  ],
+  "inputs": [
+    {
+      "from": "08:55:00",
+      "to": "09:20:00",
+      "gap_min": 0.5,
+      "gap_max": 30
+    },
+    {
+      "from": "10:40:00",
+      "to": "11:05:00",
+      "gap_min": 0.5,
+      "gap_max": 30
+    }
+  ],
+  "samples": [
+    {
+      "from": "08:50:00",
+      "to": "11:16:00",
+      "focus": "terminal"
+    }
+  ],
+  "turns": [
+    {
+      "session": "c1",
+      "harness": "copilot",
+      "cwd": "/home/sam/app",
+      "start": "09:00:00",
+      "end": "11:00:00",
+      "chars": 120,
+      "hash": "p",
+      "tool_every": 300
+    }
+  ]
+}

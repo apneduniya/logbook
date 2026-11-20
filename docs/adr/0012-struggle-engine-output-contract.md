@@ -20,7 +20,7 @@ A first version claimed a 30-minute look-back but let a loop cut cover a turn of
    - a turn's agent-minute project comes from its recent events, never from its first event, which the caller's data may cut off;
    - the rubber-stamp streak cuts the second stamp's turn when the third arrives, but only from 24 minutes before the third;
    - a timed-out turn ends at its last event, which is at most 10 minutes of lookahead;
-   - an unanswered permission ask outside any turn opens a waiting turn, so a turn's state never depends on a prompt more than `ContextBefore` back;
+   - any mid-turn event outside a turn (tool start, tool end, permission ask) opens an inferred turn, waiting after an unanswered ask, and `session_start` doesn't touch turns, so whether a session is busy depends only on its last event, at most 10 minutes back, never on a prompt more than `ContextBefore` back (Copilot sends tool ends only). Rules decided at a prompt never apply to inferred turns;
    - movement on low-signal devices compares with the same file's position within 30 minutes;
    - `automated_session` judges a prompt only from activity samples taken within 2 minutes of it, though a later sample can report earlier input;
    - the end of the data is the latest of `Window.To`, `Input.DataEnd` and every event. The server sets `DataEnd` when it passes data after `To`, so a turn that went quiet just before `To` ends where the agent, which saw the quiet, ended it.
