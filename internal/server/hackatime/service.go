@@ -173,10 +173,12 @@ func (s *Service) storeLink(ctx context.Context, userID uuid.UUID, token string,
 		}); err != nil {
 			return fmt.Errorf("saving hackatime link: %w", err)
 		}
+		today := s.now()
 		if _, err := q.StartHackatimeImport(ctx, db.StartHackatimeImportParams{
-			UserID:   userID,
-			FromDate: pgDate(s.importFrom),
-			ToDate:   pgDate(s.now()),
+			UserID:     userID,
+			FromDate:   pgDate(s.importFrom),
+			ToDate:     pgDate(today),
+			RecentFrom: pgDate(recentStart(s.importFrom, today)),
 		}); err != nil {
 			return fmt.Errorf("starting hackatime import: %w", err)
 		}

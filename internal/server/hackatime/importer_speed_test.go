@@ -10,12 +10,15 @@ import (
 	"github.com/google/uuid"
 )
 
-// setImportStart moves a fresh import's start (and cursor) back to from, so a
-// test can cover a long range without linking years ago.
+// setImportStart moves a fresh import's start (and cursors) back to from, as
+// if the user had linked with that start date, so a test can cover a long
+// range without linking years ago.
 func (e *testEnv) setImportStart(t *testing.T, userID uuid.UUID, from time.Time) {
 	t.Helper()
-	if _, err := e.st.Pool.Exec(context.Background(),
-		"UPDATE hackatime_imports SET from_date = $2, next_date = $2 WHERE user_id = $1", userID, from); err != nil {
+	if _, err := e.st.Pool.Exec(context.Background(), `UPDATE hackatime_imports
+		SET from_date = $2, next_date = $2,
+		    recent_from = GREATEST($2, to_date - 29), recent_next = GREATEST($2, to_date - 29)
+		WHERE user_id = $1`, userID, from); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -114,13 +117,15 @@ func TestImportSkipsEmptyMonths(t *testing.T) {
 	if got := e.sink.count(alice); got != want {
 		t.Fatalf("imported %d heartbeats, want %d", got, want)
 	}
+	// The last 30 days come first, then the backfill of the rest.
 	days := int(time.Date(2025, 3, 4, 0, 0, 0, 0, time.UTC).Sub(from).Hours() / 24)
-	if probes := len(e.fake.spanCalls()); probes != (days+probeDays-1)/probeDays {
-		t.Fatalf("made %d probes for %d days, want one per %d days", probes, days, probeDays)
+	if probes, want := len(e.fake.spanCalls()), 1+(days-recentDays+probeDays-1)/probeDays; probes != want {
+		t.Fatalf("made %d probes for %d days, want %d: one for the recent days, then one per %d days", probes, days, want, probeDays)
 	}
-	// Six quiet months in one window, then the rest (4h of activity) in another.
-	if calls := e.fake.heartbeatCalls(); len(calls) != 2 {
-		t.Fatalf("heartbeat calls = %v, want 2", calls)
+	// The quiet recent days in one window; then six quiet months in one
+	// window, and the rest (4h of activity) in another.
+	if calls := e.fake.heartbeatCalls(); len(calls) != 3 {
+		t.Fatalf("heartbeat calls = %v, want 3", calls)
 	}
 	imp, _ := e.st.GetHackatimeImport(ctx, alice)
 	if imp.Status != importDone || imp.HeartbeatsImported != int64(want) || imp.NextDate.Time.Format(time.DateOnly) != "2025-03-03" {

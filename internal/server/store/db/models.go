@@ -41,6 +41,9 @@ type HackatimeImport struct {
 	HeartbeatsImported int64
 	LastError          string
 	UpdatedAt          time.Time
+	RecentFrom         pgtype.Date
+	RecentNext         pgtype.Date
+	RecentDone         bool
 }
 
 type HackatimeLink struct {
