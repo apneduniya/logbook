@@ -21,7 +21,9 @@ const (
 
 // Sink receives samples. It has the same method set as the daemon's Sink, so
 // a daemon.Sink value satisfies it without this package importing daemon.
-type Sink interface {
+// It is an alias of an unnamed interface type so that, if the daemon declares
+// its Sink the same way, Run's signature matches daemon.Sensor exactly.
+type Sink = interface {
 	RecordActivity(ctx context.Context, s wire.ActivitySample) error
 	RecordGit(ctx context.Context, g wire.GitEvent) error
 }
