@@ -15,7 +15,12 @@ All routes require a Logbook API key (`RequireAPIKey`), sent the way wakatime-cl
 
 ## Rate limit
 
-Heartbeat routes allow each user a burst of 120 requests, refilled at 2 per second (per server process). Over the limit: `429 {"error": "Too many requests, try again later"}` with `Retry-After: 60`. wakatime-cli puts the heartbeats back in its offline queue and retries later.
+Limits are per user and per server process, with separate buckets:
+
+- Heartbeat routes: a burst of 120 requests, refilled at 2 per second.
+- Status bar: a burst of 30 requests, refilled at 1 every 2 seconds.
+
+Over the limit: `429 {"error": "Too many requests, try again later"}` with `Retry-After: 60`. wakatime-cli puts heartbeats back in its offline queue and retries later. Per-IP limits, if any, belong to the router middleware, not this module.
 
 ## Request headers
 
@@ -27,7 +32,7 @@ wakatime-cli sends these, and the server uses them:
 | `X-Machine-Name` | Query-escaped hostname. Overrides the body's `machine`. |
 | `X-Logbook-Source: agent` | Set by the Logbook agent; marks heartbeats as `source = agent` instead of `editor`. |
 
-The `user_agent` is parsed (format `wakatime/<v> (<os>-<kernel>-<arch>) <runtime> <editor>/<v> <editor>-wakatime/<v>`). The editor and operating system it names override the body's `editor` and `operating_system`, and the plugin token fills an empty `plugin`. This matches Hackatime.
+The heartbeat's `user_agent` is the body's `user_agent`, else the body's `plugin`, else the `User-Agent` header (cut to 256 bytes). It is parsed (format `wakatime/<v> (<os>-<kernel>-<arch>) <runtime> <editor>/<v> <editor>-wakatime/<v>`). The editor and operating system it names override the body's `editor` and `operating_system`, and the plugin token fills an empty `plugin`. This matches Hackatime, and the same rule applies to imported heartbeats.
 
 ## Heartbeat object
 
@@ -45,9 +50,10 @@ WakaTime's format plus Hackatime's AI fields (`pkg/wire.Heartbeat`). Unknown fie
 | `dependencies` | string[] | At most 100, each at most 256 bytes |
 | `ai_model`, `ai_session` | string | At most 256 bytes |
 | `ai_input_tokens`, `ai_output_tokens` | int | Not negative |
-| `ai_prompt_length`, `ai_line_changes`, `human_line_changes` | int | 0 to 2147483647 |
+| `ai_prompt_length` | int | 0 to 2147483647 |
+| `ai_line_changes`, `human_line_changes` | int | Net line delta, negative when lines were removed: -2147483648 to 2147483647 |
 
-The server removes NUL bytes from every string, strips control characters from `project`, and trims it. Heartbeats are deduplicated per user on all their fields: resending one is accepted and reported with the same `id`, but stored once.
+The server removes NUL bytes from every string, strips control characters from `project`, and trims it. The placeholders `<<LAST_PROJECT>>`, `<<LAST_LANGUAGE>>` and `<<LAST_BRANCH>>` are stored as empty strings, so that time counts under `Unknown` (project) and no project is created for them. Heartbeats are deduplicated per user on all their fields: resending one is accepted and reported with the same `id`, but stored once.
 
 Request bodies are limited to 1 MiB.
 
@@ -158,7 +164,7 @@ Also `GET /api/hackatime/v1/users/current/statusbar/today`. Today's coding time 
 - Heartbeats without a project are counted under `Unknown`; an empty language is `Other`, an empty editor `Unknown`.
 - `text` follows WakaTime: `2 hrs 17 mins`, `1 hr`, `49 mins`, `7 secs`; `0 secs` when there's no activity.
 
-**Errors:** `401` without a valid API key, or if the key's user no longer exists.
+**Errors:** `401` without a valid API key, or if the key's user no longer exists. `429` when rate limited.
 
 ## How time is counted
 

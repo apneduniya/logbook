@@ -29,11 +29,16 @@
 //
 // # Heartbeat fields
 //
-// The HTTP layer fills fields that wakatime-cli sends in headers, matching
-// Hackatime: editor, operating system and plugin come from the heartbeat's
-// user_agent (or the User-Agent header when absent) and win over the body;
-// machine comes from X-Machine-Name and wins over the body. Every string has
-// NUL bytes removed (Postgres can't store them), project names have control
-// characters stripped and are trimmed, empty category becomes "coding" and
-// empty type becomes "file".
+// The HTTP layer only reads the headers wakatime-cli sends (User-Agent,
+// X-Machine-Name) into a Client; the service applies one attribution rule to
+// every caller, including the Hackatime importer, which passes no Client.
+// Matching Hackatime, user_agent comes from the body's user_agent, then the
+// body's plugin, then the User-Agent header; the editor and OS that user
+// agent names win over the body, and its plugin token fills an empty plugin;
+// X-Machine-Name wins over the body's machine. Every string has NUL bytes
+// removed (Postgres can't store them), project names have control
+// characters stripped and are trimmed, the placeholders "<<LAST_PROJECT>>",
+// "<<LAST_LANGUAGE>>" and "<<LAST_BRANCH>>" become "" (so their time counts
+// as Unknown/Other and no project is created for them), empty category
+// becomes "coding" and empty type becomes "file".
 package ingest

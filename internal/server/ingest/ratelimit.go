@@ -16,6 +16,14 @@ const (
 	defaultBurst         = 120
 )
 
+// Default per-user limits for the status-bar endpoint. Editor plugins poll it
+// every minute or two per open editor (wakatime-cli --today); this leaves
+// room for many editors while bounding the aggregate query rate per key.
+const (
+	defaultStatusBarRatePerSecond = 0.5
+	defaultStatusBarBurst         = 30
+)
+
 // limiter is an in-memory token bucket per user. Limits are per server
 // process; that's enough to stop one key flooding one instance.
 type limiter struct {

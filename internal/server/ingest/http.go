@@ -9,12 +9,10 @@ import (
 	"net/http"
 	"net/url"
 	"time"
-	"unicode/utf8"
 
 	"github.com/google/uuid"
 
 	"github.com/apneduniya/logbook/internal/server/httpapi"
-	"github.com/apneduniya/logbook/internal/server/ingest/useragent"
 	"github.com/apneduniya/logbook/internal/server/store"
 	"github.com/apneduniya/logbook/pkg/wire"
 )
@@ -30,15 +28,12 @@ const (
 // straight from wakatime-cli. It is self-reported provenance, not a trust signal.
 const SourceHeader = "X-Logbook-Source"
 
-// maxHeaderValue bounds header-derived fields so they always pass validation.
-const maxHeaderValue = 256
-
 // retryAfterSeconds is the Retry-After value sent with 429 responses.
 const retryAfterSeconds = "60"
 
 // service is what the handler needs from Service.
 type service interface {
-	IngestBatch(ctx context.Context, userID uuid.UUID, hbs []wire.Heartbeat, source string) (BatchResult, error)
+	IngestBatch(ctx context.Context, userID uuid.UUID, hbs []wire.Heartbeat, source string, client Client) (BatchResult, error)
 	StatusBarToday(ctx context.Context, userID uuid.UUID) (StatusBar, error)
 }
 
@@ -46,21 +41,29 @@ type service interface {
 type Handler struct {
 	svc           service
 	requireAPIKey httpapi.Middleware
-	limiter       *limiter
+	limiter       *limiter // heartbeat POSTs
+	readLimiter   *limiter // status-bar GETs, a separate bucket
 }
 
 // HandlerOption configures a Handler.
 type HandlerOption func(*handlerConfig)
 
 type handlerConfig struct {
-	rate, burst float64
-	now         func() time.Time
+	rate, burst         float64
+	readRate, readBurst float64
+	now                 func() time.Time
 }
 
 // WithRateLimit sets the per-user request rate (per second) and burst for
 // the heartbeat endpoints.
 func WithRateLimit(perSecond, burst float64) HandlerOption {
 	return func(c *handlerConfig) { c.rate, c.burst = perSecond, burst }
+}
+
+// WithStatusBarRateLimit sets the per-user request rate (per second) and
+// burst for the status-bar endpoint.
+func WithStatusBarRateLimit(perSecond, burst float64) HandlerOption {
+	return func(c *handlerConfig) { c.readRate, c.readBurst = perSecond, burst }
 }
 
 // NewHandler returns a Handler. requireAPIKey must authenticate the caller
@@ -70,11 +73,20 @@ func NewHandler(svc *Service, requireAPIKey httpapi.Middleware, opts ...HandlerO
 }
 
 func newHandler(svc service, requireAPIKey httpapi.Middleware, opts ...HandlerOption) *Handler {
-	c := handlerConfig{rate: defaultRatePerSecond, burst: defaultBurst, now: time.Now}
+	c := handlerConfig{
+		rate: defaultRatePerSecond, burst: defaultBurst,
+		readRate: defaultStatusBarRatePerSecond, readBurst: defaultStatusBarBurst,
+		now: time.Now,
+	}
 	for _, o := range opts {
 		o(&c)
 	}
-	return &Handler{svc: svc, requireAPIKey: requireAPIKey, limiter: newLimiter(c.rate, c.burst, c.now)}
+	return &Handler{
+		svc:           svc,
+		requireAPIKey: requireAPIKey,
+		limiter:       newLimiter(c.rate, c.burst, c.now),
+		readLimiter:   newLimiter(c.readRate, c.readBurst, c.now),
+	}
 }
 
 // Register adds the ingest routes to mux.
@@ -115,7 +127,7 @@ func (h *Handler) single(okStatus int) httpapi.HandlerFunc {
 		if err != nil {
 			return httpapi.Errorf(http.StatusBadRequest, err, "%s", err.Error())
 		}
-		res, err := h.svc.IngestBatch(r.Context(), user.ID, []wire.Heartbeat{enrich(hb, r)}, sourceOf(r))
+		res, err := h.svc.IngestBatch(r.Context(), user.ID, []wire.Heartbeat{hb}, sourceOf(r), clientOf(r))
 		if err != nil {
 			return fmt.Errorf("ingesting heartbeat: %w", err)
 		}
@@ -154,9 +166,9 @@ func (h *Handler) bulk(w http.ResponseWriter, r *http.Request) error {
 			decodeErrs[i] = err
 			continue
 		}
-		hbs = append(hbs, enrich(hb, r))
+		hbs = append(hbs, hb)
 	}
-	res, err := h.svc.IngestBatch(r.Context(), user.ID, hbs, sourceOf(r))
+	res, err := h.svc.IngestBatch(r.Context(), user.ID, hbs, sourceOf(r), clientOf(r))
 	if err != nil {
 		return fmt.Errorf("ingesting heartbeats: %w", err)
 	}
@@ -182,9 +194,9 @@ func (h *Handler) bulk(w http.ResponseWriter, r *http.Request) error {
 }
 
 func (h *Handler) statusBar(w http.ResponseWriter, r *http.Request) error {
-	user, ok := httpapi.UserFrom(r.Context())
-	if !ok {
-		return httpapi.Errorf(http.StatusUnauthorized, nil, "unauthorized")
+	user, err := callerLimited(w, r, h.readLimiter)
+	if err != nil {
+		return err
 	}
 	sb, err := h.svc.StatusBarToday(r.Context(), user.ID)
 	if err != nil {
@@ -197,14 +209,21 @@ func (h *Handler) statusBar(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
-// caller returns the authenticated user and applies the per-user rate limit.
-// wakatime-cli re-queues heartbeats from a rejected request and retries later.
+// caller returns the authenticated user and applies the per-user heartbeat
+// rate limit. wakatime-cli re-queues heartbeats from a rejected request and
+// retries later.
 func (h *Handler) caller(w http.ResponseWriter, r *http.Request) (httpapi.CurrentUser, error) {
+	return callerLimited(w, r, h.limiter)
+}
+
+// callerLimited returns the authenticated user after taking a token from
+// their bucket in l, or a 429 with Retry-After when the bucket is empty.
+func callerLimited(w http.ResponseWriter, r *http.Request, l *limiter) (httpapi.CurrentUser, error) {
 	user, ok := httpapi.UserFrom(r.Context())
 	if !ok {
 		return httpapi.CurrentUser{}, httpapi.Errorf(http.StatusUnauthorized, nil, "unauthorized")
 	}
-	if !h.limiter.allow(user.ID) {
+	if !l.allow(user.ID) {
 		w.Header().Set("Retry-After", retryAfterSeconds)
 		return httpapi.CurrentUser{}, httpapi.Errorf(http.StatusTooManyRequests, nil, "Too many requests, try again later")
 	}
@@ -248,35 +267,15 @@ func decodeHeartbeat(raw json.RawMessage) (wire.Heartbeat, error) {
 	return hb, nil
 }
 
-// enrich fills the fields wakatime-cli sends outside the heartbeat body,
-// with Hackatime's precedence: the user agent comes from the body, then the
-// body's plugin, then the User-Agent header; what it says about the editor
-// and OS wins over the body; X-Machine-Name wins over the body's machine.
-func enrich(hb wire.Heartbeat, r *http.Request) wire.Heartbeat {
-	if hb.UserAgent == "" {
-		hb.UserAgent = hb.Plugin
+// clientOf reads the values wakatime-cli sends in headers. How they combine
+// with each heartbeat's body is the service's rule (see Client).
+func clientOf(r *http.Request) Client {
+	m := r.Header.Get("X-Machine-Name")
+	// wakatime-cli query-escapes the hostname.
+	if un, err := url.QueryUnescape(m); err == nil {
+		m = un
 	}
-	if hb.UserAgent == "" {
-		hb.UserAgent = truncate(r.UserAgent())
-	}
-	c := useragent.Parse(hb.UserAgent)
-	if c.Editor != "" {
-		hb.Editor = c.Editor
-	}
-	if c.OS != "" {
-		hb.OperatingSystem = c.OS
-	}
-	if hb.Plugin == "" {
-		hb.Plugin = c.Plugin
-	}
-	if m := r.Header.Get("X-Machine-Name"); m != "" {
-		// wakatime-cli query-escapes the hostname.
-		if un, err := url.QueryUnescape(m); err == nil {
-			m = un
-		}
-		hb.Machine = truncate(m)
-	}
-	return hb
+	return Client{UserAgent: r.UserAgent(), Machine: m}
 }
 
 func sourceOf(r *http.Request) string {
@@ -284,18 +283,6 @@ func sourceOf(r *http.Request) string {
 		return SourceAgent
 	}
 	return SourceEditor
-}
-
-// truncate cuts s to maxHeaderValue bytes on a rune boundary.
-func truncate(s string) string {
-	if len(s) <= maxHeaderValue {
-		return s
-	}
-	s = s[:maxHeaderValue]
-	for !utf8.ValidString(s) {
-		s = s[:len(s)-1]
-	}
-	return s
 }
 
 type errorBody struct {

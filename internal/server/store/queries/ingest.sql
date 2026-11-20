@@ -48,18 +48,29 @@ SELECT inserted.time FROM inserted;
 
 -- name: ListRollupHeartbeats :many
 -- Reads the heartbeats a rollup recompute needs. The ranges are inclusive and
--- never overlap, so no row is returned twice. min_time/max_time bound the scan
--- so Postgres prunes partitions outside the batch.
+-- never overlap, so no row is returned twice. The read is driven from the
+-- ranges: each one gets its own index range scan on (user_id, time) with
+-- runtime partition pruning, so a batch spread over months reads only the
+-- few minutes around each heartbeat, not everything in between.
 SELECT h.time, h.project, h.language, h.editor, h.category
-FROM heartbeats h
-JOIN (
+FROM (
+    -- Two set-returning functions in one SELECT list are zipped row by row.
     SELECT unnest(sqlc.arg(range_starts)::timestamptz[]) AS lo,
            unnest(sqlc.arg(range_ends)::timestamptz[]) AS hi
 ) r
-    ON h.time >= r.lo AND h.time <= r.hi
-WHERE h.user_id = sqlc.arg(user_id)
-  AND h.time >= sqlc.arg(min_time)
-  AND h.time <= sqlc.arg(max_time)
+CROSS JOIN LATERAL (
+    SELECT hb.time, hb.fields_hash, hb.project, hb.language, hb.editor, hb.category
+    FROM heartbeats hb
+    WHERE hb.user_id = sqlc.arg(user_id)::uuid
+      AND hb.time >= r.lo
+      AND hb.time <= r.hi
+    -- OFFSET 0 stops the planner flattening this subquery into a plain join
+    -- (which scans every partition for the user and filters afterwards), so
+    -- it stays a parameterised scan per range. Checked with EXPLAIN ANALYZE
+    -- on 200k seeded heartbeats: one pkey range scan per range, every other
+    -- partition "never executed".
+    OFFSET 0
+) h
 ORDER BY h.time, h.fields_hash;
 
 -- name: ReplaceUserMinutes :exec
@@ -82,6 +93,9 @@ upserted AS (
     FROM fresh f
     ON CONFLICT (user_id, minute, project, language, editor, category, label)
     DO UPDATE SET seconds = EXCLUDED.seconds
+    -- Skip unchanged rows: most minutes of a recomputed window keep their
+    -- value, and rewriting them would only produce dead tuples and WAL.
+    WHERE user_minutes.seconds IS DISTINCT FROM EXCLUDED.seconds
 )
 DELETE FROM user_minutes um
 USING (

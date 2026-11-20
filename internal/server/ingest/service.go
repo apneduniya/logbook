@@ -85,20 +85,22 @@ type BatchResult struct {
 
 // Ingest stores hbs for userID and returns how many were new. Invalid
 // heartbeats are skipped; use IngestBatch to see why. A non-nil err means
-// nothing from the batch was stored. The Hackatime importer calls this.
+// nothing from the batch was stored. The Hackatime importer calls this; it
+// has no request headers, so attribution uses only each heartbeat's body.
 func (s *Service) Ingest(ctx context.Context, userID uuid.UUID, hbs []wire.Heartbeat, source string) (inserted int, err error) {
-	res, err := s.IngestBatch(ctx, userID, hbs, source)
+	res, err := s.IngestBatch(ctx, userID, hbs, source, Client{})
 	if err != nil {
 		return 0, err
 	}
 	return res.Inserted, nil
 }
 
-// IngestBatch validates, deduplicates and stores hbs for userID in one
-// transaction, recomputes the affected rollups, and publishes the change
-// after commit. Invalid heartbeats are reported per item and don't fail the
-// batch.
-func (s *Service) IngestBatch(ctx context.Context, userID uuid.UUID, hbs []wire.Heartbeat, source string) (BatchResult, error) {
+// IngestBatch normalises each heartbeat (applying client's header values
+// with the precedence described on Client), validates, deduplicates and
+// stores hbs for userID in one transaction, recomputes the affected
+// rollups, and publishes the change after commit. Invalid heartbeats are
+// reported per item and don't fail the batch.
+func (s *Service) IngestBatch(ctx context.Context, userID uuid.UUID, hbs []wire.Heartbeat, source string, client Client) (BatchResult, error) {
 	switch source {
 	case SourceEditor, SourceAgent, SourceImport:
 	default:
@@ -110,7 +112,7 @@ func (s *Service) IngestBatch(ctx context.Context, userID uuid.UUID, hbs []wire.
 	rows := make([]heartbeatRow, 0, len(hbs))
 	seen := make(map[string]bool, len(hbs))
 	for i, raw := range hbs {
-		h := normalize(raw)
+		h := normalize(raw, client)
 		res.Items[i].Heartbeat = h
 		if err := validate(h, now); err != nil {
 			res.Items[i].Err = err
@@ -173,8 +175,6 @@ func recompute(ctx context.Context, q *db.Queries, userID uuid.UUID, windows []r
 		RangeStarts: readStarts,
 		RangeEnds:   readEnds,
 		UserID:      userID,
-		MinTime:     readStarts[0],
-		MaxTime:     readEnds[len(readEnds)-1],
 	})
 	if err != nil {
 		return fmt.Errorf("reading heartbeats for rollup: %w", err)

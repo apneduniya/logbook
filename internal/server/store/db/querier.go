@@ -22,8 +22,10 @@ type Querier interface {
 	// Returns the time of each heartbeat that was actually inserted.
 	InsertHeartbeats(ctx context.Context, arg InsertHeartbeatsParams) ([]time.Time, error)
 	// Reads the heartbeats a rollup recompute needs. The ranges are inclusive and
-	// never overlap, so no row is returned twice. min_time/max_time bound the scan
-	// so Postgres prunes partitions outside the batch.
+	// never overlap, so no row is returned twice. The read is driven from the
+	// ranges: each one gets its own index range scan on (user_id, time) with
+	// runtime partition pruning, so a batch spread over months reads only the
+	// few minutes around each heartbeat, not everything in between.
 	ListRollupHeartbeats(ctx context.Context, arg ListRollupHeartbeatsParams) ([]ListRollupHeartbeatsRow, error)
 	// Queries for internal/server/ingest. Every query is scoped to one user_id.
 	// Serialises ingest batches for one user until the transaction ends.

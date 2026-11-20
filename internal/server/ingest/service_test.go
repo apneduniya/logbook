@@ -159,17 +159,22 @@ func TestIngestReportsInvalidItemsWithoutFailingTheBatch(t *testing.T) {
 	badLine := beat(base.Add(3*time.Second), "alpha")
 	badLine.Lineno = &neg
 	nul := beat(base.Add(4*time.Second), "al\x00pha")
+	// wakatime-cli sends line changes as net deltas, negative when an edit
+	// removes lines; they are valid.
+	removed, humanRemoved := -5, -3
+	shrink := beat(base.Add(5*time.Second), "alpha")
+	shrink.AILineChanges, shrink.HumanLineChanges = &removed, &humanRemoved
 
 	res, err := svc.IngestBatch(ctx, user, []wire.Heartbeat{
-		beat(base, "alpha"), noEntity, future, badLine, nul,
-	}, ingest.SourceEditor)
+		beat(base, "alpha"), noEntity, future, badLine, nul, shrink,
+	}, ingest.SourceEditor, ingest.Client{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Inserted != 2 {
-		t.Fatalf("Inserted = %d, want 2", res.Inserted)
+	if res.Inserted != 3 {
+		t.Fatalf("Inserted = %d, want 3", res.Inserted)
 	}
-	for i, wantErr := range []bool{false, true, true, true, false} {
+	for i, wantErr := range []bool{false, true, true, true, false, false} {
 		item := res.Items[i]
 		if gotErr := item.Err != nil; gotErr != wantErr {
 			t.Fatalf("item %d err = %v, want error %v", i, item.Err, wantErr)

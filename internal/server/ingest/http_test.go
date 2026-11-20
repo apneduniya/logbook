@@ -333,6 +333,55 @@ func TestRateLimit(t *testing.T) {
 	}
 }
 
+func TestStatusBarRateLimit(t *testing.T) {
+	s := newServer(t, ingest.WithRateLimit(0.001, 1), ingest.WithStatusBarRateLimit(0.001, 2))
+	alice, bob := newUser(t, s.st, "UTC"), newUser(t, s.st, "UTC")
+	// Heartbeats and the status bar use separate buckets: spending the
+	// heartbeat bucket leaves status-bar reads available, and vice versa.
+	body := fmt.Sprintf(`{"entity":"a","time":%f}`, unix(base))
+	if rec := s.do(t, http.MethodPost, "/api/v1/users/current/heartbeats", alice, body, nil); rec.Code != http.StatusCreated {
+		t.Fatalf("heartbeat: status = %d", rec.Code)
+	}
+	for _, prefix := range []string{"/api/v1", "/api/hackatime/v1"} {
+		if rec := s.do(t, http.MethodGet, prefix+"/users/current/statusbar/today", alice, "", nil); rec.Code != http.StatusOK {
+			t.Fatalf("%s within limit: status = %d", prefix, rec.Code)
+		}
+	}
+	rec := s.do(t, http.MethodGet, "/api/v1/users/current/statusbar/today", alice, "", nil)
+	if rec.Code != http.StatusTooManyRequests || rec.Header().Get("Retry-After") == "" {
+		t.Fatalf("over limit: status = %d, Retry-After %q", rec.Code, rec.Header().Get("Retry-After"))
+	}
+	if rec := s.do(t, http.MethodGet, "/api/v1/users/current/statusbar/today", bob, "", nil); rec.Code != http.StatusOK {
+		t.Fatalf("other user: status = %d", rec.Code)
+	}
+}
+
+// TestBulkAcceptsNegativeLineChanges uses the net line deltas wakatime-cli
+// computes for AI and human edits (pkg/ai), which are negative when an edit
+// removes lines. A 400 here would make the CLI drop the heartbeat for good.
+func TestBulkAcceptsNegativeLineChanges(t *testing.T) {
+	s := newServer(t)
+	user := newUser(t, s.st, "UTC")
+	body := fmt.Sprintf(`[{"entity":"/src/a.go","type":"file","category":"ai coding","time":%f,
+		"ai_line_changes":-5,"human_line_changes":-2,"ai_model":"gpt-5"}]`, unix(base))
+	rec := s.do(t, http.MethodPost, "/api/v1/users/current/heartbeats.bulk", user, body, nil)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, body %s", rec.Code, rec.Body)
+	}
+	if r := parseBulk(t, rec.Body.Bytes()); len(r) != 1 || r[0].Status != http.StatusCreated {
+		t.Fatalf("results = %+v, want one 201", r)
+	}
+	var ai, human int
+	err := s.st.Pool.QueryRow(context.Background(),
+		`SELECT ai_line_changes, human_line_changes FROM heartbeats WHERE user_id = $1`, user).Scan(&ai, &human)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ai != -5 || human != -2 {
+		t.Fatalf("stored ai_line_changes=%d human_line_changes=%d", ai, human)
+	}
+}
+
 func TestHeartbeatsAreStoredForTheCallerOnly(t *testing.T) {
 	s := newServer(t)
 	alice, bob := newUser(t, s.st, "UTC"), newUser(t, s.st, "UTC")
