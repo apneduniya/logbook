@@ -487,6 +487,21 @@ func TestUploadRemovalsKeepBounds(t *testing.T) {
 	}
 }
 
+// An empty batch is accepted and changes nothing: the agent sends one to
+// read the server's clock from the Date header before sealing a day.
+func TestUploadEmptyBatch(t *testing.T) {
+	e := newEnv(t)
+	u := seedtest.User(t, e.st, "alice", "UTC", true)
+	d := seedtest.Device(t, e.st, u, "laptop")
+	code, res := e.upload(u, d)
+	if code != http.StatusOK || res.Accepted != 0 || len(res.Rejected) != 0 {
+		t.Fatalf("status %d, %+v", code, res)
+	}
+	if len(e.rows(d)) != 0 || len(e.pub.calls) != 0 {
+		t.Fatal("an empty batch changed something")
+	}
+}
+
 func removal(minute, project string) item {
 	return item{Minute: minute, Project: project, Label: "idle"}
 }

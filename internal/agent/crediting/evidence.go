@@ -63,6 +63,17 @@ func (r *Runner) sealAndUploadDays(ctx context.Context, t serverapi.Target, dev 
 		day = oldest
 	}
 	end := lastSealableDay(now)
+	if mayseal && day <= end {
+		// Seal by the earlier of the system clock and the server's, so a
+		// clock far ahead never seals a day that hasn't ended.
+		server, err := r.serverClock(ctx, t, dev)
+		if err != nil {
+			return err
+		}
+		if !server.IsZero() && lastSealableDay(server) < end {
+			end = lastSealableDay(server)
+		}
+	}
 	for sealed := 0; mayseal && day <= end && sealed < maxDaysPerRun; day = nextDay(day) {
 		if waiting, err := r.minutesWaiting(ctx, day); err != nil || waiting > 0 {
 			if waiting > 0 {
@@ -75,7 +86,9 @@ func (r *Runner) sealAndUploadDays(ctx context.Context, t serverapi.Target, dev 
 			return err
 		}
 		if empty {
-			r.persist(ctx, localdb.KV{Key: keyEvidenceCursor, Value: dev.ID + " " + day})
+			if err := r.markSealed(ctx, day, localdb.KV{Key: keyEvidenceCursor, Value: dev.ID + " " + day}); err != nil {
+				return err
+			}
 			continue
 		}
 		sealed++
@@ -165,6 +178,9 @@ func (r *Runner) sealDay(ctx context.Context, dev devicekey.Device, day, prev st
 	}
 	e.ContentHash, e.ChainHash, e.Signature, e.EventCounts = content, chain, sig, counts
 	if err := r.opt.Store.InsertEvidenceDay(ctx, e); err != nil {
+		return localdb.EvidenceDay{}, false, err
+	}
+	if err := r.markSealed(ctx, day); err != nil {
 		return localdb.EvidenceDay{}, false, err
 	}
 	r.opt.Logger.InfoContext(ctx, "sealed evidence day", "day", day, "events", total)

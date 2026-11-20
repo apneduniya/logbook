@@ -482,7 +482,7 @@ func TestEvidenceChainAcrossDays(t *testing.T) {
 
 	// A day that fails transiently stays pending and is re-sent unchanged.
 	addDay(t, e.db, "2026-11-21")
-	e.srv.set(func(f *fakeServer) { f.status = http.StatusServiceUnavailable })
+	e.srv.set(func(f *fakeServer) { f.dayStatus = http.StatusServiceUnavailable })
 	e.advance(24 * time.Hour)
 	e.run()
 	pending, _, _ := e.db.LastEvidenceDay(context.Background(), id)
@@ -490,7 +490,7 @@ func TestEvidenceChainAcrossDays(t *testing.T) {
 		t.Fatalf("last local day = %+v", pending)
 	}
 	addDay(t, e.db, "2026-11-21") // arrives after sealing: not part of the hash
-	e.srv.set(func(f *fakeServer) { f.status = 0 })
+	e.srv.set(func(f *fakeServer) { f.dayStatus = 0 })
 	e.advance(5 * time.Second)
 	e.run()
 	days = e.srv.storedDays(id)

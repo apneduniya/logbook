@@ -25,10 +25,12 @@ How the agent runs the struggle engine and keeps the evidence chain (ADR 0010, A
 
 1. Read new local events since the last run (by row id) into an in-memory window of the last 90 minutes.
 2. Record the active repos in the repo mapping journal (`repo_map`), then run `struggle.Compute` for `[now−60 min, now)`, with optional Claude Code active time and, for each minute, the repo mapping recorded before that minute became final (`ReposAt`; one engine call over the whole window per group of minutes sharing a mapping, with `DataEnd` at the window's end, keeping that group's minutes).
-3. Store the result: open minutes (< 30 min old) are rewritten when they change; a final minute is frozen whole and only filled in if it has no rows at all.
+3. Store the result: open minutes (< 30 min old) are rewritten when they change; a final minute is frozen whole and only filled in if it has no rows at all. Minutes before the end of the last sealed day (`crediting.sealed_through`) are never stored.
 4. If signed in: register the device if needed, upload minutes the server doesn't have (batches of 1000, at most 20 a run), then seal and upload ended days whose minutes the server has all answered for.
 
 Runs never overlap, are bounded to 2 minutes, and run a few seconds past each minute. Old heartbeats and minutes are pruned every 6 hours.
+
+**Clock behind a sealed day.** If the system clock is before the end of the last day the evidence chain sealed or skipped (it was set back), a run does nothing: no computing, uploading or sealing, since every minute it computed would fall in a day the server already refuses. Status shows "clock: the system clock is behind the last sealed day ..." and one log line says so; when the clock passes that day, crediting resumes by itself (one more log line).
 
 ## Uploads
 
@@ -53,11 +55,11 @@ A local failure while sealing a day (database, active-time source) is shown as "
 
 ## Evidence days
 
-A UTC day is sealed once it has ended plus one hour and the server has answered for every stored minute up to its end; sealing closes the day to minutes on the server. No new day is sealed on a run whose minute uploads are on hold or failed. The agent records the highest row id of each event table and keeps the day's active-time records as hashed (they can't be pinned by ids), hashes the day's events up to those ids plus those records (`evidence.ContentHash`), chains it to the last accepted day (`prev_chain_hash`, `""` for the first), signs it with the device key and stores it as `pending`. It is uploaded until the server accepts it; only then does the chain move on. Days without events are skipped. Catch-up after downtime seals up to 7 days per run, in order. `crediting.ReplayDay` rebuilds a sealed day's events from the same marks and records, so late events never change its hash (ADR 0013).
+A UTC day is sealed once it has ended plus one hour, by the system clock and by the server's (the `Date` header of a minutes response in the same run; an empty batch asks for it when the run sent none; a server that sends no `Date` leaves the system clock alone), and the server has answered for every stored minute up to its end; sealing closes the day to minutes on the server. No new day is sealed on a run whose minute uploads are on hold or failed. The agent records the highest row id of each event table and keeps the day's active-time records as hashed (they can't be pinned by ids), hashes the day's events up to those ids plus those records (`evidence.ContentHash`), chains it to the last accepted day (`prev_chain_hash`, `""` for the first), signs it with the device key and stores it as `pending`. It is uploaded until the server accepts it; only then does the chain move on. Days without events are skipped. Catch-up after downtime seals up to 7 days per run, in order. `crediting.ReplayDay` rebuilds a sealed day's events from the same marks and records, so late events never change its hash (ADR 0013).
 
 ## Status
 
-`logbook status`, `GET /local/v1/status` (`crediting` object) and the status page show: device id and registration time, revocation, when minutes were last computed and uploaded, minutes waiting and rejected, pause reason and last error, and the evidence chain's last day, chain hash and any stop reason. They never show the API key or the device's private key.
+`logbook status`, `GET /local/v1/status` (`crediting` object) and the status page show: device id and registration time, revocation, when minutes were last computed and uploaded, minutes waiting and rejected, pause reason and last error, a clock problem (behind the last sealed day, or more than 5 minutes from the server's clock), and the evidence chain's last day, chain hash and any stop reason. They never show the API key or the device's private key.
 
 ## What leaves the device
 

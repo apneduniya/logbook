@@ -60,6 +60,13 @@ func TestRender(t *testing.T) {
 			want: []string{"Minutes on hold", "unknown rules_version", "Sealing failed (retrying)", "disk I/O error"},
 		},
 		{
+			name: "clock behind the last sealed day",
+			snap: status.Snapshot{Crediting: crediting.Status{
+				Minutes: crediting.MinutesStatus{Clock: "the system clock is behind the last sealed day"},
+			}},
+			want: []string{">Clock<", "behind the last sealed day"},
+		},
+		{
 			name: "no hooks detected",
 			snap: status.Snapshot{Hooks: []status.Hook{}},
 			want: []string{"no AI tools detected"},

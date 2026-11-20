@@ -50,7 +50,7 @@ Auth: API key. Uploads labelled minutes from `pkg/struggle`.
 }
 ```
 
-Whole-request errors (`400`): invalid JSON, more than 1000 minutes, or a `rules_version` the server doesn't know (currently only `v1`).
+Whole-request errors (`400`): invalid JSON, more than 1000 minutes, or a `rules_version` the server doesn't know (currently only `v1`). An empty `minutes` array is valid and changes nothing; the agent sends one to read the server's clock from the response's `Date` header before it seals a day.
 
 Each item is then accepted or rejected on its own. `200`:
 

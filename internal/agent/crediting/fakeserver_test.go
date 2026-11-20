@@ -29,8 +29,9 @@ type fakeServer struct {
 	minutes  map[string]serverMinute // device|minute|project
 	days     map[string]map[string]storedDay
 	requests []string
-	// status, when non-zero, answers every minutes/evidence request.
-	status int
+	// status, when non-zero, answers every minutes/evidence request;
+	// dayStatus only evidence requests.
+	status, dayStatus int
 	// rejectProject makes the server reject minutes of that project.
 	rejectProject string
 	// forceDayConflict answers 409 for that day.
@@ -42,7 +43,13 @@ type fakeServer struct {
 	// deviceLimit, when set, refuses new devices with the limit 409.
 	deviceLimit   bool
 	minuteBatches [][]serverMinute
+	// offset is how far the server's clock is from the agent's (the
+	// agent's clock is the wrong one).
+	offset time.Duration
 }
+
+// serverNow is the server's clock, sent in every response's Date header.
+func (f *fakeServer) serverNow() time.Time { return f.now().Add(f.offset) }
 
 type serverMinute struct {
 	Minute   time.Time `json:"minute"`
@@ -87,6 +94,7 @@ func (f *fakeServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.requests = append(f.requests, r.URL.Path)
+	w.Header().Set("Date", f.serverNow().UTC().Format(http.TimeFormat))
 	user, ok := f.users[strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")]
 	if !ok {
 		writeErr(w, http.StatusUnauthorized, "unauthorized")
@@ -120,8 +128,8 @@ func (f *fakeServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id, what, _ := strings.Cut(rest, "/")
-	if f.status != 0 {
-		writeErr(w, f.status, "scripted failure")
+	if f.status != 0 || (f.dayStatus != 0 && what == "evidence-days") {
+		writeErr(w, max(f.status, f.dayStatus), "scripted failure")
 		return
 	}
 	if _, ok := f.keys[id]; !ok || f.owner[id] != user {
@@ -159,7 +167,9 @@ func (f *fakeServer) handleMinutes(w http.ResponseWriter, r *http.Request, id st
 		writeErr(w, http.StatusBadRequest, "unknown rules_version")
 		return
 	}
-	f.minuteBatches = append(f.minuteBatches, req.Minutes)
+	if len(req.Minutes) > 0 { // an empty batch only asks for the server clock
+		f.minuteBatches = append(f.minuteBatches, req.Minutes)
+	}
 	type rej struct {
 		Index int    `json:"index"`
 		Error string `json:"error"`
@@ -197,7 +207,7 @@ func (f *fakeServer) handleMinutes(w http.ResponseWriter, r *http.Request, id st
 			}
 		}
 		_, sealed := f.days[id][m.Minute.UTC().Format(time.DateOnly)]
-		final := f.now().Sub(m.Minute) >= 30*time.Minute
+		final := f.serverNow().Sub(m.Minute) >= 30*time.Minute
 		switch {
 		case isRemoval(m) && !exists:
 			accepted++ // nothing to remove
@@ -208,7 +218,7 @@ func (f *fakeServer) handleMinutes(w http.ResponseWriter, r *http.Request, id st
 			rejected = append(rejected, rej{i, "project refused"})
 		case m.Cuts == nil || m.Flags == nil:
 			rejected = append(rejected, rej{i, "cuts and flags must be arrays"})
-		case m.Minute.After(f.now().Add(2 * time.Minute)):
+		case m.Minute.After(f.serverNow().Add(2 * time.Minute)):
 			rejected = append(rejected, rej{i, "in the future"})
 		case exists && final && equalMinute(old, m):
 			accepted++ // an exact repeat

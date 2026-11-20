@@ -166,6 +166,9 @@ func printCrediting(p func(string, ...any), c crediting.Status) {
 	if c.Minutes.SealedError != "" {
 		p("            error: %d minutes lost: %s", c.Minutes.SealedRejected, c.Minutes.SealedError)
 	}
+	if c.Minutes.Clock != "" {
+		p("            clock: %s", c.Minutes.Clock)
+	}
 	switch {
 	case c.Evidence.State != "":
 		p("Evidence:   stopped: %s", c.Evidence.Error)

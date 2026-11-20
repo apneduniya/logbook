@@ -51,6 +51,7 @@ func (r *Runner) uploadMinutes(ctx context.Context, t serverapi.Target, dev devi
 		if err != nil {
 			return false, err
 		}
+		r.observeServer(ctx, res.ServerTime)
 		if err := r.opt.Store.MarkMinutesSent(ctx, rows, final); err != nil {
 			return false, err
 		}
