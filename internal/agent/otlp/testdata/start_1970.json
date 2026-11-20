@@ -1,0 +1,59 @@
+{
+  "resourceMetrics": [
+    {
+      "scopeMetrics": [
+        {
+          "metrics": [
+            {
+              "name": "claude_code.active_time.total",
+              "unit": "s",
+              "sum": {
+                "aggregationTemporality": 1,
+                "isMonotonic": true,
+                "dataPoints": [
+                  {
+                    "attributes": [
+                      {"key": "session.id", "value": {"stringValue": "forged-delta"}},
+                      {"key": "type", "value": {"stringValue": "user"}}
+                    ],
+                    "startTimeUnixNano": "1",
+                    "timeUnixNano": "1795168740000000000",
+                    "asDouble": 1000000000
+                  },
+                  {
+                    "attributes": [
+                      {"key": "session.id", "value": {"stringValue": "honest"}},
+                      {"key": "type", "value": {"stringValue": "user"}}
+                    ],
+                    "startTimeUnixNano": "1795168680000000000",
+                    "timeUnixNano": "1795168740000000000",
+                    "asDouble": 30
+                  }
+                ]
+              }
+            },
+            {
+              "name": "claude_code.active_time.total",
+              "unit": "s",
+              "sum": {
+                "aggregationTemporality": 2,
+                "isMonotonic": true,
+                "dataPoints": [
+                  {
+                    "attributes": [
+                      {"key": "session.id", "value": {"stringValue": "forged-cumulative"}},
+                      {"key": "type", "value": {"stringValue": "cli"}}
+                    ],
+                    "startTimeUnixNano": "1",
+                    "timeUnixNano": "1795168740000000000",
+                    "asDouble": 1000000000
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

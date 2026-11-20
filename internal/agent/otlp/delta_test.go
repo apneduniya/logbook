@@ -21,6 +21,8 @@ func TestDeltaInterval(t *testing.T) {
 		{"slightly future", Point{Start: minute(0), Time: minute(1), Value: 1}, Interval{minute(0), minute(1), 1}, true},
 		{"too old", Point{Start: now.Add(-91 * 24 * time.Hour), Time: now.Add(-91*24*time.Hour + time.Minute), Value: 1},
 			Interval{now.Add(-91 * 24 * time.Hour), now.Add(-91*24*time.Hour + time.Minute), 1}, false},
+		{"start in 1970", Point{Start: time.Unix(0, 1).UTC(), Time: minute(-1), Value: 1e9}, Interval{time.Unix(0, 1).UTC(), minute(-1), 1e9}, false},
+		{"start before retention", Point{Start: now.Add(-91 * 24 * time.Hour), Time: minute(-1), Value: 60}, Interval{now.Add(-91 * 24 * time.Hour), minute(-1), 60}, false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -54,6 +56,8 @@ func TestCumulativeInterval(t *testing.T) {
 			Interval{minute(-3), minute(-2), 10}, true},
 		{"retry of last point", Point{Start: minute(-60), Time: minute(-3), Value: 100}, last, true, Interval{}, false},
 		{"older point", Point{Start: minute(-60), Time: minute(-4), Value: 90}, last, true, Interval{}, false},
+		{"first point starting in 1970", Point{Start: time.Unix(0, 1).UTC(), Time: minute(-3), Value: 1e9}, Last{}, false,
+			Interval{time.Unix(0, 1).UTC(), minute(-3), 1e9}, false},
 		{"implausible jump", Point{Start: minute(-60), Time: minute(-2), Value: 300}, last, true,
 			Interval{minute(-3), minute(-2), 200}, false},
 	}

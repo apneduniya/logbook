@@ -74,9 +74,11 @@ func CumulativeInterval(p Point, last Last, hasLast bool, now time.Time) (iv Int
 }
 
 // plausible reports whether an interval could be real: not in the future,
-// not older than retention, and no more seconds than its length allows.
+// starting no earlier than retention reaches back, and no more seconds than
+// its length allows. Bounding the start matters: a point that claims to
+// start in 1970 would otherwise be allowed decades of seconds.
 func plausible(iv Interval, now time.Time) bool {
-	if iv.To.After(now.Add(maxFuture)) || iv.To.Before(now.Add(-maxAge)) || iv.To.Before(iv.From) {
+	if iv.To.After(now.Add(maxFuture)) || iv.From.Before(now.Add(-maxAge)) || iv.To.Before(iv.From) {
 		return false
 	}
 	return iv.Secs <= (iv.To.Sub(iv.From) + slack).Seconds()
