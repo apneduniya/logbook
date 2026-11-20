@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 type Querier interface {
@@ -43,11 +44,50 @@ type Querier interface {
 	// Serialises ingest batches for one user until the transaction ends.
 	// 1001 namespaces the lock so it can't collide with other advisory locks.
 	LockUserIngest(ctx context.Context, userID uuid.UUID) error
+	ProfileGetByID(ctx context.Context, id uuid.UUID) (ProfileGetByIDRow, error)
+	// Locks the user row until the transaction ends (see ProjectsSettingsGetForUpdate).
+	ProfileGetByIDForUpdate(ctx context.Context, id uuid.UUID) (ProfileGetByIDForUpdateRow, error)
+	ProfileGetByUsername(ctx context.Context, username string) (ProfileGetByUsernameRow, error)
+	// Per (project, language) totals for a public profile, excluding hidden projects.
+	ProfilePublicTotals(ctx context.Context, arg ProfilePublicTotalsParams) ([]ProfilePublicTotalsRow, error)
+	ProfileTimezoneKnown(ctx context.Context, name string) (bool, error)
+	// Partial update: a NULL argument keeps the current value.
+	ProfileUpdate(ctx context.Context, arg ProfileUpdateParams) (ProfileUpdateRow, error)
+	// Per (project, language): credited seconds and last activity of any label.
+	ProjectsMinuteTotals(ctx context.Context, arg ProjectsMinuteTotalsParams) ([]ProjectsMinuteTotalsRow, error)
+	// Creates the settings row with defaults if it doesn't exist yet, so that
+	// ProjectsSettingsGetForUpdate always has a row to lock.
+	ProjectsSettingsEnsure(ctx context.Context, arg ProjectsSettingsEnsureParams) error
+	ProjectsSettingsGet(ctx context.Context, arg ProjectsSettingsGetParams) (Project, error)
+	// Locks the row until the transaction ends, so concurrent updates are
+	// serialised and each audit entry sees the true previous values.
+	ProjectsSettingsGetForUpdate(ctx context.Context, arg ProjectsSettingsGetForUpdateParams) (Project, error)
+	ProjectsSettingsList(ctx context.Context, userID uuid.UUID) ([]Project, error)
+	// Partial update: a NULL argument keeps the current (or default) value.
+	ProjectsSettingsUpsert(ctx context.Context, arg ProjectsSettingsUpsertParams) (Project, error)
 	// Makes the 'you' rows inside the given windows equal to the supplied set in
 	// one round trip: upserts the fresh rows and deletes every other 'you' row in
 	// the windows. Both parts see the same snapshot and touch disjoint rows.
 	ReplaceUserMinutes(ctx context.Context, arg ReplaceUserMinutesParams) error
 	RevokeAPIKey(ctx context.Context, arg RevokeAPIKeyParams) (ApiKey, error)
+	// Audit rows written by one actor, oldest first.
+	SeedTestAuditLog(ctx context.Context, actorUserID pgtype.UUID) ([]SeedTestAuditLogRow, error)
+	// Test fixtures for package store/seedtest. Production code must not call
+	// these; creating users belongs to auth and writing minutes to ingest.
+	SeedTestUser(ctx context.Context, arg SeedTestUserParams) (uuid.UUID, error)
+	SeedTestUserMinute(ctx context.Context, arg SeedTestUserMinuteParams) error
+	// One pass over the range, returned as (dimension, key, seconds) rows.
+	// Days are local dates in the given IANA time zone.
+	StatsBreakdown(ctx context.Context, arg StatsBreakdownParams) ([]StatsBreakdownRow, error)
+	// Local dates on which the user was credited at least min_seconds.
+	StatsQualifyingDays(ctx context.Context, arg StatsQualifyingDaysParams) ([]string, error)
+	// Like StatsQualifyingDays, but only for minutes in [from_time, to_time).
+	// Callers pass whole local days so each day's sum is complete.
+	StatsQualifyingDaysBetween(ctx context.Context, arg StatsQualifyingDaysBetweenParams) ([]string, error)
+	// Queries for the stats, projects and profiles packages.
+	// Aggregates read user_minutes only, never heartbeats (ADR 0002).
+	// Credited time is label = 'you'; other labels are reported separately.
+	StatsUserTimezone(ctx context.Context, id uuid.UUID) (string, error)
 	// Totals a user's 'you' seconds in [start_time, end_time) per rollup group.
 	SumUserMinutesByGroup(ctx context.Context, arg SumUserMinutesByGroupParams) ([]SumUserMinutesByGroupRow, error)
 	TouchAPIKey(ctx context.Context, arg TouchAPIKeyParams) error
