@@ -20,7 +20,7 @@ type Command struct {
 
 // commands lists every subcommand. Add new ones here.
 func commands() []Command {
-	return []Command{}
+	return []Command{installCommand(), uninstallCommand()}
 }
 
 func main() {
