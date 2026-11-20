@@ -51,6 +51,8 @@ All in the data directory (`config.Dir()`: `os.UserConfigDir()/logbook`, or `$LO
 
 Commits are unique per `(project, commit_hash)`, so the git sensor can report a commit repeatedly. Pruning runs at start and every 6 hours.
 
+Every raw event row (`heartbeats`, `ai_events`, `activity_samples`, `git_events`, `active_time`) records `arrived_at`, when it was stored, taken inside the inserting transaction (migration 0006; older rows got their event time). Crediting counts a final minute's events by arrival (ADR 0016). Any transaction that prunes or trims raw event rows also moves `kv` `events.generation`, so in-memory copies of the window know rows are gone.
+
 ## Loopback API
 
 Listens on `cfg.LocalAddr`, which must be `127.0.0.1:<port>` or `localhost:<port>` (pinned to `127.0.0.1`). Every request must:
@@ -130,6 +132,8 @@ Hooks append to `spool/events.jsonl` when the daemon is down. The drainer:
 4. deletes it.
 
 A crash mid-drain resumes from the saved offset, so events are neither lost nor duplicated. Leftover `.draining` files are processed first, oldest first.
+
+The first drain runs at start, and crediting waits for it (at most 2 minutes) before its first run and makes no minute final until it has finished: spooled events arrive late, and must count before the minutes they belong to are final (ADR 0016).
 
 Hooks append through `internal/agent/spoolfile`: one write per hook (so lines from concurrent hooks never interleave), at the end of the file, capped at 10 MiB, file 0600 in a 0700 directory. The rename in step 1 has to work while hooks hold the file open:
 
