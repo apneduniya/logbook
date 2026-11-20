@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"time"
 
@@ -30,7 +31,8 @@ type Config struct {
 	DevInsecureCookie bool          `env:"LOGBOOK_DEV_INSECURE_COOKIE" envDefault:"false"`
 
 	// DevLogin enables POST /auth/dev-login for local development. Load
-	// refuses it unless BaseURL points at localhost or 127.0.0.1.
+	// refuses it unless BaseURL points at localhost or 127.0.0.1 and Addr
+	// listens on loopback only.
 	DevLogin bool `env:"LOGBOOK_DEV_LOGIN" envDefault:"false"`
 
 	// TrustProxy makes rate limits key on the last X-Forwarded-For hop, as
@@ -101,6 +103,14 @@ func (c Config) validate() error {
 	}
 	if c.DevLogin && !IsLoopbackHost(u.Hostname()) {
 		return errors.New("LOGBOOK_DEV_LOGIN is only allowed when LOGBOOK_BASE_URL is on localhost or 127.0.0.1")
+	}
+	if c.DevLogin {
+		// An empty or wildcard host (":8080", "0.0.0.0:8080") listens on
+		// every interface and would expose dev sign-in to the network.
+		host, _, err := net.SplitHostPort(c.Addr)
+		if err != nil || !IsLoopbackHost(host) {
+			return fmt.Errorf("LOGBOOK_DEV_LOGIN requires LOGBOOK_ADDR to listen on loopback only (got %q)", c.Addr)
+		}
 	}
 	hca, err := url.Parse(c.HCA.BaseURL)
 	if err != nil || hca.Host == "" || (hca.Scheme != "https" && !IsLoopbackHost(hca.Hostname())) {

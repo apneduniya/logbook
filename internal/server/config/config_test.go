@@ -43,6 +43,35 @@ func TestLoadDevLogin(t *testing.T) {
 			wantErr: "LOGBOOK_DEV_LOGIN",
 		},
 		{
+			name: "dev login on ipv6 loopback listener",
+			env: map[string]string{"LOGBOOK_DEV_LOGIN": "true", "LOGBOOK_BASE_URL": "http://localhost:8080",
+				"LOGBOOK_DEV_INSECURE_COOKIE": "true", "LOGBOOK_ADDR": "[::1]:8080"},
+			wantDev: true,
+		},
+		{
+			name: "dev login listening on all interfaces",
+			env: map[string]string{"LOGBOOK_DEV_LOGIN": "true", "LOGBOOK_BASE_URL": "http://localhost:8080",
+				"LOGBOOK_DEV_INSECURE_COOKIE": "true", "LOGBOOK_ADDR": "0.0.0.0:8080"},
+			wantErr: "LOGBOOK_ADDR",
+		},
+		{
+			name: "dev login listening on an empty host",
+			env: map[string]string{"LOGBOOK_DEV_LOGIN": "true", "LOGBOOK_BASE_URL": "http://localhost:8080",
+				"LOGBOOK_DEV_INSECURE_COOKIE": "true", "LOGBOOK_ADDR": ":8080"},
+			wantErr: "LOGBOOK_ADDR",
+		},
+		{
+			name: "dev login listening on a LAN address",
+			env: map[string]string{"LOGBOOK_DEV_LOGIN": "true", "LOGBOOK_BASE_URL": "http://localhost:8080",
+				"LOGBOOK_DEV_INSECURE_COOKIE": "true", "LOGBOOK_ADDR": "192.168.1.20:8080"},
+			wantErr: "LOGBOOK_ADDR",
+		},
+		{
+			name:     "non-loopback listener without dev login",
+			env:      map[string]string{"LOGBOOK_BASE_URL": "https://logbook.hackclub.com", "LOGBOOK_ADDR": "0.0.0.0:8080"},
+			checkHCA: true,
+		},
+		{
 			name:     "production defaults",
 			env:      map[string]string{"LOGBOOK_BASE_URL": "https://logbook.hackclub.com"},
 			checkHCA: true,
