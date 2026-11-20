@@ -1,0 +1,9 @@
+{
+  "sessionId": "sess-cp-1",
+  "timestamp": 1763632798123,
+  "cwd": "/home/teen/my-app",
+  "hook_event_name": "Notification",
+  "message": "SENTINEL-PRIVATE",
+  "title": "Shell completed",
+  "notification_type": "shell_completed"
+}
