@@ -127,6 +127,11 @@ type Runner struct {
 	// shown caches persisted status values (refused, local evidence error),
 	// so they are written only when they change.
 	shown map[string]string
+	// clockBehind is set while the clock is before the last sealed day;
+	// clockChecked once a run has found it isn't. serverAt is the server's
+	// clock from this run's latest minutes response (zero if none).
+	clockBehind, clockChecked bool
+	serverAt                  time.Time
 
 	mu    sync.Mutex
 	gate  gate
@@ -223,7 +228,17 @@ func (r *Runner) RunOnce(ctx context.Context) {
 	ctx, cancel := context.WithTimeout(ctx, runTimeout)
 	defer cancel()
 	now := r.opt.Now()
-	if err := r.compute(ctx, now); err != nil {
+	through, err := r.sealedThrough(ctx)
+	if err != nil {
+		if ctx.Err() == nil {
+			r.opt.Logger.ErrorContext(ctx, "reading the last sealed day", "err", err)
+		}
+		return
+	}
+	if !r.checkClock(ctx, now, through) {
+		return
+	}
+	if err := r.compute(ctx, now, through); err != nil {
 		if ctx.Err() == nil {
 			r.opt.Logger.ErrorContext(ctx, "computing credited minutes", "err", err)
 		}
@@ -235,8 +250,10 @@ func (r *Runner) RunOnce(ctx context.Context) {
 	}
 }
 
-// compute runs the engine over the window and stores the result.
-func (r *Runner) compute(ctx context.Context, now time.Time) error {
+// compute runs the engine over the window and stores the result. Minutes
+// before through (the end of the last sealed day) are never stored: the
+// engine still reads the whole window, so the rest come out the same.
+func (r *Runner) compute(ctx context.Context, now, through time.Time) error {
 	s := spanAt(now)
 	if err := r.cache.refresh(ctx, r.opt.Store, s.history, s.to); err != nil {
 		return err
@@ -256,8 +273,15 @@ func (r *Runner) compute(ctx context.Context, now time.Time) error {
 		return err
 	}
 	res := r.computeByMapping(s, ev, active, mapping)
+	keep := s
+	if keep.from.Before(through) {
+		keep.from = through
+	}
+	if !keep.to.After(keep.from) {
+		return nil
+	}
 	saved, err := r.opt.Store.SaveMinutes(ctx, localdb.MinuteUpdate{
-		From: s.from, To: s.to, OpenFrom: s.finalBefore, Minutes: minuteRows(s, res), Superseded: superseded,
+		From: keep.from, To: keep.to, OpenFrom: s.finalBefore, Minutes: minuteRows(keep, res), Superseded: superseded,
 	})
 	if err != nil {
 		return err
@@ -283,16 +307,24 @@ func (r *Runner) repoMap(ctx context.Context, now time.Time) ([]localdb.RepoMapp
 	return r.opt.Store.RepoMap(ctx)
 }
 
-// computeByMapping runs the engine over the window, once per run of minutes
-// that share a repo mapping (ReposAt), and joins the results. Each minute
-// is thus computed with the mapping that stood when it became final, never
-// with one recorded after.
+// computeByMapping runs the engine once per run of minutes that share a repo
+// mapping (ReposAt) and joins the results: each minute comes from the run
+// computed with the mapping that stood when it became final, never with one
+// recorded after.
+//
+// Only the mapping differs between those runs. Each one is over the whole
+// span, with the same events, active time and time zone, and with DataEnd at
+// the span's end: the engine reads the window's bounds as well as which
+// minutes to emit (a turn quiet for 10 minutes before the end of the data
+// has ended; long_day and otel_mismatch total the window), so cutting the
+// window per group would change a group's minutes even when the mapping
+// moves no event to another project.
 func (r *Runner) computeByMapping(s span, ev localdb.Events, active []struggle.ActiveTime, mapping []localdb.RepoMapping) struggle.Result {
 	var out struggle.Result
 	for _, g := range repoGroups(mapping, s.from, s.to) {
-		part := s
-		part.from, part.to = g.from, g.to
-		res := r.opt.Compute(engineInput(part, ev, active, g.repos, r.opt.TZ))
+		in := engineInput(s, ev, active, g.repos, r.opt.TZ)
+		in.DataEnd = s.to
+		res := r.opt.Compute(in)
 		out.RulesVersion = res.RulesVersion
 		for _, m := range res.Minutes {
 			if at := m.Minute.UTC().Truncate(time.Minute); !at.Before(g.from) && at.Before(g.to) {
@@ -309,6 +341,7 @@ func (r *Runner) upload(ctx context.Context, now time.Time) {
 	if !r.ready(ctx, t, now) {
 		return
 	}
+	r.serverAt = time.Time{}
 	dev, err := r.opt.Identity.Ensure(ctx, t.Target)
 	if errors.Is(err, devicekey.ErrRevoked) {
 		r.setRevoked(ctx, t.APIKey)

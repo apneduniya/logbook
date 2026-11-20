@@ -111,9 +111,7 @@ func TestRepoMappingChangeKeepsFinalMinutes(t *testing.T) {
 	if s := e.status(); s.Minutes.Rejected != 0 || s.Minutes.Waiting != 0 {
 		t.Fatalf("status = %+v", s.Minutes)
 	}
-	for _, in := range e.inputs {
-		if !at("12:00").Before(in.Window.From) && at("12:00").Before(in.Window.To) && projectOf(in) != "old" {
-			t.Fatalf("minute 12:00 computed with mapping %q, want the one it had while open", projectOf(in))
-		}
-	}
+	// Every engine run covers the whole window (only its mapping differs),
+	// and 12:00 is taken from the one with the mapping it had while open.
+	e.wantServerMinute(at("12:00"), "old", 60)
 }

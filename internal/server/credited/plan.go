@@ -216,11 +216,22 @@ type minuteState struct {
 	firstWrite time.Time // earliest updated_at
 }
 
-// Plan decides which validated items to write, given the device's stored
-// rows for the same minutes and b. It returns the rows to write, sorted by
-// (minute, project), and the items it rejects, by the rules in the package
-// doc. Items that repeat a stored row exactly are accepted without a write.
-func Plan(items []Indexed, stored []Stored, b Bounds) (write []Item, rejected []Rejection) {
+// IsRemoval reports whether it removes its (minute, project) row instead of
+// storing one: an idle item with no credit, cuts or flags. The engine never
+// emits such a row (its idle rows always carry a cut), and it says nothing
+// a missing row doesn't, so the agent sends it for a project that has left
+// an open minute (ADR 0014).
+func IsRemoval(it Item) bool {
+	return it.Label == string(struggle.LabelIdle) && it.Credited == 0 && len(it.Cuts) == 0 && len(it.Flags) == 0
+}
+
+// Plan decides which validated items to write and which stored rows to
+// delete, given the device's stored rows for the same minutes and b. It
+// returns the rows to write and the rows to delete, both sorted by (minute,
+// project), and the items it rejects, by the rules in the package doc.
+// Items that repeat a stored row exactly are accepted without a write, and
+// a removal of a row that isn't stored is accepted without a delete.
+func Plan(items []Indexed, stored []Stored, b Bounds) (write, remove []Item, rejected []Rejection) {
 	existing := make(map[key]Stored, len(stored))
 	minutes := map[time.Time]minuteState{}
 	for _, s := range stored {
@@ -239,12 +250,13 @@ func Plan(items []Indexed, stored []Stored, b Bounds) (write []Item, rejected []
 		sealed[utcDay(d)] = true
 	}
 
-	// First pass, in input order: duplicates, exact repeats and minutes the
-	// device may no longer write.
+	// First pass, in input order: duplicates, exact repeats, removals of
+	// nothing and minutes the device may no longer write.
 	type change struct {
 		Indexed
-		delta int
-		isNew bool // adds a project to the minute
+		delta  int
+		isNew  bool // adds a project to the minute
+		remove bool // deletes the stored row
 	}
 	seen := make(map[key]bool, len(items))
 	byMinute := map[time.Time][]change{}
@@ -256,18 +268,28 @@ func Plan(items []Indexed, stored []Stored, b Bounds) (write []Item, rejected []
 		}
 		seen[k] = true
 		cur, ok := existing[k]
-		if ok && cur.RulesVersion == b.RulesVersion && sameItem(cur.Item, it.Item) {
-			continue // an exact repeat, typically a retry
+		removal := IsRemoval(it.Item)
+		if removal && !ok {
+			continue // nothing stored, nothing to remove
 		}
-		if err := writable(k.minute, ok, minutes[k.minute], sealed, b); err != nil {
+		err := writable(k.minute, ok, minutes[k.minute], sealed, b)
+		if ok && cur.RulesVersion == b.RulesVersion && sameItem(cur.Item, it.Item) && (!removal || err != nil) {
+			// An exact repeat, typically a retry. A row stored in the shape
+			// of a removal (by a server before removals) is still removed
+			// while its minute is open.
+			continue
+		}
+		if err != nil {
 			rejected = append(rejected, Rejection{Index: it.Index, Error: err.Error()})
 			continue
 		}
-		byMinute[k.minute] = append(byMinute[k.minute], change{Indexed: it, delta: it.Item.Credited - cur.Credited, isNew: !ok})
+		byMinute[k.minute] = append(byMinute[k.minute], change{Indexed: it, delta: it.Item.Credited - cur.Credited,
+			isNew: !ok, remove: removal})
 	}
 
-	// Second pass, per minute: apply decreases before increases so credit can
-	// move between projects, and reject what would exceed the caps.
+	// Second pass, per minute: apply removals, then decreases, then the rest
+	// in request order, so a project can replace another and credit can move
+	// between projects in one batch; reject what would exceed the caps.
 	order := make([]time.Time, 0, len(byMinute))
 	for m := range byMinute {
 		order = append(order, m)
@@ -275,12 +297,26 @@ func Plan(items []Indexed, stored []Stored, b Bounds) (write []Item, rejected []
 	slices.SortFunc(order, time.Time.Compare)
 	for _, m := range order {
 		changes := byMinute[m]
-		raises := func(c change) bool { return c.delta >= 0 }
+		rank := func(c change) int {
+			switch {
+			case c.remove:
+				return 0
+			case c.delta < 0:
+				return 1
+			}
+			return 2
+		}
 		slices.SortFunc(changes, func(a, b change) int {
-			return cmp.Or(compareBool(raises(a), raises(b)), cmp.Compare(a.Index, b.Index))
+			return cmp.Or(cmp.Compare(rank(a), rank(b)), cmp.Compare(a.Index, b.Index))
 		})
 		st := minutes[m]
 		for _, c := range changes {
+			if c.remove {
+				st.credited += c.delta
+				st.projects--
+				remove = append(remove, c.Item)
+				continue
+			}
 			if c.isNew && st.projects >= MaxProjectsPerMinute {
 				rejected = append(rejected, Rejection{Index: c.Index, Error: errTooManyProjects.Error()})
 				continue
@@ -298,11 +334,13 @@ func Plan(items []Indexed, stored []Stored, b Bounds) (write []Item, rejected []
 		minutes[m] = st
 	}
 
-	slices.SortFunc(write, func(a, b Item) int {
+	byKey := func(a, b Item) int {
 		return cmp.Or(a.Minute.Compare(b.Minute), cmp.Compare(a.Project, b.Project))
-	})
+	}
+	slices.SortFunc(write, byKey)
+	slices.SortFunc(remove, byKey)
 	slices.SortFunc(rejected, func(a, b Rejection) int { return cmp.Compare(a.Index, b.Index) })
-	return write, rejected
+	return write, remove, rejected
 }
 
 // writable reports why the device may not write minute m (nil if it may).
@@ -336,17 +374,6 @@ func writable(m time.Time, exists bool, st minuteState, sealed map[time.Time]boo
 func utcDay(t time.Time) time.Time {
 	y, mo, d := t.UTC().Date()
 	return time.Date(y, mo, d, 0, 0, 0, 0, time.UTC)
-}
-
-// compareBool orders false before true.
-func compareBool(a, b bool) int {
-	switch {
-	case a == b:
-		return 0
-	case !a:
-		return -1
-	}
-	return 1
 }
 
 func sameItem(a, b Item) bool {

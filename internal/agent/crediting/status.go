@@ -27,6 +27,13 @@ const (
 	// Both should stay empty: a day is sealed only after its minutes.
 	keySealedRejected = "crediting.sealed_rejected"
 	keySealedError    = "crediting.sealed_error"
+	// keyClock describes a clock problem ("" when none); see
+	// MinutesStatus.Clock.
+	keyClock = "crediting.clock"
+	// keySealedThrough is the end (UTC midnight, RFC 3339) of the latest
+	// day the evidence chain has moved past, sealed or found empty. It only
+	// grows; no minute before it is computed or stored again.
+	keySealedThrough = "crediting.sealed_through"
 
 	keyEvidenceDevice = "evidence.device"
 	keyEvidenceDay    = "evidence.last_day"
@@ -82,6 +89,11 @@ type MinutesStatus struct {
 	// server has accepted every minute of it.
 	SealedRejected int64  `json:"sealed_rejected,omitempty"`
 	SealedError    string `json:"sealed_error,omitempty"`
+	// Clock, when non-empty, describes a problem with the system clock:
+	// it is behind the last sealed day (crediting is paused until it
+	// catches up), or it differs from the server's (days are sealed by the
+	// server's clock).
+	Clock string `json:"clock,omitempty"`
 }
 
 // EvidenceStatus is the evidence chain's progress.
@@ -122,7 +134,7 @@ func LoadStatus(ctx context.Context, r StateReader) (Status, error) {
 	s.Minutes = MinutesStatus{
 		LastComputed: parseTime(m[keyLastComputed]), LastSuccess: parseTime(m[keyLastSuccess]),
 		LastError: m[keyLastError], LastErrorAt: parseTime(m[keyLastErrorAt]), Paused: m[keyPaused],
-		Refused: m[keyRefused], SealedError: m[keySealedError],
+		Refused: m[keyRefused], SealedError: m[keySealedError], Clock: m[keyClock],
 	}
 	for _, c := range []struct {
 		key string

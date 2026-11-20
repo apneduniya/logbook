@@ -83,7 +83,7 @@ func TestParseNormalizesProjects(t *testing.T) {
 		{Minute: "2026-11-20T11:59:00Z", Project: "logbook", Label: "you", Credited: 10},
 		{Minute: "2026-11-20T11:59:00Z", Project: "logbook ", Label: "you", Credited: 10},
 	}, now)
-	_, rejected := Plan(valid, nil, bounds())
+	_, _, rejected := Plan(valid, nil, bounds())
 	if len(rejected) != 1 || rejected[0].Index != 1 || rejected[0].Error != errDuplicate.Error() {
 		t.Fatalf("rejected = %+v", rejected)
 	}
@@ -114,7 +114,15 @@ func caughtUp(it Item, written time.Time) Stored {
 	return Stored{Item: it, RulesVersion: "v1", UpdatedAt: written}
 }
 
+// idle is an idle row as the engine emits it: with a cut.
 func idle(minute time.Time, project string) Item {
+	it := you(minute, project, 0)
+	it.Label, it.Cuts = "idle", []string{"idle"}
+	return it
+}
+
+// removal is the item that removes a project from an open minute.
+func removal(minute time.Time, project string) Item {
 	it := you(minute, project, 0)
 	it.Label = "idle"
 	return it
@@ -276,7 +284,7 @@ func TestPlan(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			write, rejected := Plan(indexed(tc.items...), tc.stored, bounds())
+			write, _, rejected := Plan(indexed(tc.items...), tc.stored, bounds())
 			checkPlan(t, write, rejected, tc.wantWrite, tc.wantRej)
 		})
 	}
@@ -298,6 +306,80 @@ func checkPlan(t *testing.T, write []Item, rejected []Rejection, wantWrite []str
 		if want, ok := wantRej[r.Index]; !ok || r.Error != want.Error() {
 			t.Errorf("rejected[%d] = %q, want %v", r.Index, r.Error, want)
 		}
+	}
+}
+
+// A removal deletes its row from an open minute before anything else in
+// the batch is applied, so a replacement fits under the project limit and
+// the credit cap.
+func TestPlanRemovals(t *testing.T) {
+	fresh, final := at(11, 50), at(11, 30)
+	eight := func(m time.Time) []Stored {
+		var out []Stored
+		for _, p := range []string{"a", "b", "c", "d", "e", "f", "g", "h"} {
+			out = append(out, stored(you(m, p, 7)))
+		}
+		out[0].Credited = 11
+		return out
+	}
+	tests := []struct {
+		name       string
+		stored     []Stored
+		items      []Item
+		wantWrite  []string
+		wantRemove []string
+		wantRej    map[int]error
+	}{
+		{
+			name:       "a removal frees a slot for a replacement listed before it",
+			stored:     eight(fresh),
+			items:      []Item{you(fresh, "i", 7), removal(fresh, "h")},
+			wantWrite:  []string{"11:50 i 7"},
+			wantRemove: []string{"11:50 h 0"},
+		},
+		{
+			name:       "a removal frees credit for a raise",
+			stored:     eight(fresh),
+			items:      []Item{you(fresh, "a", 18), removal(fresh, "h")},
+			wantWrite:  []string{"11:50 a 18"},
+			wantRemove: []string{"11:50 h 0"},
+		},
+		{
+			name:    "a removal of nothing frees nothing",
+			stored:  eight(fresh),
+			items:   []Item{removal(fresh, "x"), you(fresh, "i", 0)},
+			wantRej: map[int]error{1: errTooManyProjects},
+		},
+		{
+			name:    "a removal in a final minute is rejected",
+			stored:  eight(final),
+			items:   []Item{removal(final, "h"), you(final, "i", 7)},
+			wantRej: map[int]error{0: errFinal, 1: errFinal},
+		},
+		{
+			name:       "a stored row shaped like a removal is removed while open",
+			stored:     []Stored{stored(removal(fresh, "h"))},
+			items:      []Item{removal(fresh, "h")},
+			wantRemove: []string{"11:50 h 0"},
+		},
+		{
+			name:   "and is an exact repeat once final",
+			stored: []Stored{stored(removal(final, "h"))},
+			items:  []Item{removal(final, "h")},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			write, remove, rejected := Plan(indexed(tc.items...), tc.stored, bounds())
+			checkPlan(t, write, rejected, tc.wantWrite, tc.wantRej)
+			got := make([]string, len(remove))
+			for i, r := range remove {
+				got[i] = fmt.Sprintf("%s %s %d", r.Minute.Format("15:04"), r.Project, r.Credited)
+			}
+			if !slices.Equal(got, tc.wantRemove) && (len(got) != 0 || len(tc.wantRemove) != 0) {
+				t.Errorf("remove = %q, want %q", got, tc.wantRemove)
+			}
+		})
 	}
 }
 
@@ -342,7 +424,7 @@ func TestPlanBounds(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			b := bounds()
 			b.Since, b.Sealed = tc.since, tc.sealed
-			write, rejected := Plan(indexed(tc.items...), tc.stored, b)
+			write, _, rejected := Plan(indexed(tc.items...), tc.stored, b)
 			checkPlan(t, write, rejected, tc.wantWrite, tc.wantRej)
 		})
 	}
@@ -356,9 +438,9 @@ func TestPlanIsDeterministic(t *testing.T) {
 			items = append(items, you(at(11, 0).Add(time.Duration(m)*time.Minute), p, 25))
 		}
 	}
-	first, firstRej := Plan(indexed(items...), nil, bounds())
+	first, _, firstRej := Plan(indexed(items...), nil, bounds())
 	for range 20 {
-		w, r := Plan(indexed(items...), nil, bounds())
+		w, _, r := Plan(indexed(items...), nil, bounds())
 		if fmt.Sprint(w) != fmt.Sprint(first) || fmt.Sprint(r) != fmt.Sprint(firstRej) {
 			t.Fatal("Plan output changed between runs")
 		}

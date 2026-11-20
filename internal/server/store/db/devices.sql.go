@@ -13,6 +13,27 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const creditedMinutesDelete = `-- name: CreditedMinutesDelete :exec
+DELETE FROM credited_minutes c
+USING jsonb_to_recordset($1::jsonb) AS r(minute timestamptz, project text)
+WHERE c.device_id = $2::uuid
+  AND c.minute = r.minute
+  AND c.project = r.project
+`
+
+type CreditedMinutesDeleteParams struct {
+	Rows     []byte
+	DeviceID uuid.UUID
+}
+
+// Deletes the device's rows for a checked list of (minute, project) pairs:
+// projects an agent removed from a still-open minute. rows is a JSON array
+// of objects with minute (RFC 3339) and project.
+func (q *Queries) CreditedMinutesDelete(ctx context.Context, arg CreditedMinutesDeleteParams) error {
+	_, err := q.db.Exec(ctx, creditedMinutesDelete, arg.Rows, arg.DeviceID)
+	return err
+}
+
 const creditedMinutesForDevice = `-- name: CreditedMinutesForDevice :many
 SELECT minute, project, label, credited, cuts, flags, rules_version, updated_at
 FROM credited_minutes

@@ -219,17 +219,19 @@ func TestMinutesUploadAndRewriteWindow(t *testing.T) {
 	}
 	e.wantServerMinute(at("11:59"), "app", 30)
 
-	// An open minute moves to another project: the old row is zeroed first,
-	// so the server's 60-second cap holds.
+	// An open minute moves to another project: the old row is sent first,
+	// as a removal, so the server's 60-second cap and project limit hold.
 	e.credit(at("11:58"), "web", 60)
 	e.advance(time.Minute)
 	e.run()
 	b = e.srv.batches()
 	last := b[len(b)-1]
-	if len(last) != 2 || last[0].Project != "app" || last[0].Credited != 0 || last[0].Label != "idle" || last[1].Project != "web" {
+	if len(last) != 2 || !isRemoval(last[0]) || last[0].Project != "app" || last[1].Project != "web" {
 		t.Fatalf("project move batch = %+v", last)
 	}
-	e.wantServerMinute(at("11:58"), "app", 0)
+	if _, ok := e.srv.minute(e.deviceID(), at("11:58"), "app"); ok {
+		t.Fatal("the server kept the removed project")
+	}
 	e.wantServerMinute(at("11:58"), "web", 60)
 
 	// 40 minutes later 11:59 is final: a late change is not recomputed or sent.
@@ -480,7 +482,7 @@ func TestEvidenceChainAcrossDays(t *testing.T) {
 
 	// A day that fails transiently stays pending and is re-sent unchanged.
 	addDay(t, e.db, "2026-11-21")
-	e.srv.set(func(f *fakeServer) { f.status = http.StatusServiceUnavailable })
+	e.srv.set(func(f *fakeServer) { f.dayStatus = http.StatusServiceUnavailable })
 	e.advance(24 * time.Hour)
 	e.run()
 	pending, _, _ := e.db.LastEvidenceDay(context.Background(), id)
@@ -488,7 +490,7 @@ func TestEvidenceChainAcrossDays(t *testing.T) {
 		t.Fatalf("last local day = %+v", pending)
 	}
 	addDay(t, e.db, "2026-11-21") // arrives after sealing: not part of the hash
-	e.srv.set(func(f *fakeServer) { f.status = 0 })
+	e.srv.set(func(f *fakeServer) { f.dayStatus = 0 })
 	e.advance(5 * time.Second)
 	e.run()
 	days = e.srv.storedDays(id)
