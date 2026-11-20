@@ -15,12 +15,15 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	_ "github.com/jackc/pgx/v5/stdlib" // database/sql driver for goose
 	"github.com/pressly/goose/v3"
 
+	"github.com/apneduniya/logbook/internal/server/jobs"
 	"github.com/apneduniya/logbook/internal/server/store"
 )
 
@@ -112,17 +115,37 @@ func ensureTemplate(ctx context.Context, t testing.TB, base, templateDB string) 
 	if err := sqlDB.Close(); err != nil {
 		t.Fatalf("closing template: %v", err)
 	}
+	migrateRiver(ctx, t, withDB(t, base, templateDB))
 }
 
-// templateName is unique per set of migration files, so worktrees or branches
-// with different migrations never share (and corrupt) a template.
+// migrateRiver adds River's job tables, which live outside goose (ADR 0002).
+func migrateRiver(ctx context.Context, t testing.TB, url string) {
+	t.Helper()
+	pool, err := pgxpool.New(ctx, url)
+	if err != nil {
+		t.Fatalf("opening template pool: %v", err)
+	}
+	defer pool.Close() // must close before the template is copied
+	if err := jobs.Migrate(ctx, pool); err != nil {
+		t.Fatalf("migrating river in template: %v", err)
+	}
+}
+
+// templateName is unique per set of migration files and River schema
+// version, so worktrees or branches with different migrations never share
+// (and corrupt) a template.
 func templateName(t testing.TB) string {
 	t.Helper()
 	files, err := filepath.Glob(filepath.Join(migrationsDir(t), "*.sql"))
 	if err != nil || len(files) == 0 {
 		t.Fatalf("listing migrations: %v", err)
 	}
+	riverVersion, err := jobs.MigrationVersion()
+	if err != nil {
+		t.Fatalf("river migration version: %v", err)
+	}
 	h := sha256.New()
+	h.Write([]byte("river:" + strconv.Itoa(riverVersion) + "\n"))
 	for _, f := range files { // Glob returns sorted names
 		b, err := os.ReadFile(f) //nolint:gosec // test helper reading repo files
 		if err != nil {

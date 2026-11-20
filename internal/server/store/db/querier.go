@@ -13,13 +13,29 @@ import (
 )
 
 type Querier interface {
+	// The importer's writes below apply only while the link the run started with
+	// is still current: linked_at changes on every (re)link, so a run that was
+	// overtaken by an unlink or relink can't move the new import's cursor or
+	// mark it done or failed.
+	// Saves one imported day. prev_next_date guards against a second writer.
+	AdvanceHackatimeImport(ctx context.Context, arg AdvanceHackatimeImportParams) (pgtype.Date, error)
 	CountActiveAPIKeys(ctx context.Context, userID uuid.UUID) (int64, error)
 	CreateAPIKey(ctx context.Context, arg CreateAPIKeyParams) (ApiKey, error)
 	CreateSession(ctx context.Context, arg CreateSessionParams) error
 	DeleteExpiredSessions(ctx context.Context, expiresAt time.Time) (int64, error)
+	DeleteHackatimeImport(ctx context.Context, userID uuid.UUID) error
+	DeleteHackatimeLink(ctx context.Context, userID uuid.UUID) (HackatimeLink, error)
 	DeleteSession(ctx context.Context, idHash []byte) error
+	// Marks the import done, unless a relink extended to_date in the meantime.
+	FinishHackatimeImport(ctx context.Context, arg FinishHackatimeImportParams) (int64, error)
 	GetActiveAPIKeyByHash(ctx context.Context, keyHash []byte) (GetActiveAPIKeyByHashRow, error)
 	GetActiveSession(ctx context.Context, arg GetActiveSessionParams) (GetActiveSessionRow, error)
+	GetHackatimeImport(ctx context.Context, userID uuid.UUID) (HackatimeImport, error)
+	// Hackatime account links and history imports (ADR 0004).
+	// Every query is keyed by the Logbook user id, except the trust sweep, which
+	// runs as a system job over all links.
+	GetHackatimeLink(ctx context.Context, userID uuid.UUID) (HackatimeLink, error)
+	GetHackatimeLinkOwner(ctx context.Context, hackatimeUserID int64) (uuid.UUID, error)
 	GetUserByHCAID(ctx context.Context, hcaID string) (User, error)
 	GetUserByID(ctx context.Context, id uuid.UUID) (User, error)
 	GetUserByUsername(ctx context.Context, username string) (User, error)
@@ -33,12 +49,18 @@ type Querier interface {
 	// identity updates the profile instead of failing.
 	InsertSignInUser(ctx context.Context, arg InsertSignInUserParams) (User, error)
 	ListActiveAPIKeys(ctx context.Context, userID uuid.UUID) ([]ApiKey, error)
+	ListHackatimeLinksDueForTrustCheck(ctx context.Context, arg ListHackatimeLinksDueForTrustCheckParams) ([]uuid.UUID, error)
 	// Reads the heartbeats a rollup recompute needs. The ranges are inclusive and
 	// never overlap, so no row is returned twice. The read is driven from the
 	// ranges: each one gets its own index range scan on (user_id, time) with
 	// runtime partition pruning, so a batch spread over months reads only the
 	// few minutes around each heartbeat, not everything in between.
 	ListRollupHeartbeats(ctx context.Context, arg ListRollupHeartbeatsParams) ([]ListRollupHeartbeatsRow, error)
+	// System sweep: unfinished imports that haven't moved recently.
+	ListStalledHackatimeImports(ctx context.Context, arg ListStalledHackatimeImportsParams) ([]uuid.UUID, error)
+	// Reads the link and holds it until the transaction ends, so a concurrent
+	// trust refresh can't change it between a check and a write.
+	LockHackatimeLink(ctx context.Context, userID uuid.UUID) (HackatimeLink, error)
 	LockUser(ctx context.Context, id uuid.UUID) error
 	// Queries for internal/server/ingest. Every query is scoped to one user_id.
 	// Serialises ingest batches for one user until the transaction ends.
@@ -76,6 +98,10 @@ type Querier interface {
 	// these; creating users belongs to auth and writing minutes to ingest.
 	SeedTestUser(ctx context.Context, arg SeedTestUserParams) (uuid.UUID, error)
 	SeedTestUserMinute(ctx context.Context, arg SeedTestUserMinuteParams) error
+	SetHackatimeImportStatus(ctx context.Context, arg SetHackatimeImportStatusParams) (int64, error)
+	// Creates the import, or extends an existing one to a new end date and makes
+	// it runnable again. next_date is kept so finished days aren't refetched.
+	StartHackatimeImport(ctx context.Context, arg StartHackatimeImportParams) (HackatimeImport, error)
 	// One pass over the range, returned as (dimension, key, seconds) rows.
 	// Days are local dates in the given IANA time zone.
 	StatsBreakdown(ctx context.Context, arg StatsBreakdownParams) ([]StatsBreakdownRow, error)
@@ -92,7 +118,11 @@ type Querier interface {
 	SumUserMinutesByGroup(ctx context.Context, arg SumUserMinutesByGroupParams) ([]SumUserMinutesByGroupRow, error)
 	TouchAPIKey(ctx context.Context, arg TouchAPIKeyParams) error
 	TouchSession(ctx context.Context, arg TouchSessionParams) (int64, error)
+	// Applies only to the link the level was read for; a relink in the meantime
+	// already stored a fresh level.
+	UpdateHackatimeTrust(ctx context.Context, arg UpdateHackatimeTrustParams) (int64, error)
 	UpdateSignInProfile(ctx context.Context, arg UpdateSignInProfileParams) (User, error)
+	UpsertHackatimeLink(ctx context.Context, arg UpsertHackatimeLinkParams) (HackatimeLink, error)
 	UsernameExists(ctx context.Context, username string) (bool, error)
 }
 
