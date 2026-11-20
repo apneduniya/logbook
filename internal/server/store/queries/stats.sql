@@ -138,3 +138,81 @@ WHERE m.user_id = sqlc.arg(user_id)
   AND m.label = 'you'
   AND NOT coalesce(p.hidden, false)
 GROUP BY m.project, m.language, p.repo_url;
+
+-- name: StatsCreditedBreakdown :many
+-- Credited time from the agent's labelled minutes in credited_minutes (see
+-- ADR 0014) in [from_time, to_time), as (dimension, key, seconds) rows:
+--   - credited: capped credited seconds in total (empty key);
+--   - project: capped credited seconds per project;
+--   - day: capped credited seconds per local day (YYYY-MM-DD);
+--   - label: 60 s for every minute with any row, counted once under its
+--     strongest label (you, then agent, then idle);
+--   - multi_device: the number of minutes in which two or more devices
+--     credited time labelled you (empty key).
+-- With a project filter, only that project's rows count, but the 60-second
+-- cap is still computed over every project of the minute.
+WITH cp AS (
+    SELECT v.minute, v.project, v.seconds
+    FROM credited_project_minutes v
+    WHERE v.user_id = sqlc.arg(user_id)
+      AND v.minute >= sqlc.arg(from_time)
+      AND v.minute < sqlc.arg(to_time)
+      AND (sqlc.narg(project)::text IS NULL OR v.project = sqlc.narg(project)::text)
+),
+lm AS (
+    SELECT c.minute,
+           bool_or(c.label = 'you') AS has_you,
+           bool_or(c.label = 'agent') AS has_agent,
+           count(DISTINCT c.device_id) FILTER (WHERE c.label = 'you' AND c.credited > 0) AS you_devices
+    FROM credited_minutes c
+    WHERE c.user_id = sqlc.arg(user_id)
+      AND c.minute >= sqlc.arg(from_time)
+      AND c.minute < sqlc.arg(to_time)
+      AND (sqlc.narg(project)::text IS NULL OR c.project = sqlc.narg(project)::text)
+    GROUP BY c.minute
+),
+labelled AS (
+    SELECT CASE WHEN lm.has_you THEN 'you' WHEN lm.has_agent THEN 'agent' ELSE 'idle' END AS label
+    FROM lm
+)
+SELECT 'credited'::text AS dimension, ''::text AS key, coalesce(sum(cp.seconds), 0)::bigint AS seconds
+FROM cp
+UNION ALL
+SELECT 'project'::text, cp.project::text, sum(cp.seconds)::bigint
+FROM cp GROUP BY cp.project
+UNION ALL
+SELECT 'day'::text, to_char((cp.minute AT TIME ZONE sqlc.arg(tz)::text)::date, 'YYYY-MM-DD'), sum(cp.seconds)::bigint
+FROM cp GROUP BY (cp.minute AT TIME ZONE sqlc.arg(tz)::text)::date
+UNION ALL
+SELECT 'label'::text, labelled.label::text, (count(*) * 60)::bigint
+FROM labelled GROUP BY labelled.label
+UNION ALL
+SELECT 'multi_device'::text, ''::text, count(*)::bigint
+FROM lm WHERE lm.you_devices >= 2;
+
+-- name: StatsUserHasDevices :one
+-- Whether the user has ever registered a device. Without one there is no
+-- evidence, and stats report credited time as null rather than 0.
+SELECT EXISTS (SELECT 1 FROM devices WHERE user_id = $1) AS has_devices;
+
+-- name: ProjectsCreditedTotals :many
+-- All-time capped credited seconds per project (ADR 0014), and the last
+-- minute any device reported for it.
+SELECT v.project, coalesce(sum(v.seconds), 0)::bigint AS seconds,
+       max(v.minute)::timestamptz AS last_minute
+FROM credited_project_minutes v
+WHERE v.user_id = sqlc.arg(user_id)
+  AND (sqlc.narg(project)::text IS NULL OR v.project = sqlc.narg(project)::text)
+GROUP BY v.project;
+
+-- name: ProfilePublicCredited :many
+-- Per-project capped credited seconds for a public profile, all time and
+-- since `since`, excluding hidden projects.
+SELECT v.project, coalesce(p.repo_url, '')::text AS repo_url,
+       coalesce(sum(v.seconds), 0)::bigint AS seconds,
+       coalesce(sum(v.seconds) FILTER (WHERE v.minute >= sqlc.arg(since)), 0)::bigint AS recent_seconds
+FROM credited_project_minutes v
+LEFT JOIN projects p ON p.user_id = v.user_id AND p.name = v.project
+WHERE v.user_id = sqlc.arg(user_id)
+  AND NOT coalesce(p.hidden, false)
+GROUP BY v.project, p.repo_url;

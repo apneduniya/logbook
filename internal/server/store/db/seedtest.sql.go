@@ -53,6 +53,60 @@ func (q *Queries) SeedTestAuditLog(ctx context.Context, actorUserID pgtype.UUID)
 	return items, nil
 }
 
+const seedTestCreditedMinute = `-- name: SeedTestCreditedMinute :exec
+INSERT INTO credited_minutes (device_id, user_id, minute, project, label, credited, flags, rules_version)
+VALUES ($1, $2, $3, $4, $5,
+        $6, $7, 'v1')
+`
+
+type SeedTestCreditedMinuteParams struct {
+	DeviceID uuid.UUID
+	UserID   uuid.UUID
+	Minute   time.Time
+	Project  string
+	Label    string
+	Credited int16
+	Flags    []string
+}
+
+func (q *Queries) SeedTestCreditedMinute(ctx context.Context, arg SeedTestCreditedMinuteParams) error {
+	_, err := q.db.Exec(ctx, seedTestCreditedMinute,
+		arg.DeviceID,
+		arg.UserID,
+		arg.Minute,
+		arg.Project,
+		arg.Label,
+		arg.Credited,
+		arg.Flags,
+	)
+	return err
+}
+
+const seedTestDevice = `-- name: SeedTestDevice :one
+INSERT INTO devices (user_id, name, os, public_key, revoked_at)
+VALUES ($1, $2, 'linux', $3, $4)
+RETURNING id
+`
+
+type SeedTestDeviceParams struct {
+	UserID    uuid.UUID
+	Name      string
+	PublicKey []byte
+	RevokedAt *time.Time
+}
+
+func (q *Queries) SeedTestDevice(ctx context.Context, arg SeedTestDeviceParams) (uuid.UUID, error) {
+	row := q.db.QueryRow(ctx, seedTestDevice,
+		arg.UserID,
+		arg.Name,
+		arg.PublicKey,
+		arg.RevokedAt,
+	)
+	var id uuid.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
 const seedTestUser = `-- name: SeedTestUser :one
 
 INSERT INTO users (hca_id, username, display_name, email, timezone, profile_public)

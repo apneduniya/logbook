@@ -32,6 +32,49 @@ type AuditLog struct {
 	CreatedAt   time.Time
 }
 
+type CreditedMinute struct {
+	DeviceID     uuid.UUID
+	UserID       uuid.UUID
+	Minute       time.Time
+	Project      string
+	Label        string
+	Credited     int16
+	Cuts         []string
+	Flags        []string
+	RulesVersion string
+	UpdatedAt    time.Time
+}
+
+type CreditedProjectMinute struct {
+	UserID  uuid.UUID
+	Minute  time.Time
+	Project string
+	Seconds int64
+}
+
+type Device struct {
+	ID         uuid.UUID
+	UserID     uuid.UUID
+	Name       string
+	Os         string
+	PublicKey  []byte
+	CreatedAt  time.Time
+	LastSeenAt *time.Time
+	RevokedAt  *time.Time
+}
+
+type EvidenceDay struct {
+	DeviceID      uuid.UUID
+	Day           pgtype.Date
+	PrevChainHash string
+	ContentHash   string
+	ChainHash     string
+	Signature     []byte
+	RulesVersion  string
+	EventCounts   []byte
+	CreatedAt     time.Time
+}
+
 type HackatimeImport struct {
 	UserID             uuid.UUID
 	Status             string

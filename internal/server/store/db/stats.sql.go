@@ -104,6 +104,56 @@ func (q *Queries) ProfileGetByUsername(ctx context.Context, username string) (Pr
 	return i, err
 }
 
+const profilePublicCredited = `-- name: ProfilePublicCredited :many
+SELECT v.project, coalesce(p.repo_url, '')::text AS repo_url,
+       coalesce(sum(v.seconds), 0)::bigint AS seconds,
+       coalesce(sum(v.seconds) FILTER (WHERE v.minute >= $1), 0)::bigint AS recent_seconds
+FROM credited_project_minutes v
+LEFT JOIN projects p ON p.user_id = v.user_id AND p.name = v.project
+WHERE v.user_id = $2
+  AND NOT coalesce(p.hidden, false)
+GROUP BY v.project, p.repo_url
+`
+
+type ProfilePublicCreditedParams struct {
+	Since  time.Time
+	UserID uuid.UUID
+}
+
+type ProfilePublicCreditedRow struct {
+	Project       string
+	RepoUrl       string
+	Seconds       int64
+	RecentSeconds int64
+}
+
+// Per-project capped credited seconds for a public profile, all time and
+// since `since`, excluding hidden projects.
+func (q *Queries) ProfilePublicCredited(ctx context.Context, arg ProfilePublicCreditedParams) ([]ProfilePublicCreditedRow, error) {
+	rows, err := q.db.Query(ctx, profilePublicCredited, arg.Since, arg.UserID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ProfilePublicCreditedRow{}
+	for rows.Next() {
+		var i ProfilePublicCreditedRow
+		if err := rows.Scan(
+			&i.Project,
+			&i.RepoUrl,
+			&i.Seconds,
+			&i.RecentSeconds,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const profilePublicTotals = `-- name: ProfilePublicTotals :many
 SELECT m.project, m.language, coalesce(p.repo_url, '')::text AS repo_url,
        coalesce(sum(m.seconds), 0)::bigint AS seconds,
@@ -213,6 +263,48 @@ func (q *Queries) ProfileUpdate(ctx context.Context, arg ProfileUpdateParams) (P
 		&i.CreatedAt,
 	)
 	return i, err
+}
+
+const projectsCreditedTotals = `-- name: ProjectsCreditedTotals :many
+SELECT v.project, coalesce(sum(v.seconds), 0)::bigint AS seconds,
+       max(v.minute)::timestamptz AS last_minute
+FROM credited_project_minutes v
+WHERE v.user_id = $1
+  AND ($2::text IS NULL OR v.project = $2::text)
+GROUP BY v.project
+`
+
+type ProjectsCreditedTotalsParams struct {
+	UserID  uuid.UUID
+	Project pgtype.Text
+}
+
+type ProjectsCreditedTotalsRow struct {
+	Project    string
+	Seconds    int64
+	LastMinute time.Time
+}
+
+// All-time capped credited seconds per project (ADR 0014), and the last
+// minute any device reported for it.
+func (q *Queries) ProjectsCreditedTotals(ctx context.Context, arg ProjectsCreditedTotalsParams) ([]ProjectsCreditedTotalsRow, error) {
+	rows, err := q.db.Query(ctx, projectsCreditedTotals, arg.UserID, arg.Project)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ProjectsCreditedTotalsRow{}
+	for rows.Next() {
+		var i ProjectsCreditedTotalsRow
+		if err := rows.Scan(&i.Project, &i.Seconds, &i.LastMinute); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const projectsMinuteTotals = `-- name: ProjectsMinuteTotals :many
@@ -485,6 +577,99 @@ func (q *Queries) StatsBreakdown(ctx context.Context, arg StatsBreakdownParams) 
 	return items, nil
 }
 
+const statsCreditedBreakdown = `-- name: StatsCreditedBreakdown :many
+WITH cp AS (
+    SELECT v.minute, v.project, v.seconds
+    FROM credited_project_minutes v
+    WHERE v.user_id = $1
+      AND v.minute >= $2
+      AND v.minute < $3
+      AND ($4::text IS NULL OR v.project = $4::text)
+),
+lm AS (
+    SELECT c.minute,
+           bool_or(c.label = 'you') AS has_you,
+           bool_or(c.label = 'agent') AS has_agent,
+           count(DISTINCT c.device_id) FILTER (WHERE c.label = 'you' AND c.credited > 0) AS you_devices
+    FROM credited_minutes c
+    WHERE c.user_id = $1
+      AND c.minute >= $2
+      AND c.minute < $3
+      AND ($4::text IS NULL OR c.project = $4::text)
+    GROUP BY c.minute
+),
+labelled AS (
+    SELECT CASE WHEN lm.has_you THEN 'you' WHEN lm.has_agent THEN 'agent' ELSE 'idle' END AS label
+    FROM lm
+)
+SELECT 'credited'::text AS dimension, ''::text AS key, coalesce(sum(cp.seconds), 0)::bigint AS seconds
+FROM cp
+UNION ALL
+SELECT 'project'::text, cp.project::text, sum(cp.seconds)::bigint
+FROM cp GROUP BY cp.project
+UNION ALL
+SELECT 'day'::text, to_char((cp.minute AT TIME ZONE $5::text)::date, 'YYYY-MM-DD'), sum(cp.seconds)::bigint
+FROM cp GROUP BY (cp.minute AT TIME ZONE $5::text)::date
+UNION ALL
+SELECT 'label'::text, labelled.label::text, (count(*) * 60)::bigint
+FROM labelled GROUP BY labelled.label
+UNION ALL
+SELECT 'multi_device'::text, ''::text, count(*)::bigint
+FROM lm WHERE lm.you_devices >= 2
+`
+
+type StatsCreditedBreakdownParams struct {
+	UserID   uuid.UUID
+	FromTime time.Time
+	ToTime   time.Time
+	Project  pgtype.Text
+	Tz       string
+}
+
+type StatsCreditedBreakdownRow struct {
+	Dimension string
+	Key       string
+	Seconds   int64
+}
+
+// Credited time from the agent's labelled minutes in credited_minutes (see
+// ADR 0014) in [from_time, to_time), as (dimension, key, seconds) rows:
+//   - credited: capped credited seconds in total (empty key);
+//   - project: capped credited seconds per project;
+//   - day: capped credited seconds per local day (YYYY-MM-DD);
+//   - label: 60 s for every minute with any row, counted once under its
+//     strongest label (you, then agent, then idle);
+//   - multi_device: the number of minutes in which two or more devices
+//     credited time labelled you (empty key).
+//
+// With a project filter, only that project's rows count, but the 60-second
+// cap is still computed over every project of the minute.
+func (q *Queries) StatsCreditedBreakdown(ctx context.Context, arg StatsCreditedBreakdownParams) ([]StatsCreditedBreakdownRow, error) {
+	rows, err := q.db.Query(ctx, statsCreditedBreakdown,
+		arg.UserID,
+		arg.FromTime,
+		arg.ToTime,
+		arg.Project,
+		arg.Tz,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []StatsCreditedBreakdownRow{}
+	for rows.Next() {
+		var i StatsCreditedBreakdownRow
+		if err := rows.Scan(&i.Dimension, &i.Key, &i.Seconds); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const statsQualifyingDays = `-- name: StatsQualifyingDays :many
 SELECT to_char((minute AT TIME ZONE $1::text)::date, 'YYYY-MM-DD')::text AS day
 FROM user_minutes
@@ -566,6 +751,19 @@ func (q *Queries) StatsQualifyingDaysBetween(ctx context.Context, arg StatsQuali
 		return nil, err
 	}
 	return items, nil
+}
+
+const statsUserHasDevices = `-- name: StatsUserHasDevices :one
+SELECT EXISTS (SELECT 1 FROM devices WHERE user_id = $1) AS has_devices
+`
+
+// Whether the user has ever registered a device. Without one there is no
+// evidence, and stats report credited time as null rather than 0.
+func (q *Queries) StatsUserHasDevices(ctx context.Context, userID uuid.UUID) (bool, error) {
+	row := q.db.QueryRow(ctx, statsUserHasDevices, userID)
+	var has_devices bool
+	err := row.Scan(&has_devices)
+	return has_devices, err
 }
 
 const statsUserTimezone = `-- name: StatsUserTimezone :one

@@ -1,12 +1,14 @@
-// Package seedtest inserts users and user_minutes rows and reads the audit
-// log for tests of packages that read those tables (stats, projects,
-// profiles, live). It uses the SeedTest* queries in
+// Package seedtest inserts users, user_minutes rows, devices and credited
+// minutes, and reads the audit log, for tests of packages that read those
+// tables (stats, projects, profiles, live). It uses the SeedTest* queries in
 // store/queries/seedtest.sql and is only imported from _test.go files.
-// Creating users in production belongs to auth, and writing minutes to ingest.
+// Creating users in production belongs to auth, writing minutes to ingest,
+// and devices and credited minutes to devices and credited.
 package seedtest
 
 import (
 	"context"
+	"crypto/rand"
 	"testing"
 	"time"
 
@@ -106,4 +108,51 @@ func Audit(t testing.TB, st *store.Store, actor uuid.UUID) []AuditEntry {
 		t.Fatalf("reading audit log: %v", err)
 	}
 	return rows
+}
+
+// Device inserts an active device for userID with a fresh random public key
+// and returns its id.
+func Device(t testing.TB, st *store.Store, userID uuid.UUID, name string) uuid.UUID {
+	t.Helper()
+	key := make([]byte, 32)
+	_, _ = rand.Read(key) // crypto/rand.Read never returns an error
+	id, err := st.SeedTestDevice(context.Background(), db.SeedTestDeviceParams{UserID: userID, Name: name, PublicKey: key})
+	if err != nil {
+		t.Fatalf("seeding device %s: %v", name, err)
+	}
+	return id
+}
+
+// Credited describes credited_minutes rows. Empty fields get defaults:
+// project "logbook", label "you"; Seconds is stored as given.
+type Credited struct {
+	Project string
+	Label   string
+	Seconds int16
+	Flags   []string
+}
+
+// CreditedSpan inserts n consecutive credited minutes for one device,
+// starting at from, each with tmpl's fields.
+func CreditedSpan(t testing.TB, st *store.Store, userID, deviceID uuid.UUID, from time.Time, n int, tmpl Credited) {
+	t.Helper()
+	if tmpl.Project == "" {
+		tmpl.Project = "logbook"
+	}
+	if tmpl.Label == "" {
+		tmpl.Label = "you"
+	}
+	if tmpl.Flags == nil {
+		tmpl.Flags = []string{}
+	}
+	for i := range n {
+		at := from.UTC().Truncate(time.Minute).Add(time.Duration(i) * time.Minute)
+		err := st.SeedTestCreditedMinute(context.Background(), db.SeedTestCreditedMinuteParams{
+			DeviceID: deviceID, UserID: userID, Minute: at, Project: tmpl.Project,
+			Label: tmpl.Label, Credited: tmpl.Seconds, Flags: tmpl.Flags,
+		})
+		if err != nil {
+			t.Fatalf("seeding credited minute %v: %v", at, err)
+		}
+	}
 }

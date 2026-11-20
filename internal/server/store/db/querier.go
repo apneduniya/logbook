@@ -22,10 +22,43 @@ type Querier interface {
 	CountActiveAPIKeys(ctx context.Context, userID uuid.UUID) (int64, error)
 	CreateAPIKey(ctx context.Context, arg CreateAPIKeyParams) (ApiKey, error)
 	CreateSession(ctx context.Context, arg CreateSessionParams) error
+	// The device's stored rows for the given minutes, for the rewrite-window and
+	// 60-second checks.
+	CreditedMinutesForDevice(ctx context.Context, arg CreditedMinutesForDeviceParams) ([]CreditedMinutesForDeviceRow, error)
+	// Writes a checked batch in one round trip. rows is a JSON array of objects
+	// with minute (RFC 3339), project, label, credited, cuts and flags. Unchanged
+	// rows are skipped so retries produce no dead tuples.
+	CreditedMinutesUpsert(ctx context.Context, arg CreditedMinutesUpsertParams) error
 	DeleteExpiredSessions(ctx context.Context, expiresAt time.Time) (int64, error)
 	DeleteHackatimeImport(ctx context.Context, userID uuid.UUID) error
 	DeleteHackatimeLink(ctx context.Context, userID uuid.UUID) (HackatimeLink, error)
 	DeleteSession(ctx context.Context, idHash []byte) error
+	DeviceByPublicKey(ctx context.Context, publicKey []byte) (Device, error)
+	DeviceCountActive(ctx context.Context, userID uuid.UUID) (int64, error)
+	// Queries for internal/server/devices, internal/server/credited and
+	// internal/server/ledger. Every query is scoped to one user_id or to a
+	// device the caller has already checked belongs to that user.
+	// Registers a device. Returns no row when the public key is already
+	// registered (to anyone); the caller then reads the existing row.
+	DeviceInsert(ctx context.Context, arg DeviceInsertParams) (Device, error)
+	// All of a user's devices, revoked ones included, newest first.
+	DeviceList(ctx context.Context, userID uuid.UUID) ([]Device, error)
+	// Locks one of the user's devices until the transaction ends, so uploads for
+	// a device are serialised (the 60-second rule and the evidence chain depend
+	// on it) and a concurrent revoke waits for them. No row means the device
+	// doesn't exist or belongs to someone else.
+	DeviceLockForUpload(ctx context.Context, arg DeviceLockForUploadParams) (Device, error)
+	// Revokes one of the user's active devices. No row means it doesn't exist,
+	// belongs to someone else or is already revoked.
+	DeviceRevoke(ctx context.Context, arg DeviceRevokeParams) (Device, error)
+	// Records upload activity, at most once a minute per device.
+	DeviceTouch(ctx context.Context, arg DeviceTouchParams) error
+	EvidenceDayGet(ctx context.Context, arg EvidenceDayGetParams) (EvidenceDay, error)
+	EvidenceDayInsert(ctx context.Context, arg EvidenceDayInsertParams) error
+	// The chain hash of the device's latest stored day before day (empty if
+	// none), and whether a later day is stored and, if so, the prev_chain_hash
+	// of the earliest one.
+	EvidenceDayNeighbours(ctx context.Context, arg EvidenceDayNeighboursParams) (EvidenceDayNeighboursRow, error)
 	// Marks the import done, unless a relink extended to_date in the meantime.
 	FinishHackatimeImport(ctx context.Context, arg FinishHackatimeImportParams) (int64, error)
 	GetActiveAPIKeyByHash(ctx context.Context, keyHash []byte) (GetActiveAPIKeyByHashRow, error)
@@ -70,11 +103,17 @@ type Querier interface {
 	// Locks the user row until the transaction ends (see ProjectsSettingsGetForUpdate).
 	ProfileGetByIDForUpdate(ctx context.Context, id uuid.UUID) (ProfileGetByIDForUpdateRow, error)
 	ProfileGetByUsername(ctx context.Context, username string) (ProfileGetByUsernameRow, error)
+	// Per-project capped credited seconds for a public profile, all time and
+	// since `since`, excluding hidden projects.
+	ProfilePublicCredited(ctx context.Context, arg ProfilePublicCreditedParams) ([]ProfilePublicCreditedRow, error)
 	// Per (project, language) totals for a public profile, excluding hidden projects.
 	ProfilePublicTotals(ctx context.Context, arg ProfilePublicTotalsParams) ([]ProfilePublicTotalsRow, error)
 	ProfileTimezoneKnown(ctx context.Context, name string) (bool, error)
 	// Partial update: a NULL argument keeps the current value.
 	ProfileUpdate(ctx context.Context, arg ProfileUpdateParams) (ProfileUpdateRow, error)
+	// All-time capped credited seconds per project (ADR 0014), and the last
+	// minute any device reported for it.
+	ProjectsCreditedTotals(ctx context.Context, arg ProjectsCreditedTotalsParams) ([]ProjectsCreditedTotalsRow, error)
 	// Per (project, language): credited seconds and last activity of any label.
 	ProjectsMinuteTotals(ctx context.Context, arg ProjectsMinuteTotalsParams) ([]ProjectsMinuteTotalsRow, error)
 	// Creates the settings row with defaults if it doesn't exist yet, so that
@@ -94,6 +133,8 @@ type Querier interface {
 	RevokeAPIKey(ctx context.Context, arg RevokeAPIKeyParams) (ApiKey, error)
 	// Audit rows written by one actor, oldest first.
 	SeedTestAuditLog(ctx context.Context, actorUserID pgtype.UUID) ([]SeedTestAuditLogRow, error)
+	SeedTestCreditedMinute(ctx context.Context, arg SeedTestCreditedMinuteParams) error
+	SeedTestDevice(ctx context.Context, arg SeedTestDeviceParams) (uuid.UUID, error)
 	// Test fixtures for package store/seedtest. Production code must not call
 	// these; creating users belongs to auth and writing minutes to ingest.
 	SeedTestUser(ctx context.Context, arg SeedTestUserParams) (uuid.UUID, error)
@@ -105,11 +146,26 @@ type Querier interface {
 	// One pass over the range, returned as (dimension, key, seconds) rows.
 	// Days are local dates in the given IANA time zone.
 	StatsBreakdown(ctx context.Context, arg StatsBreakdownParams) ([]StatsBreakdownRow, error)
+	// Credited time from the agent's labelled minutes in credited_minutes (see
+	// ADR 0014) in [from_time, to_time), as (dimension, key, seconds) rows:
+	//   - credited: capped credited seconds in total (empty key);
+	//   - project: capped credited seconds per project;
+	//   - day: capped credited seconds per local day (YYYY-MM-DD);
+	//   - label: 60 s for every minute with any row, counted once under its
+	//     strongest label (you, then agent, then idle);
+	//   - multi_device: the number of minutes in which two or more devices
+	//     credited time labelled you (empty key).
+	// With a project filter, only that project's rows count, but the 60-second
+	// cap is still computed over every project of the minute.
+	StatsCreditedBreakdown(ctx context.Context, arg StatsCreditedBreakdownParams) ([]StatsCreditedBreakdownRow, error)
 	// Local dates on which the user was credited at least min_seconds.
 	StatsQualifyingDays(ctx context.Context, arg StatsQualifyingDaysParams) ([]string, error)
 	// Like StatsQualifyingDays, but only for minutes in [from_time, to_time).
 	// Callers pass whole local days so each day's sum is complete.
 	StatsQualifyingDaysBetween(ctx context.Context, arg StatsQualifyingDaysBetweenParams) ([]string, error)
+	// Whether the user has ever registered a device. Without one there is no
+	// evidence, and stats report credited time as null rather than 0.
+	StatsUserHasDevices(ctx context.Context, userID uuid.UUID) (bool, error)
 	// Queries for the stats, projects and profiles packages.
 	// Aggregates read user_minutes only, never heartbeats (ADR 0002).
 	// Credited time is label = 'you'; other labels are reported separately.
