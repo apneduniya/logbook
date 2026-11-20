@@ -109,7 +109,7 @@ func Parse(event string, in aievent.Input, getenv func(string) string) []aievent
 	if aievent.Decode(in, &p) != nil {
 		return nil
 	}
-	if p.CursorVersion != "" || getenv("CURSOR_VERSION") != "" {
+	if runByCursor(p, getenv) {
 		return nil
 	}
 	f := aievent.Fields{Kind: kind, SessionID: p.SessionID, Cwd: p.Cwd, Model: p.Model}
@@ -120,6 +120,19 @@ func Parse(event string, in aievent.Input, getenv func(string) string) []aievent
 		f.PromptChars = int(p.Prompt)
 	}
 	return []aievent.Fields{f}
+}
+
+// runByCursor reports whether Cursor, not Claude Code, ran this hook. Cursor
+// documents cursor_version in its hook payloads and CURSOR_VERSION in hook
+// environments, but not whether its Claude-format payloads keep the field,
+// so the env var is checked too. Claude Code (2.1.172+) sets
+// CLAUDE_CODE_CHILD_SESSION=1 on hooks it runs itself, which keeps a real
+// Claude session recorded when Cursor's environment leaked into its shell.
+func runByCursor(p payload, getenv func(string) string) bool {
+	if p.CursorVersion != "" {
+		return true
+	}
+	return getenv("CURSOR_VERSION") != "" && getenv("CLAUDE_CODE_CHILD_SESSION") != "1"
 }
 
 // Response is what the hook prints on stdout. Claude Code treats exit 0 with

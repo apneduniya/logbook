@@ -175,6 +175,32 @@ func TestParseSkips(t *testing.T) {
 	}
 }
 
+// A real Claude Code session (CLAUDE_CODE_CHILD_SESSION=1 on its hooks)
+// started from a shell that inherited Cursor's environment is still
+// recorded; only Cursor-run hooks are dropped.
+func TestCursorDedup(t *testing.T) {
+	cases := []struct {
+		name, fixture string
+		env           map[string]string
+		kept          bool
+	}{
+		{"plain Claude Code", "PreToolUse.json", nil, true},
+		{"Claude Code with Cursor env leaked", "PreToolUse.json", map[string]string{"CURSOR_VERSION": "2.3.1", "CLAUDE_CODE_CHILD_SESSION": "1"}, true},
+		{"run by Cursor, env only", "PreToolUse.json", map[string]string{"CURSOR_VERSION": "2.3.1"}, false},
+		{"run by Cursor, payload field", "CursorPreToolUse.json", nil, false},
+		{"payload field wins over child-session env", "CursorPreToolUse.json", map[string]string{"CLAUDE_CODE_CHILD_SESSION": "1"}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			in := aievent.Input{Data: harnesstest.Fixture(t, tc.fixture)}
+			got := Parse("PreToolUse", in, func(k string) string { return tc.env[k] })
+			if (got != nil) != tc.kept {
+				t.Fatalf("Parse = %+v, want kept=%v", got, tc.kept)
+			}
+		})
+	}
+}
+
 func TestParseTruncated(t *testing.T) {
 	data := harnesstest.BigPayload(`"session_id":"abc123","cwd":"/home/teen/my-app","hook_event_name":"PostToolUse","tool_name":"Bash"`)
 	in := aievent.Input{Data: data[:aievent.MaxPayload], Truncated: true}
