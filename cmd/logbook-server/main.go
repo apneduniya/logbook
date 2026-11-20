@@ -20,10 +20,13 @@ import (
 
 	"github.com/apneduniya/logbook/internal/server/auth"
 	"github.com/apneduniya/logbook/internal/server/config"
+	"github.com/apneduniya/logbook/internal/server/credited"
+	"github.com/apneduniya/logbook/internal/server/devices"
 	"github.com/apneduniya/logbook/internal/server/hackatime"
 	"github.com/apneduniya/logbook/internal/server/httpapi"
 	"github.com/apneduniya/logbook/internal/server/ingest"
 	"github.com/apneduniya/logbook/internal/server/jobs"
+	"github.com/apneduniya/logbook/internal/server/ledger"
 	"github.com/apneduniya/logbook/internal/server/live"
 	"github.com/apneduniya/logbook/internal/server/profiles"
 	"github.com/apneduniya/logbook/internal/server/projects"
@@ -83,6 +86,7 @@ func run() error {
 	// Accounts and sessions.
 	authSvc, err := auth.New(st, auth.Options{
 		BaseURL: cfg.BaseURL,
+		WebURL:  cfg.WebURL,
 		HCA: auth.HCAConfig{
 			BaseURL:      cfg.HCA.BaseURL,
 			ClientID:     cfg.HCA.ClientID,
@@ -116,6 +120,11 @@ func run() error {
 	// Heartbeat ingest. The streak cache is refreshed before the hub tells browsers to refetch.
 	ingestSvc := ingest.New(st, live.Fanout{statsSvc, hub})
 	ingest.NewHandler(ingestSvc, authSvc.RequireAPIKey).Register(mux)
+
+	// Agent devices, credited minutes and the evidence chain (ADR 0010).
+	devices.NewHandler(devices.NewService(st), authSvc.RequireAPIKey, authSvc.RequireSession).Register(mux)
+	credited.NewHandler(credited.NewService(st, hub), authSvc.RequireAPIKey).Register(mux)
+	ledger.NewHandler(ledger.NewService(st), authSvc.RequireAPIKey).Register(mux)
 
 	// Hackatime link, history import and trust refresh.
 	htClient, err := hackatime.NewClient(hackatime.ClientConfig{
@@ -151,8 +160,9 @@ func run() error {
 	}
 
 	srv := &http.Server{
-		Addr:              cfg.Addr,
-		Handler:           httpapi.Chain(mux, httpapi.Recover, httpapi.RequestID, httpapi.Logger, httpapi.SecurityHeaders),
+		Addr: cfg.Addr,
+		Handler: httpapi.Chain(mux, httpapi.Recover, httpapi.RequestID, httpapi.Logger, httpapi.SecurityHeaders,
+			httpapi.CORS(httpapi.CORSConfig{Origin: cfg.WebOrigin(), Skip: corsSkip})),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		IdleTimeout:       120 * time.Second,
@@ -185,6 +195,15 @@ func run() error {
 		serveErr = errors.Join(serveErr, fmt.Errorf("stopping jobs: %w", err))
 	}
 	return serveErr
+}
+
+// corsSkip lists the /api/ paths browsers never call (wakatime-cli and agent
+// endpoints, authenticated by API key), which get no CORS headers (ADR 0011).
+var corsSkip = []string{
+	"/api/hackatime/",
+	"/api/v1/users/current/heartbeats",
+	"/api/v1/users/current/statusbar/",
+	"/api/v1/devices",
 }
 
 func migrate(ctx context.Context, databaseURL string) error {
