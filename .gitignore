@@ -8,3 +8,5 @@ research/
 /web/node_modules/
 /web/.svelte-kit/
 coverage.out
+.claude/
+/bin/
