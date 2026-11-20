@@ -34,6 +34,16 @@ const (
 	// day the evidence chain has moved past, sealed or found empty. It only
 	// grows; no minute before it is computed or stored again.
 	keySealedThrough = "crediting.sealed_through"
+	// keySettling says why no minute becomes final yet after a start ("" once
+	// settled).
+	keySettling = "crediting.settling"
+	// keyLateIgnored counts raw events that arrived after their minute was
+	// final, and keyLateLatest is the latest such arrival. keyLateMark is
+	// how far rows have been checked ("<heartbeats> <ai> <activity> <git>"
+	// row ids).
+	keyLateIgnored = "crediting.late_ignored"
+	keyLateLatest  = "crediting.late_latest"
+	keyLateMark    = "crediting.late_mark"
 
 	keyEvidenceDevice = "evidence.device"
 	keyEvidenceDay    = "evidence.last_day"
@@ -95,6 +105,15 @@ type MinutesStatus struct {
 	// MaxClockSkew, or the server gave no usable time (no day is sealed
 	// until the clocks agree; minutes are still uploaded).
 	Clock string `json:"clock,omitempty"`
+	// Settling, when non-empty, says why no minute becomes final yet: the
+	// agent has just started (or woken) and waits for late events, or for
+	// the hook spool to drain (ADR 0016).
+	Settling string `json:"settling,omitempty"`
+	// LateIgnored counts raw events that arrived after the minute they
+	// belong to was final; they are kept as evidence but never change its
+	// credit. LateLatest is the latest such arrival.
+	LateIgnored int64     `json:"late_ignored,omitempty"`
+	LateLatest  time.Time `json:"late_latest,omitzero"`
 }
 
 // EvidenceStatus is the evidence chain's progress.
@@ -136,11 +155,15 @@ func LoadStatus(ctx context.Context, r StateReader) (Status, error) {
 		LastComputed: parseTime(m[keyLastComputed]), LastSuccess: parseTime(m[keyLastSuccess]),
 		LastError: m[keyLastError], LastErrorAt: parseTime(m[keyLastErrorAt]), Paused: m[keyPaused],
 		Refused: m[keyRefused], SealedError: m[keySealedError], Clock: m[keyClock],
+		Settling: m[keySettling], LateLatest: parseTime(m[keyLateLatest]),
 	}
 	for _, c := range []struct {
 		key string
 		dst *int64
-	}{{keyRejected, &s.Minutes.Rejected}, {keyWaiting, &s.Minutes.Waiting}, {keySealedRejected, &s.Minutes.SealedRejected}} {
+	}{
+		{keyRejected, &s.Minutes.Rejected}, {keyWaiting, &s.Minutes.Waiting},
+		{keySealedRejected, &s.Minutes.SealedRejected}, {keyLateIgnored, &s.Minutes.LateIgnored},
+	} {
 		if v := m[c.key]; v != "" {
 			if *c.dst, err = strconv.ParseInt(v, 10, 64); err != nil {
 				return Status{}, fmt.Errorf("reading %s: %w", c.key, err)

@@ -43,10 +43,16 @@ type EvidenceDay struct {
 	// means they are not kept: the day was sealed before they were, or its
 	// raw events have been pruned. Sealing stores a non-nil slice.
 	ActiveTime []evidence.ActiveTime
-	State      string
-	Error      string
-	CreatedAt  time.Time
-	UpdatedAt  time.Time
+	// Cutoffs are the day's final minutes whose arrival cutoff isn't the
+	// default (minute + the lead), as stored when the day was sealed, so a
+	// replay of the day's credit uses exactly the agent's cutoffs (ADR
+	// 0016). nil means not kept: the day was sealed before they were, or
+	// its raw events have been pruned. Sealing stores a non-nil slice.
+	Cutoffs   []CutoffRange
+	State     string
+	Error     string
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 // InsertEvidenceDay stores a newly sealed day. It fails if the device
@@ -64,10 +70,18 @@ func (d *DB) InsertEvidenceDay(ctx context.Context, e EvidenceDay) error {
 	if err != nil {
 		return fmt.Errorf("encoding active time: %w", err)
 	}
+	cutoffs := e.Cutoffs
+	if cutoffs == nil {
+		cutoffs = []CutoffRange{}
+	}
+	cs, err := json.Marshal(cutoffs)
+	if err != nil {
+		return fmt.Errorf("encoding cutoffs: %w", err)
+	}
 	now := d.now().UnixMilli()
 	_, err = d.sql.ExecContext(ctx, qEvidenceInsert, e.DeviceID, e.Day, e.PrevChainHash, e.ContentHash,
 		e.ChainHash, e.Signature, e.RulesVersion, string(counts), e.HighWater.Heartbeats, e.HighWater.AI,
-		e.HighWater.Activity, e.HighWater.Git, string(at), e.State, e.Error, now, now)
+		e.HighWater.Activity, e.HighWater.Git, string(at), string(cs), e.State, e.Error, now, now)
 	if err != nil {
 		return fmt.Errorf("storing evidence day %s: %w", e.Day, err)
 	}
@@ -89,13 +103,13 @@ func (d *DB) EvidenceDayOf(ctx context.Context, deviceID, day string) (e Evidenc
 func (d *DB) evidenceDay(ctx context.Context, q string, args ...any) (e EvidenceDay, ok bool, err error) {
 	var (
 		counts           string
-		active           sql.NullString
+		active, cutoffs  sql.NullString
 		created, updated int64
 		hw               HighWater
 	)
 	err = d.sql.QueryRowContext(ctx, q, args...).Scan(&e.DeviceID, &e.Day, &e.PrevChainHash,
 		&e.ContentHash, &e.ChainHash, &e.Signature, &e.RulesVersion, &counts, &hw.Heartbeats, &hw.AI,
-		&hw.Activity, &hw.Git, &active, &e.State, &e.Error, &created, &updated)
+		&hw.Activity, &hw.Git, &active, &cutoffs, &e.State, &e.Error, &created, &updated)
 	if errors.Is(err, sql.ErrNoRows) {
 		return EvidenceDay{}, false, nil
 	}
@@ -109,6 +123,12 @@ func (d *DB) evidenceDay(ctx context.Context, q string, args ...any) (e Evidence
 		e.ActiveTime = []evidence.ActiveTime{}
 		if err := json.Unmarshal([]byte(active.String), &e.ActiveTime); err != nil {
 			return EvidenceDay{}, false, fmt.Errorf("decoding active time of %s: %w", e.Day, err)
+		}
+	}
+	if cutoffs.Valid {
+		e.Cutoffs = []CutoffRange{}
+		if err := json.Unmarshal([]byte(cutoffs.String), &e.Cutoffs); err != nil {
+			return EvidenceDay{}, false, fmt.Errorf("decoding cutoffs of %s: %w", e.Day, err)
 		}
 	}
 	e.HighWater = hw

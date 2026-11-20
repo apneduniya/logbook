@@ -95,13 +95,19 @@ func (d *DB) Enqueue(ctx context.Context, hbs []wire.Heartbeat, mirror bool) err
 		if _, err := trim(ctx, tx, qLogTrim, d.queueCap); err != nil {
 			return err
 		}
+		// The arrival is taken while the transaction holds the write lock
+		// (see InsertEvents). A resent heartbeat keeps its first arrival.
+		arrived := d.now()
 		if err := execEach(ctx, tx, qHeartbeatInsert, len(hbs), func(i int) []any {
-			return []any{hbs[i].Timestamp().UnixMilli(), hbs[i].FieldsHash(), payloads[i]}
+			return []any{hbs[i].Timestamp().UnixMilli(), hbs[i].FieldsHash(), payloads[i], arrived.UnixMilli()}
 		}); err != nil {
 			return fmt.Errorf("keeping heartbeats: %w", err)
 		}
-		_, err := trim(ctx, tx, qHeartbeatTrim, d.eventCap)
-		return err
+		n, err := trim(ctx, tx, qHeartbeatTrim, d.eventCap)
+		if err != nil {
+			return err
+		}
+		return bumpGeneration(ctx, tx, n, arrived)
 	})
 	if err != nil {
 		return err

@@ -42,11 +42,11 @@ const (
 
 const (
 	qAIInsert = `INSERT INTO ai_events (time, harness, kind, session_id, project, cwd, model, tool,
-		prompt_chars, decision, prompt_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-	qActivityInsert = `INSERT INTO activity_samples (time, idle_seconds, focus_app, focus_kind)
-		VALUES (?, ?, ?, ?)`
+		prompt_chars, decision, prompt_hash, arrived_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	qActivityInsert = `INSERT INTO activity_samples (time, idle_seconds, focus_app, focus_kind, arrived_at)
+		VALUES (?, ?, ?, ?, ?)`
 	qGitInsert = `INSERT OR IGNORE INTO git_events (time, project, kind, commit_hash, files_changed,
-		insertions, deletions) VALUES (?, ?, ?, ?, ?, ?, ?)`
+		insertions, deletions, arrived_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
 
 	qAICount       = `SELECT COUNT(*) FROM ai_events WHERE time >= ?`
 	qActivityCount = `SELECT COUNT(*) FROM activity_samples WHERE time >= ?`
@@ -65,7 +65,7 @@ const (
 // Claude Code active time (migration 0003).
 const (
 	qActiveInsert = `INSERT OR IGNORE INTO active_time (from_ms, to_ms, session_id, type, secs, repository,
-		series_start, cumulative) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+		series_start, cumulative, arrived_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	// qActiveLastCumulative is a cumulative series' latest stored point.
 	qActiveLastCumulative = `SELECT to_ms, cumulative FROM active_time
 		WHERE session_id = ? AND type = ? AND series_start = ? AND cumulative IS NOT NULL
@@ -108,7 +108,7 @@ const (
 
 // Full heartbeats (migration 0002).
 const (
-	qHeartbeatInsert = `INSERT OR IGNORE INTO heartbeats (time, fields_hash, payload) VALUES (?, ?, ?)`
+	qHeartbeatInsert = `INSERT OR IGNORE INTO heartbeats (time, fields_hash, payload, arrived_at) VALUES (?, ?, ?, ?)`
 	qHeartbeatTrim   = `DELETE FROM heartbeats WHERE id <= (SELECT MAX(id) FROM heartbeats) - ?`
 	qHeartbeatPrune  = `DELETE FROM heartbeats WHERE time < ?`
 )
@@ -120,33 +120,37 @@ const (
 		(SELECT COALESCE(MAX(id), 0) FROM ai_events),
 		(SELECT COALESCE(MAX(id), 0) FROM activity_samples),
 		(SELECT COALESCE(MAX(id), 0) FROM git_events)`
-	qHeartbeatsRange = `SELECT payload FROM heartbeats WHERE time >= ? AND time < ? AND id > ? AND id <= ? ORDER BY time, id`
-	qAIRange         = `SELECT time, harness, kind, session_id, project, cwd, model, tool, prompt_chars, decision, prompt_hash
+	qHeartbeatsRange = `SELECT payload, arrived_at FROM heartbeats WHERE time >= ? AND time < ? AND id > ? AND id <= ? ORDER BY time, id`
+	qAIRange         = `SELECT time, harness, kind, session_id, project, cwd, model, tool, prompt_chars, decision, prompt_hash, arrived_at
 		FROM ai_events WHERE time >= ? AND time < ? AND id > ? AND id <= ? ORDER BY time, id`
-	qActivityRange = `SELECT time, idle_seconds, focus_app, focus_kind
+	qActivityRange = `SELECT time, idle_seconds, focus_app, focus_kind, arrived_at
 		FROM activity_samples WHERE time >= ? AND time < ? AND id > ? AND id <= ? ORDER BY time, id`
-	qGitRange = `SELECT time, project, kind, commit_hash, files_changed, insertions, deletions
+	qGitRange = `SELECT time, project, kind, commit_hash, files_changed, insertions, deletions, arrived_at
 		FROM git_events WHERE time >= ? AND time < ? AND id > ? AND id <= ? ORDER BY time, id`
 )
 
-// Credited minutes (migration 0002).
+// Credited minutes (migrations 0002 and 0006).
 const (
-	qMinutesInRange = `SELECT minute, project, digest, sent_digest FROM credited_minutes
+	qMinutesInRange = `SELECT minute, project, digest, sent_digest, cutoff FROM credited_minutes
 		WHERE minute >= ? AND minute < ?`
 	qMinuteInsert = `INSERT INTO credited_minutes (minute, project, label, credited, cuts, flags,
-		rules_version, digest) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+		rules_version, digest, cutoff) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	qMinuteUpdate = `UPDATE credited_minutes SET label = ?, credited = ?, cuts = ?, flags = ?,
-		rules_version = ?, digest = ? WHERE minute = ? AND project = ?`
+		rules_version = ?, digest = ?, cutoff = ? WHERE minute = ? AND project = ?`
+	// qMinuteCutoff records that a run recomputed a row without changing it.
+	qMinuteCutoff = `UPDATE credited_minutes SET cutoff = ? WHERE minute = ? AND project = ?`
 	qMinuteDelete = `DELETE FROM credited_minutes WHERE minute = ? AND project = ?`
 	// qMinutesSettleFinal marks final minutes whose content the server
 	// already has as done, without sending them again.
 	qMinutesSettleFinal = `UPDATE credited_minutes SET sent_final = 1
 		WHERE sent_final = 0 AND minute < ? AND digest = sent_digest`
 	// qMinutesUnsent returns unsent rows up to and including the minute of
-	// the (OFFSET+1)-th unsent row, so that minute comes whole.
+	// the (OFFSET+1)-th unsent row, so that minute comes whole. Minutes in a
+	// held range [?, ?) are left out (both parameter pairs).
 	qMinutesUnsent = `SELECT minute, project, label, credited, cuts, flags, rules_version, digest
-		FROM credited_minutes WHERE sent_final = 0 AND digest <> sent_digest
+		FROM credited_minutes WHERE sent_final = 0 AND digest <> sent_digest AND NOT (minute >= ? AND minute < ?)
 		AND minute <= COALESCE((SELECT minute FROM credited_minutes WHERE sent_final = 0 AND digest <> sent_digest
+			AND NOT (minute >= ? AND minute < ?)
 			ORDER BY minute, credited, project LIMIT 1 OFFSET ?), 9223372036854775807)
 		ORDER BY minute, credited, project`
 	qMinuteMarkSent = `UPDATE credited_minutes SET sent_digest = digest, sent_final = ?
@@ -158,6 +162,39 @@ const (
 	qMinutesUnsentBefore = `SELECT COUNT(*) FROM credited_minutes
 		WHERE sent_final = 0 AND digest <> sent_digest AND minute < ?`
 	qMinutesPrune = `DELETE FROM credited_minutes WHERE minute < ?`
+	// qMinutesStored lists stored rows of [?, ?) with their cutoff, for
+	// replays and tests.
+	qMinutesStored = `SELECT minute, project, label, credited, cuts, flags, rules_version, digest, cutoff
+		FROM credited_minutes WHERE minute >= ? AND minute < ? ORDER BY minute, project`
+)
+
+// Cutoff exceptions of final minutes (migration 0006).
+const (
+	qCutoffLast   = `SELECT from_minute, to_minute, cutoff FROM credit_cutoffs ORDER BY from_minute DESC LIMIT 1`
+	qCutoffInsert = `INSERT INTO credit_cutoffs (from_minute, to_minute, cutoff) VALUES (?, ?, ?)`
+	qCutoffExtend = `UPDATE credit_cutoffs SET to_minute = ? WHERE from_minute = ?`
+	qCutoffRange  = `SELECT from_minute, to_minute, cutoff FROM credit_cutoffs
+		WHERE to_minute > ? AND from_minute < ? ORDER BY from_minute`
+	qCutoffPrune = `DELETE FROM credit_cutoffs WHERE to_minute <= ?`
+	// qCutoffForget and qCutoffClip drop the cutoffs of minutes at or after
+	// a minute (the clock was set back before the final watermark).
+	qCutoffForget = `DELETE FROM credit_cutoffs WHERE from_minute >= ?`
+	qCutoffClip   = `UPDATE credit_cutoffs SET to_minute = ? WHERE from_minute < ? AND to_minute > ?`
+)
+
+// Late events (migration 0006): rows after an id that arrived by a cutoff,
+// with a time before a minute; and the highest such id. One pair per raw
+// event table; the table names are constants.
+const (
+	qLateHeartbeats = `SELECT COUNT(*), COALESCE(MAX(arrived_at), 0) FROM heartbeats WHERE id > ? AND arrived_at <= ? AND time < ?`
+	qLateAI         = `SELECT COUNT(*), COALESCE(MAX(arrived_at), 0) FROM ai_events WHERE id > ? AND arrived_at <= ? AND time < ?`
+	qLateActivity   = `SELECT COUNT(*), COALESCE(MAX(arrived_at), 0) FROM activity_samples WHERE id > ? AND arrived_at <= ? AND time < ?`
+	qLateGit        = `SELECT COUNT(*), COALESCE(MAX(arrived_at), 0) FROM git_events WHERE id > ? AND arrived_at <= ? AND time < ?`
+
+	qArrivedHeartbeats = `SELECT COALESCE(MAX(id), ?) FROM heartbeats WHERE id > ? AND arrived_at <= ?`
+	qArrivedAI         = `SELECT COALESCE(MAX(id), ?) FROM ai_events WHERE id > ? AND arrived_at <= ?`
+	qArrivedActivity   = `SELECT COALESCE(MAX(id), ?) FROM activity_samples WHERE id > ? AND arrived_at <= ?`
+	qArrivedGit        = `SELECT COALESCE(MAX(id), ?) FROM git_events WHERE id > ? AND arrived_at <= ?`
 )
 
 // Repo mapping journal (migration 0005).
@@ -171,31 +208,31 @@ const (
 		WHERE n.path = repo_map.path AND n.id > repo_map.id AND n.since < ?)`
 )
 
-// Evidence days (migrations 0002 and 0004).
+// Evidence days (migrations 0002, 0004 and 0006).
 const (
 	qEvidenceInsert = `INSERT INTO evidence_days (device_id, day, prev_chain_hash, content_hash, chain_hash,
-		signature, rules_version, event_counts, hw_heartbeats, hw_ai, hw_activity, hw_git, active_time, state, error,
-		created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+		signature, rules_version, event_counts, hw_heartbeats, hw_ai, hw_activity, hw_git, active_time, cutoffs, state, error,
+		created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	qEvidenceColumns = `SELECT device_id, day, prev_chain_hash, content_hash, chain_hash, signature,
-		rules_version, event_counts, hw_heartbeats, hw_ai, hw_activity, hw_git, active_time, state, error,
+		rules_version, event_counts, hw_heartbeats, hw_ai, hw_activity, hw_git, active_time, cutoffs, state, error,
 		created_at, updated_at FROM evidence_days`
 	qEvidenceLast     = qEvidenceColumns + ` WHERE device_id = ? ORDER BY day DESC LIMIT 1`
 	qEvidenceDay      = qEvidenceColumns + ` WHERE device_id = ? AND day = ?`
 	qEvidenceSetState = `UPDATE evidence_days SET state = ?, error = ?, updated_at = ? WHERE device_id = ? AND day = ?`
 	// qEvidenceForget drops the kept active-time records of days before a
 	// day (YYYY-MM-DD), once their raw events are pruned too.
-	qEvidenceForget = `UPDATE evidence_days SET active_time = NULL WHERE day < ? AND active_time IS NOT NULL`
+	qEvidenceForget = `UPDATE evidence_days SET active_time = NULL, cutoffs = NULL WHERE day < ? AND (active_time IS NOT NULL OR cutoffs IS NOT NULL)`
 )
 
 // The same event reads for new rows only: "+time" stops SQLite from using
 // the time index, so it walks the short id range instead of the whole time
 // range.
 const (
-	qHeartbeatsAfter = `SELECT payload FROM heartbeats WHERE +time >= ? AND +time < ? AND id > ? AND id <= ? ORDER BY time, id`
-	qAIAfter         = `SELECT time, harness, kind, session_id, project, cwd, model, tool, prompt_chars, decision, prompt_hash
+	qHeartbeatsAfter = `SELECT payload, arrived_at FROM heartbeats WHERE +time >= ? AND +time < ? AND id > ? AND id <= ? ORDER BY time, id`
+	qAIAfter         = `SELECT time, harness, kind, session_id, project, cwd, model, tool, prompt_chars, decision, prompt_hash, arrived_at
 		FROM ai_events WHERE +time >= ? AND +time < ? AND id > ? AND id <= ? ORDER BY time, id`
-	qActivityAfter = `SELECT time, idle_seconds, focus_app, focus_kind
+	qActivityAfter = `SELECT time, idle_seconds, focus_app, focus_kind, arrived_at
 		FROM activity_samples WHERE +time >= ? AND +time < ? AND id > ? AND id <= ? ORDER BY time, id`
-	qGitAfter = `SELECT time, project, kind, commit_hash, files_changed, insertions, deletions
+	qGitAfter = `SELECT time, project, kind, commit_hash, files_changed, insertions, deletions, arrived_at
 		FROM git_events WHERE +time >= ? AND +time < ? AND id > ? AND id <= ? ORDER BY time, id`
 )

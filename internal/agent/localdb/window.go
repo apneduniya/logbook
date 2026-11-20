@@ -8,6 +8,7 @@ import (
 	"math"
 	"time"
 
+	"github.com/apneduniya/logbook/pkg/evidence"
 	"github.com/apneduniya/logbook/pkg/wire"
 )
 
@@ -27,14 +28,15 @@ func (d *DB) HighWater(ctx context.Context) (HighWater, error) {
 	return hw, nil
 }
 
-// Events are the raw local events of a time range, each slice oldest first.
-// Times are UTC with millisecond precision (how they are stored);
-// heartbeats are exactly as accepted.
+// Events are the raw local events of a time range, each slice oldest first
+// (by event time, then row id), each with the time it was stored (its
+// arrival, ADR 0016). Times are UTC with millisecond precision (how they
+// are stored); heartbeats are exactly as accepted.
 type Events struct {
-	Activity   []wire.ActivitySample
-	Heartbeats []wire.Heartbeat
-	AI         []wire.AIEvent
-	Git        []wire.GitEvent
+	Activity   []evidence.Received[wire.ActivitySample]
+	Heartbeats []evidence.Received[wire.Heartbeat]
+	AI         []evidence.Received[wire.AIEvent]
+	Git        []evidence.Received[wire.GitEvent]
 }
 
 // EventsBetween returns every raw event with from <= time < to. When upto is
@@ -73,13 +75,16 @@ func (d *DB) EventsAfter(ctx context.Context, after, upto HighWater, from, to ti
 func (d *DB) readEvents(ctx context.Context, q eventQueries, f, t int64, after, upto HighWater) (Events, error) {
 	var ev Events
 	err := d.query(ctx, q.heartbeats, []any{f, t, after.Heartbeats, upto.Heartbeats}, func(r *sql.Rows) error {
-		var payload []byte
-		if err := r.Scan(&payload); err != nil {
+		var (
+			payload []byte
+			arrived int64
+		)
+		if err := r.Scan(&payload, &arrived); err != nil {
 			return err
 		}
 		var h wire.Heartbeat
 		if json.Unmarshal(payload, &h) == nil {
-			ev.Heartbeats = append(ev.Heartbeats, h)
+			ev.Heartbeats = append(ev.Heartbeats, received(h, arrived))
 		}
 		return nil
 	})
@@ -88,16 +93,16 @@ func (d *DB) readEvents(ctx context.Context, q eventQueries, f, t int64, after, 
 	}
 	err = d.query(ctx, q.ai, []any{f, t, after.AI, upto.AI}, func(r *sql.Rows) error {
 		var (
-			e             wire.AIEvent
-			at            int64
-			harness, kind string
+			e                 wire.AIEvent
+			at, arrived       int64
+			harness, kindName string
 		)
-		if err := r.Scan(&at, &harness, &kind, &e.SessionID, &e.Project, &e.Cwd, &e.Model, &e.Tool,
-			&e.PromptChars, &e.Decision, &e.PromptHash); err != nil {
+		if err := r.Scan(&at, &harness, &kindName, &e.SessionID, &e.Project, &e.Cwd, &e.Model, &e.Tool,
+			&e.PromptChars, &e.Decision, &e.PromptHash, &arrived); err != nil {
 			return err
 		}
-		e.Time, e.Harness, e.Kind = time.UnixMilli(at).UTC(), wire.Harness(harness), wire.AIEventKind(kind)
-		ev.AI = append(ev.AI, e)
+		e.Time, e.Harness, e.Kind = time.UnixMilli(at).UTC(), wire.Harness(harness), wire.AIEventKind(kindName)
+		ev.AI = append(ev.AI, received(e, arrived))
 		return nil
 	})
 	if err != nil {
@@ -105,14 +110,14 @@ func (d *DB) readEvents(ctx context.Context, q eventQueries, f, t int64, after, 
 	}
 	err = d.query(ctx, q.activity, []any{f, t, after.Activity, upto.Activity}, func(r *sql.Rows) error {
 		var (
-			s  wire.ActivitySample
-			at int64
+			s           wire.ActivitySample
+			at, arrived int64
 		)
-		if err := r.Scan(&at, &s.IdleSeconds, &s.FocusApp, &s.FocusKind); err != nil {
+		if err := r.Scan(&at, &s.IdleSeconds, &s.FocusApp, &s.FocusKind, &arrived); err != nil {
 			return err
 		}
 		s.Time = time.UnixMilli(at).UTC()
-		ev.Activity = append(ev.Activity, s)
+		ev.Activity = append(ev.Activity, received(s, arrived))
 		return nil
 	})
 	if err != nil {
@@ -120,20 +125,26 @@ func (d *DB) readEvents(ctx context.Context, q eventQueries, f, t int64, after, 
 	}
 	err = d.query(ctx, q.gitEvents, []any{f, t, after.Git, upto.Git}, func(r *sql.Rows) error {
 		var (
-			g  wire.GitEvent
-			at int64
+			g           wire.GitEvent
+			at, arrived int64
 		)
-		if err := r.Scan(&at, &g.Project, &g.Kind, &g.CommitHash, &g.FilesChanged, &g.Insertions, &g.Deletions); err != nil {
+		if err := r.Scan(&at, &g.Project, &g.Kind, &g.CommitHash, &g.FilesChanged, &g.Insertions, &g.Deletions,
+			&arrived); err != nil {
 			return err
 		}
 		g.Time = time.UnixMilli(at).UTC()
-		ev.Git = append(ev.Git, g)
+		ev.Git = append(ev.Git, received(g, arrived))
 		return nil
 	})
 	if err != nil {
 		return Events{}, fmt.Errorf("reading git events: %w", err)
 	}
 	return ev, nil
+}
+
+// received pairs an event with its stored arrival (unix ms).
+func received[T any](e T, arrivedMS int64) evidence.Received[T] {
+	return evidence.Received[T]{Event: e, Arrived: time.UnixMilli(arrivedMS).UTC()}
 }
 
 // query runs q and calls scan for every row.

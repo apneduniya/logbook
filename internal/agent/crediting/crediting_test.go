@@ -38,6 +38,8 @@ type env struct {
 	active  ActiveTimeSource
 	runner  *Runner
 	options func(*Options)
+	// arrived, when set, is when events stored now arrive (see arrival).
+	arrived time.Time
 }
 
 func newEnv(t *testing.T, start time.Time) *env {
@@ -58,7 +60,7 @@ func (e *env) open() {
 	if e.db != nil {
 		_ = e.db.Close()
 	}
-	db, err := localdb.Open(context.Background(), config.DBPath(e.dir), localdb.WithClock(e.clock))
+	db, err := localdb.Open(context.Background(), config.DBPath(e.dir), localdb.WithClock(e.arrival))
 	if err != nil {
 		e.t.Fatal(err)
 	}
@@ -80,6 +82,9 @@ func (e *env) open() {
 		Now:         e.clock,
 		Jitter:      func() float64 { return 0 },
 		MinBackoff:  time.Second, MaxBackoff: time.Second,
+		// Tests jump the clock between runs; the settle period after a
+		// start or gap has tests of its own (settle_test.go).
+		Settle: -1,
 	}
 	if e.options != nil {
 		e.options(&o)
@@ -91,6 +96,18 @@ func (e *env) clock() time.Time {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.now
+}
+
+// arrival is the database's clock, which stamps when events arrive: the
+// start of the current minute, so what a test stores before a run (a few
+// seconds past the minute) arrived by that run's cutoff.
+func (e *env) arrival() time.Time {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if !e.arrived.IsZero() {
+		return e.arrived
+	}
+	return e.now.Truncate(time.Minute)
 }
 
 func (e *env) advance(d time.Duration) {
@@ -740,12 +757,12 @@ func TestEventCacheMatchesFullRead(t *testing.T) {
 				len(want.Activity), len(want.Heartbeats))
 		}
 		for i := range want.Activity {
-			if in.Activity[i] != want.Activity[i] {
+			if in.Activity[i] != want.Activity[i].Event {
 				t.Fatalf("step %d: activity %d = %+v, want %+v", step, i, in.Activity[i], want.Activity[i])
 			}
 		}
 		for i := range want.Heartbeats {
-			if !in.Heartbeats[i].Time.Equal(want.Heartbeats[i].Timestamp()) {
+			if !in.Heartbeats[i].Time.Equal(want.Heartbeats[i].Event.Timestamp()) {
 				t.Fatalf("step %d: heartbeat %d differs", step, i)
 			}
 		}

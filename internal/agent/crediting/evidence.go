@@ -79,7 +79,19 @@ func (r *Runner) sealAndUploadDays(ctx context.Context, t serverapi.Target, dev 
 		return nil
 	}
 	end := lastSealableDay(at)
+	ft, err := r.opt.Store.FinalThrough(ctx)
+	if err != nil {
+		return err
+	}
 	for sealed := 0; day <= end && sealed < maxDaysPerRun; day = nextDay(day) {
+		// A day's minutes must all be final, with their cutoffs recorded,
+		// before it is sealed: after a restart they settle first.
+		if _, dayEnd, err := evidence.DayBounds(day); err != nil || ft.Before(dayEnd) {
+			if err == nil {
+				r.opt.Logger.DebugContext(ctx, "evidence day waits for its minutes to be final", "day", day)
+			}
+			return err
+		}
 		if waiting, err := r.minutesWaiting(ctx, day); err != nil || waiting > 0 {
 			if waiting > 0 {
 				r.opt.Logger.DebugContext(ctx, "evidence day waits for its minutes", "day", day, "minutes", waiting)
@@ -155,10 +167,19 @@ func (r *Runner) sealDay(ctx context.Context, dev devicekey.Device, day, prev st
 			return localdb.EvidenceDay{}, false, fmt.Errorf("reading active time for %s: %w", day, err)
 		}
 	}
+	// The cutoffs of the day's minutes, which are all final by now, so
+	// ReplayDayCredit uses exactly the agent's.
+	cutoffs, err := r.opt.Store.CutoffsBetween(ctx, start, end)
+	if err != nil {
+		return localdb.EvidenceDay{}, false, err
+	}
+	if cutoffs == nil {
+		cutoffs = []localdb.CutoffRange{}
+	}
 	// What is hashed is exactly what ReplayDay rebuilds from the stored day:
 	// raw event rows up to hw, and these active-time records, kept as is.
 	e := localdb.EvidenceDay{DeviceID: dev.ID, Day: day, PrevChainHash: prev, HighWater: hw,
-		ActiveTime: evidenceActiveTimes(active, start, end), RulesVersion: struggle.RulesVersion,
+		ActiveTime: evidenceActiveTimes(active, start, end), Cutoffs: cutoffs, RulesVersion: struggle.RulesVersion,
 		State: localdb.EvidencePending}
 	events, err := dayEvents(ctx, r.opt.Store, e)
 	if err != nil {

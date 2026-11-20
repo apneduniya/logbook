@@ -117,7 +117,49 @@ func (d *DB) Prune(ctx context.Context) (PruneResult, error) {
 				return fmt.Errorf("pruning: %w", err)
 			}
 		}
-		return nil
+		return bumpGeneration(ctx, tx, r.AIEvents+r.ActivitySamples+r.GitEvents, now)
 	})
 	return r, err
+}
+
+// LateResult counts raw events that reached the agent after the minute they
+// belong to was final, so they never changed its credit (ADR 0016).
+type LateResult struct {
+	Count int64
+	// Latest is the latest such arrival (zero if Count is 0).
+	Latest time.Time
+}
+
+// LateSince counts the raw event rows after the ids in after that arrived
+// by cutoff and belong to a minute before finalBefore, and returns the
+// highest ids that arrived by cutoff, the after of the next call. Rows are
+// stored in arrival order, so each row is counted at most once, by the
+// first call whose cutoff it arrived by. It reads only rows after after.
+func (d *DB) LateSince(ctx context.Context, after HighWater, cutoff, finalBefore time.Time) (LateResult, HighWater, error) {
+	var res LateResult
+	next := after
+	c, fb := cutoff.UnixMilli(), finalBefore.UnixMilli()
+	for _, t := range []struct {
+		late, arrived string
+		after         int64
+		next          *int64
+	}{
+		{qLateHeartbeats, qArrivedHeartbeats, after.Heartbeats, &next.Heartbeats},
+		{qLateAI, qArrivedAI, after.AI, &next.AI},
+		{qLateActivity, qArrivedActivity, after.Activity, &next.Activity},
+		{qLateGit, qArrivedGit, after.Git, &next.Git},
+	} {
+		var n, latest int64
+		if err := d.sql.QueryRowContext(ctx, t.late, t.after, c, fb).Scan(&n, &latest); err != nil {
+			return LateResult{}, HighWater{}, fmt.Errorf("counting late events: %w", err)
+		}
+		res.Count += n
+		if n > 0 && time.UnixMilli(latest).After(res.Latest) {
+			res.Latest = time.UnixMilli(latest).UTC()
+		}
+		if err := d.sql.QueryRowContext(ctx, t.arrived, t.after, t.after, c).Scan(t.next); err != nil {
+			return LateResult{}, HighWater{}, fmt.Errorf("reading arrived events: %w", err)
+		}
+	}
+	return res, next, nil
 }

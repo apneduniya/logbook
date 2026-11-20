@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/apneduniya/logbook/pkg/wire"
@@ -39,40 +40,62 @@ type ActiveTime struct {
 	ProjectCwd string       `json:"project_cwd,omitempty"`
 }
 
+// Received is a raw event together with the instant the device stored it,
+// its arrival (ADR 0016). A minute's final credit counts only the events
+// that had arrived by that minute's cutoff, so the arrival is part of the
+// evidence: a replay needs it to leave out exactly the late events the
+// device left out.
+type Received[T any] struct {
+	Event T
+	// Arrived is the device's wall clock when it stored the event. It is
+	// never zero.
+	Arrived time.Time
+}
+
 // DayEvents is one UTC day's raw events from one device: everything the
 // day's content hash covers. Slices need not be sorted.
 type DayEvents struct {
 	// Day is the UTC date, YYYY-MM-DD.
 	Day        string
-	Activity   []wire.ActivitySample
-	Heartbeats []wire.Heartbeat
-	AI         []wire.AIEvent
-	Git        []wire.GitEvent
-	// ActiveTime datapoints belong to the day their To falls in.
+	Activity   []Received[wire.ActivitySample]
+	Heartbeats []Received[wire.Heartbeat]
+	AI         []Received[wire.AIEvent]
+	Git        []Received[wire.GitEvent]
+	// ActiveTime datapoints belong to the day their To falls in. They carry
+	// no arrival: they feed only the advisory otel_mismatch flag, never a
+	// minute's label, credit or cuts, so no arrival cutoff applies to them.
 	ActiveTime []ActiveTime
 }
 
-// ErrOutsideDay is wrapped when an event's time is not within DayEvents.Day.
-var ErrOutsideDay = errors.New("event outside the evidence day")
+var (
+	// ErrOutsideDay is wrapped when an event's time is not within
+	// DayEvents.Day.
+	ErrOutsideDay = errors.New("event outside the evidence day")
+	// ErrNoArrival is wrapped when a raw event has no arrival time.
+	ErrNoArrival = errors.New("event without an arrival time")
+)
 
 // line is one event of the canonical encoding.
 type line struct {
 	t   time.Time
+	a   string // the arrival, RFC 3339 UTC; "" for active time
 	typ string
 	v   []byte // canonical JSON of the event
 }
 
-// lineJSON fixes the key order of an encoded line: t, type, v.
+// lineJSON fixes the key order of an encoded line: t, a, type, v.
 type lineJSON struct {
 	T    string          `json:"t"`
+	A    string          `json:"a,omitempty"`
 	Type string          `json:"type"`
 	V    json.RawMessage `json:"v"`
 }
 
 // Encode writes the canonical encoding of d to w: JSON Lines, one object
-// {"t": <RFC 3339 UTC time with nanoseconds>, "type": <event type>, "v":
-// <event>} per event, each line ending in "\n", sorted by time, then type,
-// then the bytes of v.
+// {"t": <RFC 3339 UTC time with nanoseconds>, "a": <arrival, same format>,
+// "type": <event type>, "v": <event>} per event, each line ending in "\n",
+// sorted by time, then type, then the bytes of v, then the arrival.
+// Active-time lines have no "a".
 //
 // The format is fixed by:
 //   - v is the event encoded by encoding/json without HTML escaping, so the
@@ -84,9 +107,11 @@ type lineJSON struct {
 //     its float64 Unix time exactly as received.
 //   - t is the event's time: Time for activity, AI and git events,
 //     Timestamp() for heartbeats and To for active-time datapoints.
+//   - a is when the device stored the event (Received.Arrived), in UTC.
 //
 // Events whose t falls outside [Day 00:00 UTC, next day 00:00 UTC) are
-// rejected with ErrOutsideDay rather than silently dropped.
+// rejected with ErrOutsideDay rather than silently dropped, and raw events
+// without an arrival with ErrNoArrival.
 func Encode(w io.Writer, d DayEvents) error {
 	lines, err := canonicalLines(d)
 	if err != nil {
@@ -94,7 +119,7 @@ func Encode(w io.Writer, d DayEvents) error {
 	}
 	bw := bufio.NewWriter(w)
 	for _, l := range lines {
-		b, err := marshal(lineJSON{T: l.t.Format(time.RFC3339Nano), Type: l.typ, V: l.v})
+		b, err := marshal(lineJSON{T: l.t.Format(time.RFC3339Nano), A: l.a, Type: l.typ, V: l.v})
 		if err != nil {
 			return err
 		}
@@ -151,44 +176,56 @@ func canonicalLines(d DayEvents) ([]line, error) {
 	}
 	n := len(d.Activity) + len(d.Heartbeats) + len(d.AI) + len(d.Git) + len(d.ActiveTime)
 	lines := make([]line, 0, n)
-	add := func(t time.Time, typ string, v any) error {
+	add := func(t time.Time, typ string, v any) (*line, error) {
 		t = t.UTC()
 		if t.Before(start) || !t.Before(end) {
-			return fmt.Errorf("%w: %s event at %s is not on %s", ErrOutsideDay, typ, t.Format(time.RFC3339Nano), d.Day)
+			return nil, fmt.Errorf("%w: %s event at %s is not on %s", ErrOutsideDay, typ, t.Format(time.RFC3339Nano), d.Day)
 		}
 		b, err := marshal(v)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		lines = append(lines, line{t: t, typ: typ, v: b})
+		return &lines[len(lines)-1], nil
+	}
+	// addRaw adds a raw event with its arrival.
+	addRaw := func(t, arrived time.Time, typ string, v any) error {
+		if arrived.IsZero() {
+			return fmt.Errorf("%w: %s event at %s", ErrNoArrival, typ, t.UTC().Format(time.RFC3339Nano))
+		}
+		l, err := add(t, typ, v)
+		if err != nil {
+			return err
+		}
+		l.a = arrived.UTC().Format(time.RFC3339Nano)
 		return nil
 	}
 	for _, e := range d.Activity {
-		e.Time = e.Time.UTC()
-		if err := add(e.Time, TypeActivity, e); err != nil {
+		e.Event.Time = e.Event.Time.UTC()
+		if err := addRaw(e.Event.Time, e.Arrived, TypeActivity, e.Event); err != nil {
 			return nil, err
 		}
 	}
 	for _, e := range d.Heartbeats {
-		if err := add(e.Timestamp(), TypeHeartbeat, e); err != nil {
+		if err := addRaw(e.Event.Timestamp(), e.Arrived, TypeHeartbeat, e.Event); err != nil {
 			return nil, err
 		}
 	}
 	for _, e := range d.AI {
-		e.Time = e.Time.UTC()
-		if err := add(e.Time, TypeAI, e); err != nil {
+		e.Event.Time = e.Event.Time.UTC()
+		if err := addRaw(e.Event.Time, e.Arrived, TypeAI, e.Event); err != nil {
 			return nil, err
 		}
 	}
 	for _, e := range d.Git {
-		e.Time = e.Time.UTC()
-		if err := add(e.Time, TypeGit, e); err != nil {
+		e.Event.Time = e.Event.Time.UTC()
+		if err := addRaw(e.Event.Time, e.Arrived, TypeGit, e.Event); err != nil {
 			return nil, err
 		}
 	}
 	for _, e := range d.ActiveTime {
 		e.From, e.To = e.From.UTC(), e.To.UTC()
-		if err := add(e.To, TypeActiveTime, e); err != nil {
+		if _, err := add(e.To, TypeActiveTime, e); err != nil {
 			return nil, err
 		}
 	}
@@ -196,13 +233,13 @@ func canonicalLines(d DayEvents) ([]line, error) {
 		if c := a.t.Compare(b.t); c != 0 {
 			return c
 		}
-		if a.typ != b.typ {
-			if a.typ < b.typ {
-				return -1
-			}
-			return 1
+		if c := strings.Compare(a.typ, b.typ); c != 0 {
+			return c
 		}
-		return bytes.Compare(a.v, b.v)
+		if c := bytes.Compare(a.v, b.v); c != 0 {
+			return c
+		}
+		return strings.Compare(a.a, b.a)
 	})
 	return lines, nil
 }

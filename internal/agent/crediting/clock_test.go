@@ -102,8 +102,10 @@ func TestClockBehindSealedDayPausesCrediting(t *testing.T) {
 			t.Fatalf("minute %s of the sealed day was sent", m.Format(time.RFC3339))
 		}
 	}
-	if n := logs.count(); n != 2 {
-		t.Fatalf("%d log lines about the clock, want 2 (paused, resumed)", n)
+	// Paused, resumed, and the minutes final by the later clock computed
+	// again (ADR 0016).
+	if n := logs.count(); n != 3 {
+		t.Fatalf("%d log lines about the clock, want 3 (paused, resumed, final minutes recomputed)", n)
 	}
 }
 

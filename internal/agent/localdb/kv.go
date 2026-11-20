@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"time"
 )
 
 // Get returns the value stored under key, or "" if there is none.
@@ -80,6 +81,26 @@ func (d *DB) Prefix(ctx context.Context, prefix string) (map[string]string, erro
 		return nil, fmt.Errorf("reading %s*: %w", prefix, err)
 	}
 	return out, nil
+}
+
+// keyGeneration counts the transactions that deleted raw event rows
+// (heartbeats, AI events, activity samples, git events) by pruning or by the
+// row cap. Readers that keep events in memory compare it to notice rows
+// that are gone, which their ids alone can't show.
+const keyGeneration = "events.generation"
+
+// EventGeneration returns the raw event tables' deletion generation: it
+// changes, in the same transaction, whenever rows are pruned or trimmed.
+func (d *DB) EventGeneration(ctx context.Context) (int64, error) {
+	return d.Counter(ctx, keyGeneration)
+}
+
+// bumpGeneration moves the deletion generation on when deleted > 0.
+func bumpGeneration(ctx context.Context, tx *sql.Tx, deleted int64, now time.Time) error {
+	if deleted <= 0 {
+		return nil
+	}
+	return kvAdd(ctx, tx, keyGeneration, 1, now.UnixMilli())
 }
 
 func kvAdd(ctx context.Context, tx *sql.Tx, key string, n, now int64) error {

@@ -30,7 +30,7 @@ func TestHeartbeatsKeptInFullAndDeduplicated(t *testing.T) {
 	if len(ev.Heartbeats) != 2 {
 		t.Fatalf("heartbeats = %d, want 2 (deduplicated)", len(ev.Heartbeats))
 	}
-	if got := ev.Heartbeats[0]; got.Entity != a.Entity || !got.IsWrite || got.Lineno == nil || *got.Lineno != 7 || got.Time != a.Time {
+	if got := ev.Heartbeats[0].Event; got.Entity != a.Entity || !got.IsWrite || got.Lineno == nil || *got.Lineno != 7 || got.Time != a.Time {
 		t.Fatalf("heartbeat not kept in full: %+v", got)
 	}
 }
@@ -72,13 +72,13 @@ func TestEventsBetweenHighWater(t *testing.T) {
 		t.Fatalf("pinned events = %d ai, %d activity, %d git, %d heartbeats", len(pinned.AI), len(pinned.Activity),
 			len(pinned.Git), len(pinned.Heartbeats))
 	}
-	if got := pinned.AI[0]; got != *evs[0].AI {
+	if got := pinned.AI[0].Event; got != *evs[0].AI {
 		t.Fatalf("ai event round trip = %+v, want %+v", got, *evs[0].AI)
 	}
-	if got := pinned.Activity[0]; got != *evs[1].Activity {
+	if got := pinned.Activity[0].Event; got != *evs[1].Activity {
 		t.Fatalf("activity round trip = %+v", got)
 	}
-	if got := pinned.Git[0]; got != *evs[2].Git {
+	if got := pinned.Git[0].Event; got != *evs[2].Git {
 		t.Fatalf("git round trip = %+v", got)
 	}
 	all, err := d.EventsBetween(ctx, from, testNow, nil)
@@ -106,7 +106,7 @@ func TestSaveMinutesOpenAndFinal(t *testing.T) {
 	d, _ := openTest(t)
 	upd := func(ms ...CreditedMinute) SaveResult {
 		t.Helper()
-		r, err := d.SaveMinutes(ctx, MinuteUpdate{From: minute(-60), To: minute(0), OpenFrom: minute(-30),
+		r, err := d.SaveMinutes(ctx, MinuteUpdate{From: minute(-60), To: minute(0), Cutoff: minute(0), ServerFinalBefore: minute(-30), FinalBefore: minute(-30), Lead: lead,
 			Minutes: ms, Superseded: superseded})
 		if err != nil {
 			t.Fatal(err)
@@ -117,7 +117,7 @@ func TestSaveMinutesOpenAndFinal(t *testing.T) {
 	if r := upd(cm(-40, "a", 60), cm(-10, "a", 60), cm(-5, "b", 30)); r.Inserted != 3 {
 		t.Fatalf("first save = %+v", r)
 	}
-	unsent, err := d.UnsentMinutes(ctx, minute(-30), 10)
+	unsent, err := d.UnsentMinutes(ctx, minute(-30), Span{}, 10)
 	if err != nil || len(unsent) != 3 {
 		t.Fatalf("unsent = %v, %v", unsent, err)
 	}
@@ -134,7 +134,7 @@ func TestSaveMinutesOpenAndFinal(t *testing.T) {
 	if r.Inserted != 1 || r.Updated != 2 || r.Deleted != 0 {
 		t.Fatalf("recompute = %+v", r)
 	}
-	unsent, _ = d.UnsentMinutes(ctx, minute(-30), 10)
+	unsent, _ = d.UnsentMinutes(ctx, minute(-30), Span{}, 10)
 	want := []struct {
 		m        int
 		project  string
@@ -156,15 +156,20 @@ func TestSaveMinutesOpenAndFinal(t *testing.T) {
 	}
 }
 
+// lead is the usual delay from a minute to its final cutoff (the crediting
+// package's FinalLead).
+const lead = 29 * time.Minute
+
 // A final minute is frozen whole: a recompute can't add another project to
-// it (that would credit the minute twice), only fill a minute that has no
-// rows at all (offline catch-up).
-func TestFinalMinuteTakesNoNewProject(t *testing.T) {
+// it (that would credit the minute twice), and once final even a minute with
+// no rows is never filled in: catching up happens before minutes become
+// final (ADR 0016).
+func TestFinalMinuteIsFrozen(t *testing.T) {
 	ctx := context.Background()
 	d, _ := openTest(t)
 	upd := func(ms ...CreditedMinute) SaveResult {
 		t.Helper()
-		r, err := d.SaveMinutes(ctx, MinuteUpdate{From: minute(-60), To: minute(0), OpenFrom: minute(-30),
+		r, err := d.SaveMinutes(ctx, MinuteUpdate{From: minute(-60), To: minute(0), Cutoff: minute(0), ServerFinalBefore: minute(-30), FinalBefore: minute(-30), Lead: lead,
 			Minutes: ms, Superseded: superseded})
 		if err != nil {
 			t.Fatal(err)
@@ -172,10 +177,10 @@ func TestFinalMinuteTakesNoNewProject(t *testing.T) {
 		return r
 	}
 	upd(cm(-40, "old", 60))
-	if r := upd(cm(-40, "new", 60), cm(-45, "x", 30), cm(-45, "y", 30)); r.Inserted != 2 {
-		t.Fatalf("recompute = %+v, want only the empty minute -45 filled", r)
+	if r := upd(cm(-40, "new", 60), cm(-45, "x", 30), cm(-45, "y", 30)); r.Inserted != 0 || r.Updated != 0 {
+		t.Fatalf("recompute = %+v, want final minutes untouched", r)
 	}
-	unsent, err := d.UnsentMinutes(ctx, minute(-30), 10)
+	unsent, err := d.UnsentMinutes(ctx, minute(-30), Span{}, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -183,19 +188,176 @@ func TestFinalMinuteTakesNoNewProject(t *testing.T) {
 	for _, m := range unsent {
 		got = append(got, fmt.Sprintf("%d/%s", int(m.Minute.Sub(testNow).Minutes()), m.Project))
 	}
-	if strings.Join(got, " ") != "-45/x -45/y -40/old" {
+	if strings.Join(got, " ") != "-40/old" {
 		t.Fatalf("rows = %v", got)
+	}
+}
+
+// Before minutes are final locally (the agent is settling after a start)
+// they are rewritten, unless the server has already frozen them; when they
+// become final each records the cutoff it was computed with.
+func TestSettlingMinutesAndCutoffs(t *testing.T) {
+	ctx := context.Background()
+	d, _ := openTest(t)
+	save := func(run int, finalBefore time.Time, ms ...CreditedMinute) SaveResult {
+		t.Helper()
+		r, err := d.SaveMinutes(ctx, MinuteUpdate{From: minute(run - 60), To: minute(run), Cutoff: minute(run),
+			ServerFinalBefore: minute(run - 29), FinalBefore: finalBefore, Lead: lead, Minutes: ms, Superseded: superseded})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	stored := func(i int) CreditedMinute {
+		t.Helper()
+		ms, err := d.StoredMinutes(ctx, minute(i), minute(i+1))
+		if err != nil || len(ms) != 1 {
+			t.Fatalf("stored %d = %+v, %v", i, ms, err)
+		}
+		return ms[0]
+	}
+	// Settling: nothing becomes final.
+	if r := save(0, time.Time{}, cm(-45, "a", 60), cm(-40, "a", 60)); r.Inserted != 2 || r.Finalized != 0 {
+		t.Fatalf("first save = %+v", r)
+	}
+	// The server saw -45 while it was open (before a restart, say).
+	if err := d.MarkMinutesSent(ctx, []CreditedMinute{cm(-45, "a", 60)}, minute(-30)); err != nil {
+		t.Fatal(err)
+	}
+	// Five minutes on, -45 is final on the server: frozen. -40 never reached
+	// it: rewritten, with the new cutoff.
+	if r := save(5, time.Time{}, cm(-45, "a", 10), cm(-40, "a", 30), cm(-38, "b", 60)); r.Inserted != 1 || r.Updated != 1 {
+		t.Fatalf("settling save = %+v", r)
+	}
+	if m := stored(-45); m.Credited != 60 || !m.Cutoff.Equal(minute(0)) {
+		t.Fatalf("server-frozen minute = %+v", m)
+	}
+	if m := stored(-40); m.Credited != 30 || !m.Cutoff.Equal(minute(5)) {
+		t.Fatalf("settling minute = %+v", m)
+	}
+	// While settling, the held minutes are not uploaded.
+	held, err := d.UnsentMinutes(ctx, minute(-25), Span{From: minute(-45), To: minute(-30)}, 10)
+	if err != nil || len(held) != 0 {
+		t.Fatalf("held minutes offered for upload: %+v, %v", held, err)
+	}
+	// Settled at 20: everything up to -9 becomes final.
+	if r := save(20, minute(-8), cm(-40, "a", 30), cm(-38, "b", 60)); r.Finalized != 52 {
+		t.Fatalf("finalizing save = %+v", r)
+	}
+	if m := stored(-40); !m.Cutoff.Equal(minute(20)) {
+		t.Fatalf("recomputed minute keeps cutoff %s", m.Cutoff)
+	}
+	// The usual next run: -8 is final with the default cutoff, which isn't stored.
+	save(21, minute(-7), cm(-38, "b", 60))
+	got, err := d.CutoffsBetween(ctx, minute(-120), minute(0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []CutoffRange{
+		{From: minute(-60), To: minute(-45)},                    // outside every run, no rows: never computed
+		{From: minute(-45), To: minute(-44), Cutoff: minute(0)}, // frozen by the server with its last run's cutoff
+		{From: minute(-44), To: minute(-40)},                    // never computed
+		{From: minute(-40), To: minute(-9), Cutoff: minute(20)}, // finalized late, by the run at 20
+	}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("cutoffs = %v\nwant %v", got, want)
+	}
+	if ft, err := d.FinalThrough(ctx); err != nil || !ft.Equal(minute(-7)) {
+		t.Fatalf("FinalThrough = %s, %v", ft, err)
+	}
+	clipped, _ := d.CutoffsBetween(ctx, minute(-42), minute(-41))
+	if len(clipped) != 1 || !clipped[0].From.Equal(minute(-42)) || !clipped[0].To.Equal(minute(-41)) {
+		t.Fatalf("clipped = %v", clipped)
+	}
+}
+
+// Pruning or trimming raw event rows moves the deletion generation on, in
+// the same transaction; inserts that delete nothing leave it alone.
+func TestEventGeneration(t *testing.T) {
+	ctx := context.Background()
+	d, _ := openTest(t, WithEventCap(2))
+	gen := func() int64 {
+		t.Helper()
+		g, err := d.EventGeneration(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return g
+	}
+	sample := func(i int) wire.LocalEvent {
+		return wire.LocalEvent{Type: "activity", Activity: &wire.ActivitySample{Time: minute(-i), IdleSeconds: 1, FocusKind: "editor"}}
+	}
+	if err := d.InsertEvents(ctx, []wire.LocalEvent{sample(1), sample(2)}); err != nil {
+		t.Fatal(err)
+	}
+	if g := gen(); g != 0 {
+		t.Fatalf("generation after inserts within the cap = %d", g)
+	}
+	if err := d.InsertEvents(ctx, []wire.LocalEvent{sample(3)}); err != nil {
+		t.Fatal(err)
+	}
+	if g := gen(); g != 1 {
+		t.Fatalf("generation after a trim = %d, want 1", g)
+	}
+	if err := d.Enqueue(ctx, []wire.Heartbeat{hb(1), hb(2), hb(3)}, false); err != nil {
+		t.Fatal(err)
+	}
+	if g := gen(); g != 2 {
+		t.Fatalf("generation after a heartbeat trim = %d, want 2", g)
+	}
+}
+
+// Every raw event records when it was stored, and LateSince counts those
+// stored after the minute they belong to was final, once each.
+func TestArrivalAndLateEvents(t *testing.T) {
+	ctx := context.Background()
+	clock := testNow
+	d, _ := openTest(t, WithClock(func() time.Time { return clock }))
+	early := minute(-50)
+	if err := d.InsertEvents(ctx, []wire.LocalEvent{{Type: "activity",
+		Activity: &wire.ActivitySample{Time: early, IdleSeconds: 1, FocusKind: "editor"}}}); err != nil {
+		t.Fatal(err)
+	}
+	_, start, err := d.LateSince(ctx, HighWater{}, clock, minute(-40))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Ten minutes on, a heartbeat for -50 arrives from an offline queue,
+	// and one for -20.
+	clock = clock.Add(10 * time.Minute)
+	late, now := hb(1), hb(2)
+	late.Time, now.Time = float64(early.Unix()), float64(minute(-20).Unix())
+	if err := d.Enqueue(ctx, []wire.Heartbeat{late, now}, false); err != nil {
+		t.Fatal(err)
+	}
+	ev, err := d.EventsBetween(ctx, minute(-60), minute(0), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ev.Heartbeats) != 2 || !ev.Heartbeats[0].Arrived.Equal(clock) || !ev.Activity[0].Arrived.Equal(testNow) {
+		t.Fatalf("arrivals = %+v / %+v", ev.Heartbeats, ev.Activity)
+	}
+	res, next, err := d.LateSince(ctx, start, clock, minute(-40))
+	if err != nil || res.Count != 1 || !res.Latest.Equal(clock) {
+		t.Fatalf("LateSince = %+v, %v", res, err)
+	}
+	if again, _, _ := d.LateSince(ctx, next, clock, minute(-40)); again.Count != 0 {
+		t.Fatalf("counted twice: %+v", again)
+	}
+	// A row stored after the cutoff isn't counted yet, nor passed.
+	if res, n2, _ := d.LateSince(ctx, start, clock.Add(-time.Second), minute(-40)); res.Count != 0 || n2 != start {
+		t.Fatalf("LateSince before the arrival = %+v, %+v", res, n2)
 	}
 }
 
 func TestUnsentMinutesSettlesFinal(t *testing.T) {
 	ctx := context.Background()
 	d, _ := openTest(t)
-	if _, err := d.SaveMinutes(ctx, MinuteUpdate{From: minute(-60), To: minute(0), OpenFrom: minute(-30),
+	if _, err := d.SaveMinutes(ctx, MinuteUpdate{From: minute(-60), To: minute(0), Cutoff: minute(0), ServerFinalBefore: minute(-30), FinalBefore: minute(-30), Lead: lead,
 		Minutes: []CreditedMinute{cm(-20, "a", 60)}, Superseded: superseded}); err != nil {
 		t.Fatal(err)
 	}
-	ms, _ := d.UnsentMinutes(ctx, minute(-30), 10)
+	ms, _ := d.UnsentMinutes(ctx, minute(-30), Span{}, 10)
 	if err := d.MarkMinutesSent(ctx, ms, minute(-30)); err != nil {
 		t.Fatal(err)
 	}
@@ -203,7 +365,7 @@ func TestUnsentMinutesSettlesFinal(t *testing.T) {
 		t.Fatalf("unsent count = %d", n)
 	}
 	// Twenty minutes later the minute is final and unchanged: settled, not resent.
-	ms, err := d.UnsentMinutes(ctx, minute(-10), 10)
+	ms, err := d.UnsentMinutes(ctx, minute(-10), Span{}, 10)
 	if err != nil || len(ms) != 0 {
 		t.Fatalf("UnsentMinutes = %v, %v", ms, err)
 	}
@@ -219,7 +381,7 @@ func TestUnsentMinutesSettlesFinal(t *testing.T) {
 func TestUnsentMinutesWholeMinutes(t *testing.T) {
 	ctx := context.Background()
 	d, _ := openTest(t)
-	if _, err := d.SaveMinutes(ctx, MinuteUpdate{From: minute(-60), To: minute(0), OpenFrom: minute(-30),
+	if _, err := d.SaveMinutes(ctx, MinuteUpdate{From: minute(-60), To: minute(0), Cutoff: minute(0), ServerFinalBefore: minute(-30), FinalBefore: minute(-30), Lead: lead,
 		Minutes: []CreditedMinute{
 			cm(-10, "a", 30), cm(-10, "b", 30),
 			cm(-9, "a", 60),
@@ -240,7 +402,7 @@ func TestUnsentMinutesWholeMinutes(t *testing.T) {
 		{100, []string{"-10/a", "-10/b", "-9/a", "-8/x", "-8/y", "-8/z"}},
 	}
 	for _, tt := range tests {
-		ms, err := d.UnsentMinutes(ctx, minute(-30), tt.limit)
+		ms, err := d.UnsentMinutes(ctx, minute(-30), Span{}, tt.limit)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -289,7 +451,7 @@ func TestAIEventPromptHashRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	for name, ev := range map[string]Events{"EventsBetween": between, "EventsAfter": after} {
-		if len(ev.AI) != 1 || ev.AI[0].PromptHash != want {
+		if len(ev.AI) != 1 || ev.AI[0].Event.PromptHash != want {
 			t.Errorf("%s: AI events = %+v, want prompt hash %q (column present: %v)", name, ev.AI, want, hasColumn == 1)
 		}
 	}
@@ -382,7 +544,7 @@ func TestPruneCrediting(t *testing.T) {
 		t.Fatal(err)
 	}
 	oldMinute := testNow.Add(-100 * 24 * time.Hour).Truncate(time.Minute)
-	if _, err := d.SaveMinutes(ctx, MinuteUpdate{From: oldMinute, To: oldMinute.Add(time.Minute), OpenFrom: oldMinute,
+	if _, err := d.SaveMinutes(ctx, MinuteUpdate{From: oldMinute, To: oldMinute.Add(time.Minute), Cutoff: oldMinute.Add(time.Minute),
 		Minutes:    []CreditedMinute{{Minute: oldMinute, Project: "a", Label: "you", RulesVersion: "v1", Digest: "x"}},
 		Superseded: superseded}); err != nil {
 		t.Fatal(err)

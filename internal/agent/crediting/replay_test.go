@@ -92,4 +92,19 @@ func TestSealedDayRebuildsIdentically(t *testing.T) {
 	if _, err := ReplayDay(ctx, e.db, short); !errors.Is(err, ErrNotReproducible) {
 		t.Fatalf("replay with missing rows: %v", err)
 	}
+
+	// The day keeps its minutes' cutoffs (none differ from the default
+	// here: the scripted engine credits nothing on the 19th), so its credit
+	// can be replayed; a day sealed before cutoffs were kept can't.
+	if sealed.Cutoffs == nil {
+		t.Fatal("sealed day kept no cutoffs")
+	}
+	if _, err := ReplayDayCredit(ctx, e.db, sealed, nil, nil, time.UTC); err != nil {
+		t.Fatalf("ReplayDayCredit: %v", err)
+	}
+	noCutoffs := sealed
+	noCutoffs.Cutoffs = nil
+	if _, err := ReplayDayCredit(ctx, e.db, noCutoffs, nil, nil, time.UTC); !errors.Is(err, ErrNotReproducible) {
+		t.Fatalf("credit replay without kept cutoffs: %v", err)
+	}
 }
