@@ -9,7 +9,10 @@
 //     estimate so editors never see an error;
 //   - POST /local/v1/events, where hook commands send wire.LocalEvent
 //     batches, authenticated with the local token;
-//   - GET / (the status page) and GET /local/v1/status (JSON for the CLI).
+//   - GET / (the status page) and GET /local/v1/status (JSON for the CLI);
+//   - POST /v1/metrics and /v1/logs, Claude Code's OpenTelemetry export,
+//     when an OTLP handler is injected (package otlp authenticates and
+//     parses it).
 //
 // Every request must come from a loopback address with a Host header of
 // 127.0.0.1:<port> or localhost:<port> (DNS-rebinding defence), and is

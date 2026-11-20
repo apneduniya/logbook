@@ -15,6 +15,8 @@ import (
 	"github.com/apneduniya/logbook/internal/agent/config"
 	"github.com/apneduniya/logbook/internal/agent/localapi"
 	"github.com/apneduniya/logbook/internal/agent/localdb"
+	"github.com/apneduniya/logbook/internal/agent/localkey"
+	"github.com/apneduniya/logbook/internal/agent/otlp"
 	"github.com/apneduniya/logbook/internal/agent/status"
 	"github.com/apneduniya/logbook/internal/agent/statuspage"
 	"github.com/apneduniya/logbook/internal/agent/upload"
@@ -142,9 +144,11 @@ func Run(ctx context.Context, o Options) error {
 		s.Hackatime.Worker.NextAttempt = workers[1].State().NextAttempt
 		return s, nil
 	}
+	activeTime := otlp.New(otlp.Options{Store: db, Token: otlpToken(set.Get), Logger: log})
 	api := localapi.New(localapi.Options{
 		Settings: set.Get, Store: db, Status: snapshot, Page: page, Client: client,
 		UserAgent: o.UserAgent, Logger: log, MirrorEnabled: upload.MirrorEnabled,
+		OTLP: activeTime.Handler(),
 		OnEnqueue: func() {
 			for _, w := range workers {
 				w.Kick()
@@ -192,6 +196,19 @@ func Run(ctx context.Context, o Options) error {
 	return nil
 }
 
+// otlpToken returns the token Claude Code's OTLP exporter must send, derived
+// from the current config's local token ("" without one, which refuses every
+// export).
+func otlpToken(cfg func() config.Config) func() string {
+	return func() string {
+		tok, err := localkey.OTLPToken(cfg().LocalToken)
+		if err != nil {
+			return ""
+		}
+		return tok
+	}
+}
+
 func drainSpool(ctx context.Context, log *slog.Logger, s *Spool) {
 	ctx, cancel := context.WithTimeout(ctx, housekeepingMax)
 	defer cancel()
@@ -214,7 +231,7 @@ func prune(ctx context.Context, log *slog.Logger, db *localdb.DB) {
 	}
 	if r != (localdb.PruneResult{}) {
 		log.InfoContext(ctx, "pruned old local events", "ai", r.AIEvents, "activity", r.ActivitySamples,
-			"git", r.GitEvents, "heartbeat_log", r.HeartbeatLog)
+			"git", r.GitEvents, "heartbeat_log", r.HeartbeatLog, "active_time", r.ActiveTime)
 	}
 }
 

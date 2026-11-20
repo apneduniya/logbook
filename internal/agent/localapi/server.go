@@ -57,6 +57,10 @@ type Options struct {
 	Now           func() time.Time
 	// StatusBarTimeout and StatusBarTTL tune the proxy (defaults 3 s and 30 s).
 	StatusBarTimeout, StatusBarTTL time.Duration
+	// OTLP, if set, serves POST /v1/metrics and POST /v1/logs (Claude Code's
+	// OpenTelemetry exporter; see package otlp). It authenticates requests
+	// itself; the loopback, Host and cross-site checks apply as everywhere.
+	OTLP http.Handler
 }
 
 // Server is the loopback HTTP server.
@@ -106,6 +110,10 @@ func (s *Server) Handler(port int) http.Handler {
 	mux.HandleFunc("POST /local/v1/events", s.events)
 	mux.HandleFunc("GET /local/v1/status", s.statusJSON)
 	mux.HandleFunc("GET /{$}", s.statusPage)
+	if s.opt.OTLP != nil {
+		mux.Handle("POST /v1/metrics", s.opt.OTLP)
+		mux.Handle("POST /v1/logs", s.opt.OTLP)
+	}
 	return guard(port, mux)
 }
 
