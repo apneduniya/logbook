@@ -8,9 +8,11 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/apneduniya/logbook/pkg/wire"
@@ -71,7 +73,10 @@ func (s *Sender) Send(ctx context.Context, events []wire.LocalEvent) error {
 		return nil
 	}
 	if s.Addr != "" && s.Token != "" {
-		err := s.post(ctx, events)
+		addr, err := Loopback(s.Addr)
+		if err == nil {
+			err = s.post(ctx, addr, events)
+		}
 		if err == nil {
 			return nil
 		}
@@ -84,14 +89,35 @@ func (s *Sender) Send(ctx context.Context, events []wire.LocalEvent) error {
 	return nil
 }
 
-func (s *Sender) post(ctx context.Context, events []wire.LocalEvent) error {
+// ErrNotLoopback means the configured daemon address isn't on this machine.
+// The token and events go over plain HTTP, so they are spooled instead.
+var ErrNotLoopback = errors.New("daemon address is not a loopback address")
+
+// Loopback checks that addr (host:port) names this machine and returns it
+// with "localhost" replaced by 127.0.0.1, so name resolution (a hosts file,
+// a proxy) can't send the token elsewhere.
+func Loopback(addr string) (string, error) {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return "", fmt.Errorf("daemon address %q: %w", addr, err)
+	}
+	if strings.EqualFold(host, "localhost") {
+		return net.JoinHostPort("127.0.0.1", port), nil
+	}
+	if ip := net.ParseIP(host); ip == nil || !ip.IsLoopback() {
+		return "", fmt.Errorf("%w: %q", ErrNotLoopback, host)
+	}
+	return addr, nil
+}
+
+func (s *Sender) post(ctx context.Context, addr string, events []wire.LocalEvent) error {
 	body, err := json.Marshal(events)
 	if err != nil {
 		return fmt.Errorf("encoding events: %w", err)
 	}
 	ctx, cancel := context.WithTimeout(ctx, s.Timeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+s.Addr+EventsPath, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+addr+EventsPath, bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("building request: %w", err)
 	}

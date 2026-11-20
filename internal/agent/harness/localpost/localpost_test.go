@@ -186,6 +186,52 @@ func TestConcurrentSpool(t *testing.T) {
 	}
 }
 
+func TestLoopback(t *testing.T) {
+	tests := []struct {
+		addr, want string
+		ok         bool
+	}{
+		{"127.0.0.1:47231", "127.0.0.1:47231", true},
+		{"127.5.6.7:1", "127.5.6.7:1", true},
+		{"[::1]:47231", "[::1]:47231", true},
+		{"localhost:47231", "127.0.0.1:47231", true},
+		{"LocalHost:9", "127.0.0.1:9", true},
+		{"192.168.1.20:47231", "", false},
+		{"0.0.0.0:47231", "", false},
+		{"example.com:47231", "", false},
+		{"localhost.evil.com:1", "", false},
+		{"127.0.0.1", "", false}, // no port
+	}
+	for _, tc := range tests {
+		got, err := Loopback(tc.addr)
+		if (err == nil) != tc.ok || got != tc.want {
+			t.Errorf("Loopback(%q) = %q, %v; want %q, ok=%v", tc.addr, got, err, tc.want, tc.ok)
+		}
+	}
+}
+
+// A non-loopback daemon address never receives the token: the events are
+// spooled instead.
+func TestSendRefusesRemoteAddr(t *testing.T) {
+	// 192.0.2.1 is TEST-NET-1; the fake transport fails the test if any
+	// request is attempted.
+	s, spool := newSender(t, "192.0.2.1:47231")
+	s.Client = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		t.Error("request sent to a non-loopback address")
+		return nil, errors.New("blocked")
+	})}
+	if err := s.Send(context.Background(), events(2)); err != nil {
+		t.Fatal(err)
+	}
+	if got := spoolLines(t, spool); len(got) != 2 {
+		t.Fatalf("spooled %d events, want 2", len(got))
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
 func TestSendNothing(t *testing.T) {
 	s, spool := newSender(t, "")
 	if err := s.Send(context.Background(), nil); err != nil {
