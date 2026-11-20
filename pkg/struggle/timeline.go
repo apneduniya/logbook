@@ -350,12 +350,6 @@ func (tl *timeline) backgroundEditor(i int) bool {
 	return true
 }
 
-// hasTimeIn reports whether sorted ts holds a time in [a, b).
-func hasTimeIn(ts []time.Time, a, b time.Time) bool {
-	i, _ := slices.BinarySearchFunc(ts, a, time.Time.Compare)
-	return i < len(ts) && ts[i].Before(b)
-}
-
 // lastProject returns the project of the latest named event in [a, b), or "".
 func lastProject(events []projectEvent, a, b time.Time) string {
 	i, _ := slices.BinarySearchFunc(events, b, func(e projectEvent, t time.Time) int { return e.t.Compare(t) })

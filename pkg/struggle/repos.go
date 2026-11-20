@@ -4,22 +4,25 @@ import (
 	"cmp"
 	"slices"
 	"strings"
+
+	"github.com/apneduniya/logbook/pkg/projectname"
 )
 
 // repoIndex maps paths to projects by longest matching path prefix.
 type repoIndex []Repo
 
-// newRepoIndex normalises repos and orders them so the first match is the
-// longest (ties: project name, so the result never depends on input order).
-// Entries with an empty path or project are ignored.
+// newRepoIndex normalises repos (paths, and project names as the server does)
+// and orders them so the first match is the longest (ties: project name, so
+// the result never depends on input order). Entries with an empty path or
+// project are ignored.
 func newRepoIndex(repos []Repo) repoIndex {
 	idx := make(repoIndex, 0, len(repos))
 	for _, r := range repos {
-		p := normPath(r.Path)
-		if p == "" || r.Project == "" {
+		p, project := normPath(r.Path), projectname.Normalize(r.Project)
+		if p == "" || project == "" {
 			continue
 		}
-		idx = append(idx, Repo{Path: p, Project: r.Project})
+		idx = append(idx, Repo{Path: p, Project: project})
 	}
 	slices.SortFunc(idx, func(a, b Repo) int {
 		return cmp.Or(

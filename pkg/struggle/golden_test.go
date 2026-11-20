@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/apneduniya/logbook/pkg/wire"
 )
 
 var update = flag.Bool("update", false, "rewrite golden files")
@@ -100,7 +102,7 @@ func minutesIn(res Result, from, to time.Time) map[time.Time][]string {
 func TestFinalMinutesMatchAgentReplay(t *testing.T) {
 	for _, path := range fixturePaths(t) {
 		t.Run(filepath.Base(path), func(t *testing.T) {
-			full := expandFixture(t, loadFixture(t, path))
+			full := withLateSamples(expandFixture(t, loadFixture(t, path)))
 			server := Compute(full)
 			fullFinal := full.Window.To.Add(-Lookahead)
 			for now := full.Window.From.Add(Lookahead + time.Minute); !now.After(full.Window.To); now = now.Add(time.Minute) {
@@ -114,6 +116,25 @@ func TestFinalMinutesMatchAgentReplay(t *testing.T) {
 	}
 }
 
+// withLateSamples adds, for every prompt, activity samples taken just past
+// Lookahead and an hour after it that report input at the prompt, as a
+// sensor catching up after a stall would. The agent has stopped rewriting
+// the prompt's minute before either arrives, so they must not change it.
+func withLateSamples(in Input) Input {
+	activity := slices.Clone(in.Activity)
+	for _, e := range in.AI {
+		if e.Kind != wire.AIPromptSubmit {
+			continue
+		}
+		for _, after := range []time.Duration{Lookahead + time.Minute, time.Hour} {
+			late := e.Time.Add(after)
+			activity = append(activity, wire.ActivitySample{Time: late, IdleSeconds: after.Seconds(), FocusKind: "terminal"})
+		}
+	}
+	in.Activity = activity
+	return in
+}
+
 // finalAge is ADR 0010's finality age: the agent may rewrite a
 // minute until it is this old.
 const finalAge = 30 * time.Minute
@@ -125,7 +146,7 @@ const finalAge = 30 * time.Minute
 func TestServerSubWindowMatchesFullRun(t *testing.T) {
 	for _, path := range fixturePaths(t) {
 		t.Run(filepath.Base(path), func(t *testing.T) {
-			full := expandFixture(t, loadFixture(t, path))
+			full := withLateSamples(expandFixture(t, loadFixture(t, path)))
 			server := Compute(full)
 			fullFinal := full.Window.To.Add(-Lookahead)
 			for to := full.Window.From.Add(time.Minute); !to.After(full.Window.To); to = to.Add(time.Minute) {

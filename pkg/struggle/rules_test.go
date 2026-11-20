@@ -164,10 +164,18 @@ func TestBuildTurns(t *testing.T) {
 			want:    []want{{0, time.Minute, true, 1}},
 		},
 		{
-			name:    "permission ask and turn_end outside a turn are ignored",
-			events:  []aiEvent{ai(0, wire.AIPermissionAsk, "s"), ai(time.Minute, wire.AITurnEnd, "s"), ai(2*time.Minute, wire.AIToolEnd, "s")},
+			name:    "turn_end and tool_end outside a turn are ignored",
+			events:  []aiEvent{ai(0, wire.AITurnEnd, "s"), ai(time.Minute, wire.AIToolEnd, "s")},
 			horizon: time.Hour,
 			want:    nil,
+		},
+		{
+			// The prompt is before the caller's data: the agent is mid-turn,
+			// waiting, and the next event answers.
+			name:    "permission ask outside a turn opens a waiting turn",
+			events:  []aiEvent{ai(0, wire.AIPermissionAsk, "s"), ai(time.Minute, wire.AITurnEnd, "s"), ai(2*time.Minute, wire.AIToolEnd, "s")},
+			horizon: time.Hour,
+			want:    []want{{0, time.Minute, false, 1}},
 		},
 		{
 			name: "sessions are independent",

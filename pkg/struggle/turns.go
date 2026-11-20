@@ -14,8 +14,8 @@ type span struct {
 	from, to time.Time
 }
 
-// turn is one agent turn: from a prompt_submit (or a tool_start outside any
-// turn) until turn_end, session_end, the session's next prompt, or the last
+// turn is one agent turn: from a prompt_submit (or a tool_start or an
+// unanswered permission_ask outside any turn) until turn_end, session_end, the session's next prompt, or the last
 // event before a turnTimeout gap.
 type turn struct {
 	session    string
@@ -137,6 +137,12 @@ func buildTurns(events []aiEvent, horizon time.Time) []turn {
 			}
 		case e.kind == wire.AIToolStart && st.open == nil:
 			st.open = &turn{session: e.session, start: e.t}
+		case newAsk && st.open == nil:
+			// The agent is mid-turn and waiting. Without this, a wait whose
+			// asks repeat for longer than ContextBefore would be seen, and
+			// its answer recognised, only by callers holding its prompt.
+			st.open = &turn{session: e.session, start: e.t}
+			st.waitFrom, st.waiting = e.t, true
 		case newAsk && st.open != nil && !st.waiting:
 			st.waitFrom, st.waiting = e.t, true
 		}

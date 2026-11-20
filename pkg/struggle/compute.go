@@ -2,6 +2,7 @@ package struggle
 
 import (
 	"slices"
+	"strings"
 	"time"
 )
 
@@ -17,7 +18,7 @@ func Compute(in Input) Result {
 		return res
 	}
 	turns := buildTurns(p.ai, p.horizon)
-	markAutomated(turns, p.samples, p.instants)
+	markAutomated(turns, p.samples)
 	tl := newTimeline(p, turns)
 
 	rows := make([][]Minute, tl.n) // per minute, sorted by project
@@ -94,7 +95,7 @@ func (tl *timeline) label(i int, events []projectEvent) []Minute {
 		}
 		if len(counts) > 0 {
 			var out []Minute
-			for _, s := range splitSeconds(60, counts) {
+			for _, s := range splitSeconds(60, topProjects(counts, MaxProjectsPerMinute)) {
 				out = append(out, row(s.project, LabelYou, s.count))
 			}
 			return out
@@ -157,6 +158,22 @@ func splitSeconds(total int, counts []projectCount) []projectCount {
 		out[i].count++
 	}
 	return slices.DeleteFunc(out, func(c projectCount) bool { return c.count == 0 })
+}
+
+// topProjects keeps the n projects with the most events (ties: the smaller
+// name), so a minute never has more rows than the server stores. Splitting
+// the minute among them gives the dropped projects' share to the kept ones
+// in proportion to their counts, so the minute keeps all its seconds. counts
+// must be sorted by project; so is the result.
+func topProjects(counts []projectCount, n int) []projectCount {
+	if len(counts) <= n {
+		return counts
+	}
+	top := slices.Clone(counts)
+	slices.SortStableFunc(top, func(a, b projectCount) int { return b.count - a.count })
+	top = top[:n]
+	slices.SortFunc(top, func(a, b projectCount) int { return strings.Compare(a.project, b.project) })
+	return top
 }
 
 // cutYou removes the credit of a minute's "you" rows under rule code.
