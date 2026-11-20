@@ -6,8 +6,9 @@
 //
 // It owns: start-up order, the single-instance guarantee (the listen port is
 // the lock), config reloads after `logbook login`, periodic pruning, the
-// spool drain, repo discovery for the git sensor (RepoSource), and graceful
-// shutdown. It defines the Sensor and Sink interfaces sensors implement
+// spool drain, repo discovery for the git sensor and the struggle engine
+// (RepoSource), wiring the crediting pipeline (internal/agent/crediting)
+// with the device identity, and graceful shutdown. It defines the Sensor and Sink interfaces sensors implement
 // structurally. It does not own any sensor, the upload protocol
 // (internal/agent/upload) or the HTTP handlers (internal/agent/localapi).
 package daemon

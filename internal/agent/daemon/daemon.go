@@ -75,12 +75,17 @@ type Options struct {
 	Logger    *slog.Logger
 	Version   string
 	UserAgent string
+	// DeviceName names this machine in the user's device list; the host
+	// name when empty.
+	DeviceName string
 
 	// Test knobs; zero means the production default.
-	uploadInterval time.Duration
-	restartFloor   time.Duration
-	spoolGrace     time.Duration
-	settingsEvery  time.Duration
+	uploadInterval    time.Duration
+	restartFloor      time.Duration
+	spoolGrace        time.Duration
+	settingsEvery     time.Duration
+	creditingInterval time.Duration
+	noCrediting       bool
 }
 
 // Job is periodic work cmd/ wires into the daemon.
@@ -140,6 +145,8 @@ func Run(ctx context.Context, o Options) error {
 			Target: func() upload.Target { return upload.HackatimeTarget(set.Get()) },
 		}),
 	}
+	repos := NewRepos(db, nil)
+	credit := newCrediting(o, db, client, set, repos)
 	started := time.Now()
 	snapshot := func(ctx context.Context) (status.Snapshot, error) {
 		s, err := status.Collect(ctx, status.Input{
@@ -152,6 +159,7 @@ func Run(ctx context.Context, o Options) error {
 		s.DaemonRunning, s.StartedAt = true, started.UTC()
 		s.Logbook.Worker.NextAttempt = workers[0].State().NextAttempt
 		s.Hackatime.Worker.NextAttempt = workers[1].State().NextAttempt
+		s.Crediting.Minutes.NextAttempt = credit.NextAttempt()
 		return s, nil
 	}
 	activeTime := otlp.New(otlp.Options{Store: db, Token: otlpToken(set.Get), Logger: log})
@@ -176,7 +184,6 @@ func Run(ctx context.Context, o Options) error {
 	}
 
 	sensors := append([]Sensor(nil), o.Sensors...)
-	repos := NewRepos(db, nil)
 	for _, build := range o.RepoSensors {
 		sensors = append(sensors, build(repos))
 	}
@@ -202,6 +209,12 @@ func Run(ctx context.Context, o Options) error {
 				defer cancel()
 				j.Run(ctx)
 			})
+		})
+	}
+	if !o.noCrediting {
+		g.Go(func() error {
+			supervise(gctx, log, "crediting", restartFloor, credit.Run)
+			return nil
 		})
 	}
 	for _, s := range sensors {

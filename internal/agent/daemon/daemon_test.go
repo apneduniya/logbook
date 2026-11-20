@@ -123,6 +123,8 @@ func (e *env) start(t *testing.T, mutate ...func(*Options)) (stop func() error) 
 	o := Options{
 		DataDir: e.dir, Config: e.cfg, Version: "test", UserAgent: "logbook-agent/test (linux-amd64)",
 		uploadInterval: 50 * time.Millisecond, restartFloor: 10 * time.Millisecond, spoolGrace: time.Millisecond,
+		noCrediting: true, // TestDaemonCrediting turns it on with its own server
+
 		settingsEvery: 10 * time.Millisecond,
 	}
 	for _, m := range mutate {

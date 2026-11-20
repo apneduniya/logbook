@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/apneduniya/logbook/internal/agent/config"
+	"github.com/apneduniya/logbook/internal/agent/crediting"
 	"github.com/apneduniya/logbook/internal/agent/localdb"
 	"github.com/apneduniya/logbook/internal/agent/status"
 	"github.com/apneduniya/logbook/internal/agent/version"
@@ -122,6 +123,7 @@ func printStatus(w *strings.Builder, s status.Snapshot, addr string) {
 	} else {
 		p("Hackatime:  mirroring off")
 	}
+	printCrediting(p, s.Crediting)
 	p("Today:      %s coding (local estimate), %d heartbeats, %d AI events, %d git events",
 		s.Today.CodingText, s.Today.Heartbeats, s.Today.AIEvents, s.Today.GitEvents)
 	if s.SpoolBytes > 0 {
@@ -132,6 +134,45 @@ func printStatus(w *strings.Builder, s status.Snapshot, addr string) {
 	}
 	for _, h := range s.Hooks {
 		p("AI hooks:   %s %s", h.Name, h.State)
+	}
+}
+
+func printCrediting(p func(string, ...any), c crediting.Status) {
+	switch {
+	case !c.Device.RevokedAt.IsZero():
+		p("Device:     %s (revoked)", c.Device.ID)
+	case c.Device.ID != "":
+		p("Device:     %s", c.Device.ID)
+	default:
+		p("Device:     not registered yet")
+	}
+	last := "never"
+	if !c.Minutes.LastSuccess.IsZero() {
+		last = c.Minutes.LastSuccess.Local().Format(time.DateTime)
+	}
+	p("Credited:   %d minutes waiting, last upload %s", c.Minutes.Waiting, last)
+	if c.Minutes.Paused != "" {
+		p("            paused: %s", c.Minutes.Paused)
+	}
+	if c.Minutes.LastError != "" {
+		p("            last error: %s", c.Minutes.LastError)
+	}
+	if c.Minutes.Refused != "" {
+		p("            on hold: %s", c.Minutes.Refused)
+	}
+	if c.Minutes.Rejected > 0 {
+		p("            %d minutes rejected by the server", c.Minutes.Rejected)
+	}
+	switch {
+	case c.Evidence.State != "":
+		p("Evidence:   stopped: %s", c.Evidence.Error)
+	case c.Evidence.LastDay != "":
+		p("Evidence:   signed through %s", c.Evidence.LastDay)
+	default:
+		p("Evidence:   no day sealed yet")
+	}
+	if c.Evidence.LocalError != "" {
+		p("            sealing failed (retrying): %s", c.Evidence.LocalError)
 	}
 }
 

@@ -80,6 +80,11 @@ func TestCollect(t *testing.T) {
 	if err := db.Enqueue(ctx, hbs, true); err != nil {
 		t.Fatal(err)
 	}
+	const dev = "0b7c2f1e-3a4d-4e5f-8a9b-0c1d2e3f4a5b"
+	if err := db.SetMany(ctx, localdb.KV{Key: "device.id", Value: dev}, localdb.KV{Key: "evidence.device", Value: dev},
+		localdb.KV{Key: "evidence.last_day", Value: "2026-11-19"}, localdb.KV{Key: "crediting.waiting", Value: "4"}); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.MkdirAll(filepath.Dir(config.SpoolPath(dir)), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -106,6 +111,9 @@ func TestCollect(t *testing.T) {
 	}
 	if s.SpoolBytes != 3 {
 		t.Fatalf("spool bytes = %d", s.SpoolBytes)
+	}
+	if c := s.Crediting; c.Device.ID != dev || c.Evidence.LastDay != "2026-11-19" || c.Minutes.Waiting != 4 {
+		t.Fatalf("crediting = %+v", c)
 	}
 	s2, err := Collect(ctx, Input{Store: db, Config: config.Config{}, Now: now})
 	if err != nil || s2.Hooks != nil || s2.SignedIn || s2.MirrorHost != "" {

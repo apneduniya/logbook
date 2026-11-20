@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/apneduniya/logbook/internal/agent/config"
+	"github.com/apneduniya/logbook/internal/agent/crediting"
 	"github.com/apneduniya/logbook/internal/agent/localdb"
 	"github.com/apneduniya/logbook/internal/agent/upload"
 )
@@ -27,6 +28,10 @@ type Snapshot struct {
 
 	Logbook   Uploader `json:"logbook"`
 	Hackatime Uploader `json:"hackatime"`
+
+	// Crediting is the device's registration, credited-minute uploads and
+	// evidence chain.
+	Crediting crediting.Status `json:"crediting"`
 
 	// Hooks lists AI harness hooks; nil means the installer did not report.
 	Hooks []Hook `json:"hooks"`
@@ -108,6 +113,11 @@ func Collect(ctx context.Context, in Input) (Snapshot, error) {
 		}
 		*u.dst = Uploader{Queue: st, Worker: ws}
 	}
+	cs, err := crediting.LoadStatus(ctx, in.Store)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	s.Crediting = cs
 	if in.Harnesses != nil {
 		s.Hooks = make([]Hook, 0, len(in.Harnesses))
 		for _, h := range in.Harnesses {
