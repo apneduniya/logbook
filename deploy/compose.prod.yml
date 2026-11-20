@@ -1,0 +1,48 @@
+# Logbook server + Postgres for a single host. A reverse proxy with HTTPS
+# (Caddy) in front forwards to 127.0.0.1:${LOGBOOK_PORT}.
+# Secrets come from an .env file next to this one (never committed):
+#   POSTGRES_PASSWORD, LOGBOOK_ENCRYPTION_KEY, LOGBOOK_BASE_URL,
+#   LOGBOOK_HCA_CLIENT_ID, LOGBOOK_HCA_CLIENT_SECRET,
+#   LOGBOOK_HACKATIME_CLIENT_ID, LOGBOOK_HACKATIME_CLIENT_SECRET, LOGBOOK_PORT
+name: logbook
+services:
+  postgres:
+    image: postgres:17.12-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: logbook
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env}
+      POSTGRES_DB: logbook
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    mem_limit: 768m
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U logbook"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  server:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://logbook:${POSTGRES_PASSWORD}@postgres:5432/logbook?sslmode=disable
+      LOGBOOK_ADDR: 0.0.0.0:8080
+      LOGBOOK_BASE_URL: ${LOGBOOK_BASE_URL:?set in .env}
+      LOGBOOK_ENCRYPTION_KEY: ${LOGBOOK_ENCRYPTION_KEY:?set in .env}
+      LOGBOOK_TRUST_PROXY: "true"
+      LOGBOOK_HCA_CLIENT_ID: ${LOGBOOK_HCA_CLIENT_ID:-}
+      LOGBOOK_HCA_CLIENT_SECRET: ${LOGBOOK_HCA_CLIENT_SECRET:-}
+      LOGBOOK_HACKATIME_CLIENT_ID: ${LOGBOOK_HACKATIME_CLIENT_ID:-}
+      LOGBOOK_HACKATIME_CLIENT_SECRET: ${LOGBOOK_HACKATIME_CLIENT_SECRET:-}
+    ports:
+      - "127.0.0.1:${LOGBOOK_PORT:-18100}:8080"
+    mem_limit: 256m
+
+volumes:
+  pgdata:
