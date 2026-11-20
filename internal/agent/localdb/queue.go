@@ -44,7 +44,8 @@ type Item struct {
 }
 
 // Enqueue stores heartbeats, in one transaction, in the Logbook queue, in
-// the mirror queue too when mirror is true, and in the local heartbeat log.
+// the mirror queue too when mirror is true, in the local heartbeat log, and
+// in full in the heartbeats table (local evidence, deduplicated).
 // When a queue exceeds its cap the oldest rows are dropped and counted.
 func (d *DB) Enqueue(ctx context.Context, hbs []wire.Heartbeat, mirror bool) error {
 	if len(hbs) == 0 {
@@ -91,7 +92,15 @@ func (d *DB) Enqueue(ctx context.Context, hbs []wire.Heartbeat, mirror bool) err
 		}); err != nil {
 			return fmt.Errorf("logging heartbeats: %w", err)
 		}
-		_, err := trim(ctx, tx, qLogTrim, d.queueCap)
+		if _, err := trim(ctx, tx, qLogTrim, d.queueCap); err != nil {
+			return err
+		}
+		if err := execEach(ctx, tx, qHeartbeatInsert, len(hbs), func(i int) []any {
+			return []any{hbs[i].Timestamp().UnixMilli(), hbs[i].FieldsHash(), payloads[i]}
+		}); err != nil {
+			return fmt.Errorf("keeping heartbeats: %w", err)
+		}
+		_, err := trim(ctx, tx, qHeartbeatTrim, d.eventCap)
 		return err
 	})
 	if err != nil {
