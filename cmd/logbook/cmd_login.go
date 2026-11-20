@@ -14,6 +14,7 @@ import (
 	"github.com/apneduniya/logbook/internal/agent/account"
 	"github.com/apneduniya/logbook/internal/agent/config"
 	"github.com/apneduniya/logbook/internal/agent/daemon"
+	"github.com/apneduniya/logbook/internal/agent/doctor"
 	"github.com/apneduniya/logbook/internal/agent/version"
 )
 
@@ -78,8 +79,27 @@ func login(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer
 		return err
 	}
 	msg := fmt.Sprintf("Signed in to %s.\nA running agent picks up the new key within a few seconds.\n", cfg.ServerURL)
+	msg += editorKeyHint(cfg)
 	if _, err := io.WriteString(stdout, msg); err != nil {
 		return fmt.Errorf("writing output: %w", err)
 	}
 	return nil
+}
+
+// editorKeyHint tells the user to re-run `logbook install` when editors
+// point at the agent but still send a different key: the local API accepts
+// editor heartbeats only with the agent's Logbook key, so after a key change
+// they would get 401 until .wakatime.cfg is updated. The installer owns that
+// file, so login only reads it.
+func editorKeyHint(cfg config.Config) string {
+	path, err := doctor.WakatimeCfgPath()
+	if err != nil {
+		return ""
+	}
+	w := doctor.ReadWakatimeCfg(path, cfg.APIKey)
+	if w.Err != nil || w.KeyMatches || !doctor.PointsAtAgent(w.APIURL, cfg.LocalAddr) {
+		return ""
+	}
+	return "Your editors still send a different key (" + path +
+		"); run `logbook install` so their heartbeats reach the agent.\n"
 }

@@ -272,9 +272,15 @@ func Probe(ctx context.Context, addr string) bool {
 // NewHTTPClient returns the client the daemon shares across every outbound
 // call; CLI commands use one too. It has timeouts on every phase and honours
 // HTTP(S)_PROXY, which school networks often need.
+//
+// Redirects are followed only for GET and HEAD. Go turns a POST that gets a
+// 301/302/303 into a GET, so a captive portal's redirect to its login page
+// would otherwise come back as "200 OK" for an upload; the uploader sees the
+// 3xx instead and keeps the batch.
 func NewHTTPClient() *http.Client {
 	return &http.Client{
-		Timeout: httpTimeout,
+		Timeout:       httpTimeout,
+		CheckRedirect: checkRedirect,
 		Transport: &http.Transport{
 			Proxy:                 http.ProxyFromEnvironment,
 			DialContext:           (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
@@ -286,4 +292,19 @@ func NewHTTPClient() *http.Client {
 			ForceAttemptHTTP2:     true,
 		},
 	}
+}
+
+// maxRedirects matches net/http's default limit.
+const maxRedirects = 10
+
+// checkRedirect follows redirects only when the original request was a GET
+// or HEAD; for anything else the 3xx response is returned as is.
+func checkRedirect(_ *http.Request, via []*http.Request) error {
+	if len(via) > 0 && via[0].Method != http.MethodGet && via[0].Method != http.MethodHead {
+		return http.ErrUseLastResponse
+	}
+	if len(via) >= maxRedirects {
+		return fmt.Errorf("stopped after %d redirects", maxRedirects)
+	}
+	return nil
 }

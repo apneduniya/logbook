@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"net"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/apneduniya/logbook/internal/agent/account"
@@ -129,13 +130,14 @@ func wakatimeFinding(f Facts) Finding {
 		}
 		return Finding{Check: "wakatime.cfg", Level: Fail, Detail: "can't read " + w.Path + ": " + cause.Error(),
 			Fix: "run `logbook install` to point editor plugins at the agent"}
-	case !pointsAtAgent(w.APIURL, f.Config.LocalAddr):
+	case !PointsAtAgent(w.APIURL, f.Config.LocalAddr):
 		detail := "api_url is not set"
 		if w.APIURL != "" {
-			detail = "api_url points at " + redactURL(w.APIURL) + ", not the agent"
+			detail = "api_url is " + redactURL(w.APIURL) + ", not the agent's API"
 		}
 		return Finding{Check: "wakatime.cfg", Level: Fail, Detail: detail,
-			Fix: "run `logbook install` so editor heartbeats go through the agent"}
+			Fix: "run `logbook install` so editor heartbeats go through the agent (api_url = " +
+				AgentAPIURL(f.Config.LocalAddr) + ")"}
 	case !w.KeyMatches:
 		return Finding{Check: "wakatime.cfg", Level: Fail, Detail: "api_key differs from the agent's Logbook key",
 			Fix: "run `logbook install` again after `logbook login`"}
@@ -143,9 +145,13 @@ func wakatimeFinding(f Facts) Finding {
 	return Finding{Check: "wakatime.cfg", Level: OK, Detail: "editors send heartbeats to the agent"}
 }
 
-// pointsAtAgent reports whether apiURL targets the agent's loopback address.
-func pointsAtAgent(apiURL, localAddr string) bool {
-	u, err := url.Parse(apiURL)
+// PointsAtAgent reports whether apiURL targets the agent's loopback address
+// and one of the API prefixes it serves. wakatime-cli appends
+// /users/current/heartbeats.bulk to api_url, after stripping a trailing
+// slash and a legacy endpoint suffix (normalizeURL in its pkg/params), so
+// http://127.0.0.1:<port> alone would 404.
+func PointsAtAgent(apiURL, localAddr string) bool {
+	u, err := url.Parse(normalizeAPIURL(apiURL))
 	if err != nil || u.Scheme != "http" {
 		return false
 	}
@@ -153,7 +159,28 @@ func pointsAtAgent(apiURL, localAddr string) bool {
 	if err != nil {
 		return false
 	}
+	if u.Path != agentAPIPath && u.Path != agentHackatimePath {
+		return false
+	}
 	return (u.Hostname() == "127.0.0.1" || u.Hostname() == "localhost") && u.Port() == wantPort
+}
+
+// The API prefixes the agent's local API serves.
+const (
+	agentAPIPath       = "/api/v1"
+	agentHackatimePath = "/api/hackatime/v1"
+)
+
+// AgentAPIURL is the api_url editors should use for the agent at localAddr.
+func AgentAPIURL(localAddr string) string { return "http://" + localAddr + agentAPIPath }
+
+// normalizeAPIURL strips what wakatime-cli strips before using api_url.
+func normalizeAPIURL(s string) string {
+	s = strings.TrimSuffix(s, "/")
+	s = strings.TrimSuffix(s, ".bulk")
+	s = strings.TrimSuffix(s, "/users/current/heartbeats")
+	s = strings.TrimSuffix(s, "/heartbeats")
+	return strings.TrimSuffix(s, "/heartbeat")
 }
 
 // redactURL drops any user info and query from a URL before printing it.

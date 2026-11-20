@@ -29,9 +29,14 @@ const (
 	outcomeOK outcome = iota
 	// outcomeAuth: the key was rejected (401/403); pause until it changes.
 	outcomeAuth
-	// outcomeDrop: the whole batch was rejected with a 4xx and will never succeed.
-	outcomeDrop
-	// outcomeRetry: network error, 429 or 5xx; retry the batch later.
+	// outcomeBatchRejected: the server refused the request body itself (413,
+	// or 400 with a JSON error, as both the Logbook server and Hackatime
+	// answer for a malformed or oversized batch). The worker splits the
+	// batch, and drops an item only when it is refused on its own.
+	outcomeBatchRejected
+	// outcomeRetry: anything else that isn't a per-item answer: network
+	// errors, 429, 5xx, redirects, other 4xx (a wrong URL, a proxy), or a
+	// 2xx that isn't a bulk answer (a captive portal). Nothing is deleted.
 	outcomeRetry
 )
 
@@ -63,7 +68,9 @@ func send(ctx context.Context, client *http.Client, userAgent string, t Target, 
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, t.URL, bytes.NewReader(body))
 	if err != nil {
-		return result{outcome: outcomeDrop, err: fmt.Errorf("building request: %w", err)}
+		// Targets validate their URL, so this is a misconfiguration; keep
+		// the queue and surface it.
+		return result{outcome: outcomeRetry, err: fmt.Errorf("invalid upload URL: %w", redactURLError(err))}
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
@@ -90,7 +97,10 @@ func send(ctx context.Context, client *http.Client, userAgent string, t Target, 
 }
 
 // classify maps a bulk response onto the batch. It is pure so it can be
-// tested against every status code.
+// tested against every status code. Only a per-item answer deletes items:
+// both the Logbook server and Hackatime always answer heartbeats.bulk with
+// one [body, status] pair per heartbeat, so anything else (a captive
+// portal's 200 page, a proxy's 404) must keep the batch.
 func classify(status int, retryAfter string, body []byte, items []localdb.Item, now time.Time) result {
 	r := result{status: status, retryAfter: parseRetryAfter(retryAfter, now)}
 	switch {
@@ -102,16 +112,18 @@ func classify(status int, retryAfter string, body []byte, items []localdb.Item, 
 		r.outcome = outcomeRetry
 		r.err = fmt.Errorf("server answered %d%s", status, errorSuffix(body))
 		return r
-	case status >= 400:
-		r.outcome = outcomeDrop
+	case status == http.StatusRequestEntityTooLarge,
+		status == http.StatusBadRequest && errorSuffix(body) != "":
+		r.outcome = outcomeBatchRejected
 		r.err = fmt.Errorf("server rejected the batch with %d%s", status, errorSuffix(body))
-		for _, it := range items {
-			r.rejected = append(r.rejected, it.ID)
-		}
+		return r
+	case status >= 300 && status < 400:
+		r.outcome = outcomeRetry
+		r.err = fmt.Errorf("server redirected the upload (%d); a captive portal or proxy may be in the way", status)
 		return r
 	case status < 200 || status >= 300:
 		r.outcome = outcomeRetry
-		r.err = fmt.Errorf("unexpected status %d", status)
+		r.err = fmt.Errorf("server answered %d%s; check the server URL", status, errorSuffix(body))
 		return r
 	}
 
@@ -119,11 +131,8 @@ func classify(status int, retryAfter string, body []byte, items []localdb.Item, 
 		Responses []json.RawMessage `json:"responses"`
 	}
 	if err := json.Unmarshal(body, &parsed); err != nil || len(parsed.Responses) != len(items) {
-		// A 2xx without per-item results means the whole batch was taken.
-		r.outcome = outcomeOK
-		for _, it := range items {
-			r.done = append(r.done, it.ID)
-		}
+		r.outcome = outcomeRetry
+		r.err = fmt.Errorf("unexpected response from server (status %d, not a heartbeat bulk answer)", status)
 		return r
 	}
 	r.outcome = outcomeOK

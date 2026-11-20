@@ -55,7 +55,7 @@ Otherwise it gets `403 {"error": ...}`.
 | Route | Auth | Behaviour |
 |---|---|---|
 | `POST /api/v1/users/current/heartbeats(.bulk)`, same under `/api/hackatime/v1` | the Logbook API key, as wakatime-cli sends it (`Basic base64(key)`, also `Bearer`, `api_key=`) | Same request and response shapes as the server (`docs/api/ingest.md`): single → `201` (`/api/v1`) or `202` (`/api/hackatime/v1`); bulk → `201` with one `[body, status]` per item, `400` for invalid items. Valid heartbeats are queued and answered immediately; nothing waits on the network. `X-Machine-Name` and the `User-Agent` are folded into the heartbeat body (the server's attribution rule) so they survive the upload. If the database write fails the answer is `500`, so wakatime-cli keeps the heartbeats in its own offline queue. |
-| `GET .../users/current/statusbar/today` | API key | Proxied to `<server>/api/v1/users/current/statusbar/today` with a 3 s timeout and a 30 s cache. If the server can't be reached, rejects the key or answers badly, the agent answers `200` with a WakaTime-shaped body computed from today's local heartbeat log (gaps up to 2 minutes, like the server) and the text suffixed with `(offline)` or `(re-login needed)`. |
+| `GET .../users/current/statusbar/today` | API key | Proxied to `<server>/api/v1/users/current/statusbar/today` with a 3 s timeout and a 30 s cache (failures are cached too, so a dropped network doesn't slow every poll). Only one upstream request is in flight; other polls meanwhile get the last answer or the local estimate at once. If the server can't be reached, rejects the key or answers badly, the agent answers `200` with a WakaTime-shaped body computed from today's local heartbeat log (gaps up to 2 minutes, like the server) and the text suffixed with `(offline)` or `(re-login needed)`. |
 | `POST /local/v1/events` | `X-Logbook-Token` = `cfg.LocalToken`, constant-time compare | JSON array of `wire.LocalEvent`, ≤ 1 MiB and ≤ 500 events. Invalid events are counted and skipped; valid ones are stored in one transaction. Answer: `200 {"accepted": n, "rejected": m}`. |
 | `GET /` | none | Status page: server-rendered HTML, inline CSS, no scripts, `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'`. |
 | `GET /local/v1/status` | none | `status.Snapshot` as JSON. |
@@ -77,12 +77,16 @@ Each worker wakes every 10 s, or immediately when a full batch (100) is waiting,
 
 | Answer | Action |
 |---|---|
-| `201`, `202`, `409` | delete |
-| other 4xx item, or a whole-batch 4xx other than 401/403/429 | delete, count in `upload.<name>.rejected`, log |
-| `401` / `403` | keep, pause the worker and show "re-login needed" until the configured key changes |
+| `201`, `202`, `409` item | delete |
+| other 4xx item | delete, count in `upload.<name>.rejected`, log |
+| whole request `413`, or `400` with a JSON `{"error"}` body (how both servers refuse a malformed or oversized batch) | split: retry at once with half the batch, down to one heartbeat; a single heartbeat refused this way is deleted and counted, then the worker backs off. The batch size grows back after successes |
+| `401` / `403` | keep, pause the worker and show "re-login needed" until the configured key changes; every 30 min one batch is retried with the same key (a `403` may come from a school web filter), and an accepted request resumes the worker |
 | `429`, `5xx` (item or batch), network error | keep, back off exponentially from 5 s to 10 min with equal jitter; a longer `Retry-After` wins (capped at 30 min) |
+| any other whole-request status (`404` from a stale `api_url`, `405`, `408`, a non-JSON `400` from a proxy), a `3xx`, or a `2xx` without a per-item `responses` array of the batch's length (a captive portal's login page) | keep, back off as above, show the error. Nothing is ever deleted without a per-item answer |
 
-Last success, last error and pause reason are saved in `kv` (`upload.<name>.*`), so `logbook status` shows them with the daemon stopped. On shutdown each worker makes one more attempt, bounded to 5 s, unless it is backing off.
+The shared HTTP client follows redirects only for `GET`/`HEAD`; a redirected upload `POST` is not turned into a `GET`, so a captive portal shows up as a `3xx` error. A worker whose saved URL isn't an absolute http(s) URL is shown as paused with a fix instead of sending.
+
+Last success, last error and pause reason are saved in `kv` (`upload.<name>.*`), so `logbook status` shows them with the daemon stopped. A starting worker rewrites the pause reason on its first cycle, and a successful upload clears the last error, so a problem fixed while the daemon was down (e.g. `logbook login` after a rejected key) doesn't linger in status. On shutdown each worker makes one more attempt, bounded to 5 s, unless it is backing off.
 
 ## Daemon
 
@@ -112,15 +116,15 @@ A crash mid-drain resumes from the saved offset, so events are neither lost nor 
 | Command | Behaviour |
 |---|---|
 | `logbook run [--quiet] [--debug]` | Runs the daemon in the foreground. Logs (`log/slog` text) go to `agent.log` and, unless `--quiet`, best-effort to stderr. |
-| `logbook login --key <key>\|- [--server <url>]` | Reads the key (from stdin with `-`, keeping it out of shell history), checks it with `GET /api/v1/users/current/statusbar/today`, and only then saves it, creating the config with `config.Default()` if needed. Other config fields are kept. Never prints the key. |
+| `logbook login --key <key>\|- [--server <url>]` | Reads the key (from stdin with `-`, keeping it out of shell history), checks it with `GET /api/v1/users/current/statusbar/today`, and only then saves it, creating the config with `config.Default()` if needed. Other config fields are kept. Never prints the key. If `.wakatime.cfg` points at the agent but still holds a different key, says to run `logbook install` (the local API would answer editors 401 until then). |
 | `logbook status [--json]` | Asks the daemon; if it's down, reads the database directly. |
-| `logbook doctor [--json]` | Checks config, key validity (server), clock skew against the server's `Date` header (warns above 2 min), whether the daemon answers, whether `~/.wakatime.cfg` (or `$WAKATIME_HOME/.wakatime.cfg`) has `api_url` pointing at the agent's port and the same `api_key`, queue health (re-login needed, dropped rows, items older than 1 h) and the spool size. Prints a fix for every problem and exits 1 if any check fails. |
+| `logbook doctor [--json]` | Checks config, key validity (server), clock skew against the server's `Date` header (warns above 2 min), whether the daemon answers, whether `~/.wakatime.cfg` (or `$WAKATIME_HOME/.wakatime.cfg`) has `api_url` pointing at the agent (`http://127.0.0.1:<port>/api/v1` or `/api/hackatime/v1`, after stripping a trailing slash and legacy endpoint suffixes the way wakatime-cli does) and the same `api_key`, queue health (re-login needed, dropped rows, items older than 1 h) and the spool size. Prints a fix for every problem and exits 1 if any check fails. |
 
 ## OS-specific notes
 
 The core has no OS-specific code paths and builds with `CGO_ENABLED=0` for windows, darwin and linux on amd64 and arm64. Behaviour that differs by OS:
 
-- **Windows:** file modes are advisory; `config.Dir()` is `%AppData%\logbook`. `os.Rename` replaces existing files (log rotation relies on this). Renaming the spool fails while a hook holds it open (see above). Stderr may be unusable when started from the `Run` key, so logging to it is best effort.
+- **Windows:** file modes are advisory; `config.Dir()` is `%AppData%\logbook`. `os.Rename` replaces existing files (log rotation relies on this). Rotation fails while another process holds `agent.log` without delete sharing (antivirus, a user tailing it); the writer then reopens the live file, notes the failure once in the log and retries a minute later, so logging never stops. Renaming the spool fails while a hook holds it open (see above). Stderr may be unusable when started from the `Run` key, so logging to it is best effort.
 - **macOS:** `config.Dir()` is `~/Library/Application Support/logbook`.
 - **Linux:** `config.Dir()` is `$XDG_CONFIG_HOME/logbook` (default `~/.config/logbook`).
 

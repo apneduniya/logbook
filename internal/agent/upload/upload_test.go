@@ -40,13 +40,18 @@ func TestClassify(t *testing.T) {
 	}{
 		{"all ok", 201, "", `{"responses":[[{},201],[{},202]]}`, 2, outcomeOK, 2, 0, 0, 0},
 		{"mixed items", 201, "", perItem, 6, outcomeOK, 2, 2, 2, 0},
-		{"2xx without items", 202, "", `{}`, 3, outcomeOK, 3, 0, 0, 0},
+		{"2xx without items", 202, "", `{}`, 3, outcomeRetry, 0, 0, 0, 0},
+		{"captive portal page", 200, "", `<html>Sign in to the network</html>`, 2, outcomeRetry, 0, 0, 0, 0},
+		{"wrong item count", 201, "", `{"responses":[[{},201]]}`, 2, outcomeRetry, 0, 0, 0, 0},
+		{"redirect", 302, "", ``, 2, outcomeRetry, 0, 0, 0, 0},
+		{"not found", 404, "", `{"error":"not found"}`, 2, outcomeRetry, 0, 0, 0, 0},
+		{"proxy 400 without json", 400, "", `<html>Bad Request</html>`, 2, outcomeRetry, 0, 0, 0, 0},
 		{"unauthorized", 401, "", `{"error":"unauthorized"}`, 2, outcomeAuth, 0, 0, 0, 0},
 		{"forbidden", 403, "", ``, 2, outcomeAuth, 0, 0, 0, 0},
 		{"rate limited", 429, "60", ``, 2, outcomeRetry, 0, 0, 0, time.Minute},
 		{"server error", 503, "", ``, 2, outcomeRetry, 0, 0, 0, 0},
-		{"bad batch", 400, "", `{"error":"Too many heartbeats"}`, 2, outcomeDrop, 0, 2, 0, 0},
-		{"too large", 413, "", ``, 1, outcomeDrop, 0, 1, 0, 0},
+		{"bad batch", 400, "", `{"error":"Too many heartbeats"}`, 2, outcomeBatchRejected, 0, 0, 0, 0},
+		{"too large", 413, "", ``, 1, outcomeBatchRejected, 0, 0, 0, 0},
 		{"retry-after date", 503, now.Add(2 * time.Minute).Format(http.TimeFormat), ``, 1, outcomeRetry, 0, 0, 0, 2 * time.Minute},
 	}
 	for _, tt := range tests {
@@ -91,6 +96,12 @@ func TestTargets(t *testing.T) {
 	}
 	if got := HackatimeTarget(cfg); got.URL != "https://hackatime.hackclub.com/api/hackatime/v1/users/current/heartbeats.bulk" || got.Disabled != "" {
 		t.Fatalf("hackatime target = %+v", got)
+	}
+	bad := cfg
+	bad.Hackatime.URL = "hackatime.hackclub.com/api/hackatime/v1" // no scheme
+	bad.ServerURL = "::not a url"
+	if HackatimeTarget(bad).Disabled == "" || LogbookTarget(bad).Disabled == "" {
+		t.Fatal("an invalid saved URL must disable the worker, not drop heartbeats")
 	}
 	cfg.Hackatime.Mirror = false
 	cfg.APIKey = ""

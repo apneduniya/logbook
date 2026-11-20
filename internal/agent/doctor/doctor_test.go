@@ -58,6 +58,14 @@ func TestDiagnose(t *testing.T) {
 		}, "wakatime.cfg", Fail},
 		{"cfg wrong port", func(f *Facts) { f.Wakatime.APIURL = "http://localhost:9999/api/v1" }, "wakatime.cfg", Fail},
 		{"cfg localhost ok", func(f *Facts) { f.Wakatime.APIURL = "http://localhost:47231/api/v1" }, "wakatime.cfg", OK},
+		{"cfg no api path", func(f *Facts) { f.Wakatime.APIURL = "http://127.0.0.1:47231" }, "wakatime.cfg", Fail},
+		{"cfg root slash", func(f *Facts) { f.Wakatime.APIURL = "http://127.0.0.1:47231/" }, "wakatime.cfg", Fail},
+		{"cfg wrong path", func(f *Facts) { f.Wakatime.APIURL = "http://127.0.0.1:47231/api" }, "wakatime.cfg", Fail},
+		{"cfg trailing slash ok", func(f *Facts) { f.Wakatime.APIURL = "http://127.0.0.1:47231/api/v1/" }, "wakatime.cfg", OK},
+		{"cfg hackatime prefix ok", func(f *Facts) { f.Wakatime.APIURL = "http://127.0.0.1:47231/api/hackatime/v1" }, "wakatime.cfg", OK},
+		{"cfg legacy endpoint ok", func(f *Facts) {
+			f.Wakatime.APIURL = "http://127.0.0.1:47231/api/v1/users/current/heartbeats.bulk"
+		}, "wakatime.cfg", OK},
 		{"cfg key differs", func(f *Facts) { f.Wakatime.KeyMatches = false }, "wakatime.cfg", Fail},
 		{"relogin", func(f *Facts) { f.Status.Logbook.Worker.Paused = upload.ReasonReLogin }, "uploads", Fail},
 		{"mirror relogin", func(f *Facts) { f.Status.Hackatime.Worker.Paused = upload.ReasonReLogin }, "mirror", Fail},
