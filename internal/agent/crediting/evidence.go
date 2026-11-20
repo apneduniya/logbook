@@ -23,7 +23,14 @@ const retentionDays = 89
 // gap, which the server allows). The chain moves only when the server
 // accepts a day; a conflict or rejection stops it for good and is shown in
 // status, so a chain is never forked silently.
-func (r *Runner) sealAndUploadDays(ctx context.Context, t serverapi.Target, dev devicekey.Device, now time.Time) error {
+//
+// The server refuses first-time minutes in a sealed day, so a new day is
+// sealed only when mayseal (this run's minute uploads went through, not on
+// hold or refused) and the server has answered for every stored minute of
+// it. Otherwise the day waits for a later run. The engine never writes
+// minutes into a sealable day again: its window is the last hour, and a day
+// becomes sealable DayGrace (an hour) after it ends.
+func (r *Runner) sealAndUploadDays(ctx context.Context, t serverapi.Target, dev devicekey.Device, now time.Time, mayseal bool) error {
 	last, ok, err := r.opt.Store.LastEvidenceDay(ctx, dev.ID)
 	if err != nil {
 		return err
@@ -54,7 +61,13 @@ func (r *Runner) sealAndUploadDays(ctx context.Context, t serverapi.Target, dev 
 		day = oldest
 	}
 	end := lastSealableDay(now)
-	for sealed := 0; day <= end && sealed < maxDaysPerRun; day = nextDay(day) {
+	for sealed := 0; mayseal && day <= end && sealed < maxDaysPerRun; day = nextDay(day) {
+		if waiting, err := r.minutesWaiting(ctx, day); err != nil || waiting > 0 {
+			if waiting > 0 {
+				r.opt.Logger.DebugContext(ctx, "evidence day waits for its minutes", "day", day, "minutes", waiting)
+			}
+			return err
+		}
 		e, empty, err := r.sealDay(ctx, dev, day, prev)
 		if err != nil {
 			return err
@@ -77,6 +90,17 @@ func (r *Runner) sealAndUploadDays(ctx context.Context, t serverapi.Target, dev 
 		prev = cur.ChainHash
 	}
 	return nil
+}
+
+// minutesWaiting counts stored minutes up to the end of day the server
+// hasn't answered for. Earlier days count too: they must reach the server
+// before a later day seals anything.
+func (r *Runner) minutesWaiting(ctx context.Context, day string) (int64, error) {
+	_, end, err := evidence.DayBounds(day)
+	if err != nil {
+		return 0, err
+	}
+	return r.opt.Store.UnsentMinutesBefore(ctx, end)
 }
 
 // cursor returns the last day scanned for dev, or "".

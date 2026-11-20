@@ -153,7 +153,11 @@ const (
 		WHERE minute = ? AND project = ? AND digest = ?`
 	qMinutesRetire      = `UPDATE credited_minutes SET sent_final = 1 WHERE sent_final = 0 AND minute < ?`
 	qMinutesUnsentCount = `SELECT COUNT(*) FROM credited_minutes WHERE sent_final = 0 AND digest <> sent_digest`
-	qMinutesPrune       = `DELETE FROM credited_minutes WHERE minute < ?`
+	// qMinutesUnsentBefore counts rows before a minute the server hasn't
+	// answered for yet.
+	qMinutesUnsentBefore = `SELECT COUNT(*) FROM credited_minutes
+		WHERE sent_final = 0 AND digest <> sent_digest AND minute < ?`
+	qMinutesPrune = `DELETE FROM credited_minutes WHERE minute < ?`
 )
 
 // Evidence days (migration 0002).

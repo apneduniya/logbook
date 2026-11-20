@@ -22,6 +22,11 @@ const (
 	// keyRefused says why minute uploads are on hold after the server
 	// refused a batch as a whole ("" when not).
 	keyRefused = "crediting.refused"
+	// keySealedRejected counts minutes the server refused because their
+	// day was already sealed, and keySealedError describes the latest.
+	// Both should stay empty: a day is sealed only after its minutes.
+	keySealedRejected = "crediting.sealed_rejected"
+	keySealedError    = "crediting.sealed_error"
 
 	keyEvidenceDevice = "evidence.device"
 	keyEvidenceDay    = "evidence.last_day"
@@ -71,6 +76,12 @@ type MinutesStatus struct {
 	Waiting int64 `json:"waiting"`
 	// Rejected counts minutes the server refused (never retried).
 	Rejected int64 `json:"rejected"`
+	// SealedRejected counts the rejected minutes whose UTC day the server
+	// had already sealed, and SealedError describes the latest. These are
+	// lost credit and point to a bug: the agent seals a day only after the
+	// server has accepted every minute of it.
+	SealedRejected int64  `json:"sealed_rejected,omitempty"`
+	SealedError    string `json:"sealed_error,omitempty"`
 }
 
 // EvidenceStatus is the evidence chain's progress.
@@ -111,12 +122,12 @@ func LoadStatus(ctx context.Context, r StateReader) (Status, error) {
 	s.Minutes = MinutesStatus{
 		LastComputed: parseTime(m[keyLastComputed]), LastSuccess: parseTime(m[keyLastSuccess]),
 		LastError: m[keyLastError], LastErrorAt: parseTime(m[keyLastErrorAt]), Paused: m[keyPaused],
-		Refused: m[keyRefused],
+		Refused: m[keyRefused], SealedError: m[keySealedError],
 	}
 	for _, c := range []struct {
 		key string
 		dst *int64
-	}{{keyRejected, &s.Minutes.Rejected}, {keyWaiting, &s.Minutes.Waiting}} {
+	}{{keyRejected, &s.Minutes.Rejected}, {keyWaiting, &s.Minutes.Waiting}, {keySealedRejected, &s.Minutes.SealedRejected}} {
 		if v := m[c.key]; v != "" {
 			if *c.dst, err = strconv.ParseInt(v, 10, 64); err != nil {
 				return Status{}, fmt.Errorf("reading %s: %w", c.key, err)

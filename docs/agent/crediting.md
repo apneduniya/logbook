@@ -25,7 +25,7 @@ How the agent runs the struggle engine and keeps the evidence chain (ADR 0010, A
 1. Read new local events since the last run (by row id) into an in-memory window of the last 90 minutes.
 2. Run `struggle.Compute` for `[now−60 min, now)`, with optional Claude Code active time and the active repos.
 3. Store the result: open minutes (< 30 min old) are rewritten when they change; final ones are only added if missing.
-4. If signed in: register the device if needed, upload minutes the server doesn't have (batches of 1000), then seal and upload ended days.
+4. If signed in: register the device if needed, upload minutes the server doesn't have (batches of 1000, at most 20 a run), then seal and upload ended days whose minutes the server has all answered for.
 
 Runs never overlap, are bounded to 2 minutes, and run a few seconds past each minute. Old heartbeats and minutes are pruned every 6 hours.
 
@@ -37,6 +37,7 @@ All requests use `Authorization: Bearer <api key>` and the agent's User-Agent, t
 |---|---|
 | 200/201 | done |
 | per-minute rejection | logged, counted in `crediting.rejected`, never retried unless the minute changes |
+| per-minute rejection "already sealed" | as above, and also counted in `crediting.sealed_rejected` and shown in status as an error (lost credit; should never happen) |
 | 413, or 400 "minutes per request", on a minutes batch | split the batch (never inside a minute); a single refused minute is counted as rejected |
 | any other 400/422 with a JSON error on a minutes batch (e.g. unknown `rules_version`) | minutes kept and put on hold for 30 min; status shows "on hold" with the server's reason |
 | 400 or 409 on an evidence day | day marked `rejected`/`conflict`; the chain stops; status shows it |
@@ -51,7 +52,7 @@ A local failure while sealing a day (database, active-time source) is shown as "
 
 ## Evidence days
 
-A UTC day is sealed once it has ended plus one hour. The agent records the highest row id of each event table, hashes the day's events up to those ids (`evidence.ContentHash`), chains it to the last accepted day (`prev_chain_hash`, `""` for the first), signs it with the device key and stores it as `pending`. It is uploaded until the server accepts it; only then does the chain move on. Days without events are skipped. Catch-up after downtime seals up to 7 days per run, in order.
+A UTC day is sealed once it has ended plus one hour and the server has answered for every stored minute up to its end; sealing closes the day to minutes on the server. No new day is sealed on a run whose minute uploads are on hold or failed. The agent records the highest row id of each event table, hashes the day's events up to those ids (`evidence.ContentHash`), chains it to the last accepted day (`prev_chain_hash`, `""` for the first), signs it with the device key and stores it as `pending`. It is uploaded until the server accepts it; only then does the chain move on. Days without events are skipped. Catch-up after downtime seals up to 7 days per run, in order.
 
 ## Status
 

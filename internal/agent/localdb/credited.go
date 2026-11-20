@@ -251,6 +251,16 @@ func (d *DB) UnsentMinuteCount(ctx context.Context) (int64, error) {
 	return n, nil
 }
 
+// UnsentMinutesBefore counts rows before t waiting to be sent. Zero means
+// the server has answered for every stored minute before t.
+func (d *DB) UnsentMinutesBefore(ctx context.Context, t time.Time) (int64, error) {
+	var n int64
+	if err := d.sql.QueryRowContext(ctx, qMinutesUnsentBefore, t.Unix()).Scan(&n); err != nil {
+		return 0, fmt.Errorf("counting unsent minutes: %w", err)
+	}
+	return n, nil
+}
+
 // CreditPruneResult counts rows removed by PruneCrediting.
 type CreditPruneResult struct{ Heartbeats, CreditedMinutes int64 }
 

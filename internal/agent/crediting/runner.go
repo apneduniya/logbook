@@ -43,6 +43,7 @@ type Store interface {
 	MarkMinutesSent(ctx context.Context, ms []localdb.CreditedMinute, finalBefore time.Time) error
 	RetireMinutesBefore(ctx context.Context, t time.Time) error
 	UnsentMinuteCount(ctx context.Context) (int64, error)
+	UnsentMinutesBefore(ctx context.Context, t time.Time) (int64, error)
 	PruneCrediting(ctx context.Context) (localdb.CreditPruneResult, error)
 	InsertEvidenceDay(ctx context.Context, e localdb.EvidenceDay) error
 	LastEvidenceDay(ctx context.Context, deviceID string) (localdb.EvidenceDay, bool, error)
@@ -293,10 +294,14 @@ func (r *Runner) upload(ctx context.Context, now time.Time) {
 			localdb.KV{Key: keyEvidenceHash, Value: ""}, localdb.KV{Key: keyEvidenceState, Value: ""},
 			localdb.KV{Key: keyEvidenceError, Value: ""})
 	}
+	// Sealing a day closes it to minutes on the server, so new days are
+	// sealed only on a run whose minute uploads went through; the per-day
+	// check in sealAndUploadDays then waits for that day's whole backlog.
+	mayseal := false
 	if now.Before(r.holdMinutes) {
 		r.opt.Logger.DebugContext(ctx, "minute uploads on hold after a refused batch", "until", r.holdMinutes)
 	} else {
-		err := r.uploadMinutes(ctx, t.Target, dev, now)
+		drained, err := r.uploadMinutes(ctx, t.Target, dev, now)
 		var refused *refusedError
 		switch {
 		case errors.As(err, &refused):
@@ -310,10 +315,15 @@ func (r *Runner) upload(ctx context.Context, now time.Time) {
 			r.fail(ctx, t, err)
 			return
 		default:
+			mayseal = true
+			if !drained {
+				r.opt.Logger.InfoContext(ctx, "minute upload budget used up; the rest goes next run",
+					"batches", maxBatchesPerRun)
+			}
 			r.show(ctx, keyRefused, "")
 		}
 	}
-	err = r.sealAndUploadDays(ctx, t.Target, dev, now)
+	err = r.sealAndUploadDays(ctx, t.Target, dev, now, mayseal)
 	if isServerError(err) {
 		r.fail(ctx, t, err)
 		return

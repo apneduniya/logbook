@@ -193,7 +193,11 @@ func (f *fakeServer) handleMinutes(w http.ResponseWriter, r *http.Request, id st
 				sum += o.Credited
 			}
 		}
+		_, sealed := f.days[id][m.Minute.UTC().Format(time.DateOnly)]
 		switch {
+		case sealed:
+			// Like the server: an evidence record seals its day.
+			rejected = append(rejected, rej{i, errSealedText})
 		case m.Project == f.rejectProject && f.rejectProject != "":
 			rejected = append(rejected, rej{i, "project refused"})
 		case m.Cuts == nil || m.Flags == nil:
@@ -211,6 +215,10 @@ func (f *fakeServer) handleMinutes(w http.ResponseWriter, r *http.Request, id st
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"accepted": accepted, "rejected": rejected})
 }
+
+// errSealedText is the server's rejection of a minute in a day the device
+// has sealed (internal/server/credited).
+const errSealedText = "minute is in a UTC day this device has already sealed with an evidence record"
 
 func equalMinute(a, b serverMinute) bool {
 	return a.Label == b.Label && a.Credited == b.Credited && slices.Equal(a.Cuts, b.Cuts) && slices.Equal(a.Flags, b.Flags)
