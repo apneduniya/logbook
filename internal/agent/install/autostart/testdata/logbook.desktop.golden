@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Logbook
+Comment=Logbook agent (passive time tracker)
+Exec="/home/ada/.local/bin/logbook" run
+Terminal=false
+NoDisplay=true
+X-GNOME-Autostart-enabled=true
