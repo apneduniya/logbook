@@ -1,7 +1,7 @@
 # Logbook server + Postgres for a single host. A reverse proxy with HTTPS
 # (Caddy) in front forwards to 127.0.0.1:${LOGBOOK_PORT}.
 # Secrets come from an .env file next to this one (never committed):
-#   POSTGRES_PASSWORD, LOGBOOK_ENCRYPTION_KEY, LOGBOOK_BASE_URL,
+#   POSTGRES_PASSWORD, LOGBOOK_ENCRYPTION_KEY, LOGBOOK_BASE_URL, LOGBOOK_WEB_URL,
 #   LOGBOOK_HCA_CLIENT_ID, LOGBOOK_HCA_CLIENT_SECRET,
 #   LOGBOOK_HACKATIME_CLIENT_ID, LOGBOOK_HACKATIME_CLIENT_SECRET, LOGBOOK_PORT
 name: logbook
@@ -34,6 +34,7 @@ services:
       DATABASE_URL: postgres://logbook:${POSTGRES_PASSWORD}@postgres:5432/logbook?sslmode=disable
       LOGBOOK_ADDR: 0.0.0.0:8080
       LOGBOOK_BASE_URL: ${LOGBOOK_BASE_URL:?set in .env}
+      LOGBOOK_WEB_URL: ${LOGBOOK_WEB_URL:?set in .env}
       LOGBOOK_ENCRYPTION_KEY: ${LOGBOOK_ENCRYPTION_KEY:?set in .env}
       LOGBOOK_TRUST_PROXY: "true"
       LOGBOOK_HCA_CLIENT_ID: ${LOGBOOK_HCA_CLIENT_ID:-}

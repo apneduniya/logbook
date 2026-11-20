@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/caarlos0/env/v11"
@@ -19,6 +20,12 @@ type Config struct {
 	BaseURL     string `env:"LOGBOOK_BASE_URL" envDefault:"http://127.0.0.1:8080"`
 	DatabaseURL Secret `env:"DATABASE_URL,required"`
 	LogLevel    string `env:"LOGBOOK_LOG_LEVEL" envDefault:"info"`
+
+	// WebURL is the web UI's origin (ADR 0011), such as
+	// https://logbook.boogles.dev. The API allows CORS from exactly this
+	// origin and sends browsers here after sign-in. It is required unless
+	// LOGBOOK_DEV_INSECURE_COOKIE is set, when it defaults to DevWebURL.
+	WebURL string `env:"LOGBOOK_WEB_URL"`
 
 	// EncryptionKey is a base64-encoded 32-byte key for AES-GCM token encryption.
 	EncryptionKey Secret `env:"LOGBOOK_ENCRYPTION_KEY,required"`
@@ -40,6 +47,9 @@ type Config struct {
 	// such a proxy always overwrites or appends that header.
 	TrustProxy bool `env:"LOGBOOK_TRUST_PROXY" envDefault:"false"`
 }
+
+// DevWebURL is the web UI's origin in development (the SvelteKit dev server).
+const DevWebURL = "http://localhost:5173"
 
 // DefaultHCABaseURL is Hack Club Auth's production host.
 const DefaultHCABaseURL = "https://auth.hackclub.com"
@@ -71,6 +81,9 @@ func Load() (Config, error) {
 	}
 	if c.HCA.BaseURL == "" {
 		c.HCA.BaseURL = DefaultHCABaseURL
+	}
+	if c.WebURL == "" && c.DevInsecureCookie {
+		c.WebURL = DevWebURL
 	}
 	if err := c.validate(); err != nil {
 		return Config{}, err
@@ -112,11 +125,45 @@ func (c Config) validate() error {
 			return fmt.Errorf("LOGBOOK_DEV_LOGIN requires LOGBOOK_ADDR to listen on loopback only (got %q)", c.Addr)
 		}
 	}
+	if err := c.validateWebURL(); err != nil {
+		return err
+	}
 	hca, err := url.Parse(c.HCA.BaseURL)
 	if err != nil || hca.Host == "" || (hca.Scheme != "https" && !IsLoopbackHost(hca.Hostname())) {
 		return fmt.Errorf("LOGBOOK_HCA_BASE_URL %q must be an https URL", c.HCA.BaseURL)
 	}
 	return nil
+}
+
+// validateWebURL accepts an absolute https origin with nothing after the
+// host, or plain http on a loopback host in development only. A path,
+// query, fragment or user info would make "WebURL + next path" ambiguous.
+func (c Config) validateWebURL() error {
+	if c.WebURL == "" {
+		return errors.New("LOGBOOK_WEB_URL is required (the web UI's origin, e.g. https://logbook.boogles.dev)")
+	}
+	u, err := url.Parse(c.WebURL)
+	if err != nil || u.Host == "" || u.Opaque != "" || u.User != nil ||
+		(u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" || u.ForceQuery {
+		return fmt.Errorf("LOGBOOK_WEB_URL %q must be an origin like https://logbook.boogles.dev", c.WebURL)
+	}
+	switch {
+	case u.Scheme == "https":
+	case u.Scheme == "http" && IsLoopbackHost(u.Hostname()) && c.DevInsecureCookie:
+	default:
+		return fmt.Errorf("LOGBOOK_WEB_URL %q must be https (plain http only on localhost with LOGBOOK_DEV_INSECURE_COOKIE=true)", c.WebURL)
+	}
+	return nil
+}
+
+// WebOrigin returns WebURL as a browser origin: scheme://host[:port], lower
+// case, with no trailing slash. It is what browsers send in Origin.
+func (c Config) WebOrigin() string {
+	u, err := url.Parse(c.WebURL)
+	if err != nil {
+		return "" // Load has validated WebURL; an empty origin allows nothing
+	}
+	return strings.ToLower(u.Scheme + "://" + u.Host)
 }
 
 // IsLoopbackHost reports whether host (without port) names this machine.
