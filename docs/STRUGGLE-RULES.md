@@ -102,7 +102,7 @@ The thresholds (3 min, 15 s, 25 characters, and so on) are first guesses. They'l
 - `background_editor`: a low-signal minute that has heartbeats, but no human write or movement in it or in the 4 minutes before it, and is neither engaged nor agent-busy. It is labelled `idle` with cut `background_editor` instead of `idle`.
 
 **Turns and agent busy**
-- A turn starts at `prompt_submit`, or at a `tool_start` outside any turn. Sessions are keyed by harness and session id.
+- A turn starts at `prompt_submit`, or at a `tool_start` or an unanswered `permission_ask` outside any turn (the agent is then mid-turn; after an ask it is waiting). Sessions are keyed by harness and session id.
 - A turn ends at the first of these:
   - `turn_end`;
   - `session_end`;
@@ -159,4 +159,5 @@ These changed the meaning of the rules above, not only the code, and need the ow
 Later fixes from a second review, also still rules v1:
 - Project names are normalised as the server does before projects are counted. Before, `app` and ` app ` in one minute became two 30 s rows; the server merged them into one name, rejected the second as a duplicate and stored 30 s. `<<LAST_PROJECT>>` now means no project instead of a project of that name.
 - `automated_session` reads only the activity samples within 2 minutes of the prompt. Before, a sample an hour later that reported input at the prompt (after a sensor stall) removed the flag from a minute that was already final.
+- An unanswered `permission_ask` outside any turn opens a turn that is waiting, as a `tool_start` opens a running one. Before, a wait whose asks repeated for over an hour was only known to callers that held the turn's prompt, so the answer (a signal of the person) and the busy time after it differed between a full run and the agent's 90 minutes of data.
 - A minute is split among at most 8 projects, the busiest ones. Before, a minute with signals in 9 or more projects had 9 or more rows; the server stores at most 8 per device-minute, so it rejected the rest and their seconds were lost (54 s instead of 60 s for 9 equal projects).

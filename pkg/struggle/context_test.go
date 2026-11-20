@@ -173,3 +173,28 @@ func randomScenario(seed uint64) Input {
 	}
 	return in
 }
+
+// A permission wait whose asks repeat for longer than ContextBefore, then an
+// answer: the answer (a human signal, so browsing counts) and the busy time
+// after it must not depend on seeing the turn's prompt over an hour earlier.
+func TestLongPermissionWaitIsBounded(t *testing.T) {
+	full := Input{Window: Window{From: at(80 * time.Minute), To: at(100 * time.Minute)}}
+	for x := t0; x.Before(at(130 * time.Minute)); x = x.Add(5 * time.Second) {
+		full.Activity = append(full.Activity, wire.ActivitySample{Time: x, IdleSeconds: 1, FocusKind: "browser"})
+	}
+	ev := func(d time.Duration, k wire.AIEventKind) wire.AIEvent {
+		return wire.AIEvent{Time: at(d), Kind: k, Harness: wire.HarnessClaudeCode, SessionID: "s", Project: "app"}
+	}
+	full.AI = append(full.AI, ev(0, wire.AIPromptSubmit))
+	for d := time.Minute; d < 85*time.Minute; d += 5 * time.Minute {
+		full.AI = append(full.AI, ev(d, wire.AIPermissionAsk))
+	}
+	full.AI = append(full.AI, ev(85*time.Minute, wire.AIToolEnd), ev(90*time.Minute, wire.AIToolStart))
+	want := Compute(full)
+	for m := full.Window.From; m.Before(full.Window.To); m = m.Add(time.Minute) {
+		in := sliceInput(full, m.Add(-ContextBefore), m.Add(Lookahead))
+		in.Window = Window{From: m, To: m.Add(time.Minute)}
+		in.DataEnd = m.Add(Lookahead)
+		compareMinutes(t, "bounded context", Compute(in), want, m, m.Add(time.Minute))
+	}
+}
