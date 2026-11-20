@@ -46,6 +46,18 @@ GROUP BY (minute AT TIME ZONE sqlc.arg(tz)::text)::date
 HAVING sum(seconds) >= sqlc.arg(min_seconds)::bigint
 ORDER BY (minute AT TIME ZONE sqlc.arg(tz)::text)::date;
 
+-- name: StatsQualifyingDaysBetween :many
+-- Like StatsQualifyingDays, but only for minutes in [from_time, to_time).
+-- Callers pass whole local days so each day's sum is complete.
+SELECT to_char((minute AT TIME ZONE sqlc.arg(tz)::text)::date, 'YYYY-MM-DD')::text AS day
+FROM user_minutes
+WHERE user_id = sqlc.arg(user_id) AND label = 'you'
+  AND minute >= sqlc.arg(from_time)
+  AND minute < sqlc.arg(to_time)
+GROUP BY (minute AT TIME ZONE sqlc.arg(tz)::text)::date
+HAVING sum(seconds) >= sqlc.arg(min_seconds)::bigint
+ORDER BY (minute AT TIME ZONE sqlc.arg(tz)::text)::date;
+
 -- name: ProjectsMinuteTotals :many
 -- Per (project, language): credited seconds and last activity of any label.
 SELECT project, language,
@@ -61,6 +73,17 @@ SELECT * FROM projects WHERE user_id = $1;
 
 -- name: ProjectsSettingsGet :one
 SELECT * FROM projects WHERE user_id = $1 AND name = $2;
+
+-- name: ProjectsSettingsEnsure :exec
+-- Creates the settings row with defaults if it doesn't exist yet, so that
+-- ProjectsSettingsGetForUpdate always has a row to lock.
+INSERT INTO projects (user_id, name) VALUES ($1, $2)
+ON CONFLICT (user_id, name) DO NOTHING;
+
+-- name: ProjectsSettingsGetForUpdate :one
+-- Locks the row until the transaction ends, so concurrent updates are
+-- serialised and each audit entry sees the true previous values.
+SELECT * FROM projects WHERE user_id = $1 AND name = $2 FOR UPDATE;
 
 -- name: ProjectsSettingsUpsert :one
 -- Partial update: a NULL argument keeps the current (or default) value.
@@ -81,6 +104,11 @@ RETURNING *;
 -- name: ProfileGetByID :one
 SELECT id, username::text AS username, display_name, avatar_url, timezone, profile_public, created_at
 FROM users WHERE id = $1;
+
+-- name: ProfileGetByIDForUpdate :one
+-- Locks the user row until the transaction ends (see ProjectsSettingsGetForUpdate).
+SELECT id, username::text AS username, display_name, avatar_url, timezone, profile_public, created_at
+FROM users WHERE id = $1 FOR UPDATE;
 
 -- name: ProfileGetByUsername :one
 SELECT id, username::text AS username, display_name, avatar_url, timezone, profile_public, created_at

@@ -43,6 +43,37 @@ func (q *Queries) ProfileGetByID(ctx context.Context, id uuid.UUID) (ProfileGetB
 	return i, err
 }
 
+const profileGetByIDForUpdate = `-- name: ProfileGetByIDForUpdate :one
+SELECT id, username::text AS username, display_name, avatar_url, timezone, profile_public, created_at
+FROM users WHERE id = $1 FOR UPDATE
+`
+
+type ProfileGetByIDForUpdateRow struct {
+	ID            uuid.UUID
+	Username      string
+	DisplayName   string
+	AvatarUrl     string
+	Timezone      string
+	ProfilePublic bool
+	CreatedAt     time.Time
+}
+
+// Locks the user row until the transaction ends (see ProjectsSettingsGetForUpdate).
+func (q *Queries) ProfileGetByIDForUpdate(ctx context.Context, id uuid.UUID) (ProfileGetByIDForUpdateRow, error) {
+	row := q.db.QueryRow(ctx, profileGetByIDForUpdate, id)
+	var i ProfileGetByIDForUpdateRow
+	err := row.Scan(
+		&i.ID,
+		&i.Username,
+		&i.DisplayName,
+		&i.AvatarUrl,
+		&i.Timezone,
+		&i.ProfilePublic,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const profileGetByUsername = `-- name: ProfileGetByUsername :one
 SELECT id, username::text AS username, display_name, avatar_url, timezone, profile_public, created_at
 FROM users WHERE username = $1::citext
@@ -232,6 +263,23 @@ func (q *Queries) ProjectsMinuteTotals(ctx context.Context, arg ProjectsMinuteTo
 	return items, nil
 }
 
+const projectsSettingsEnsure = `-- name: ProjectsSettingsEnsure :exec
+INSERT INTO projects (user_id, name) VALUES ($1, $2)
+ON CONFLICT (user_id, name) DO NOTHING
+`
+
+type ProjectsSettingsEnsureParams struct {
+	UserID uuid.UUID
+	Name   string
+}
+
+// Creates the settings row with defaults if it doesn't exist yet, so that
+// ProjectsSettingsGetForUpdate always has a row to lock.
+func (q *Queries) ProjectsSettingsEnsure(ctx context.Context, arg ProjectsSettingsEnsureParams) error {
+	_, err := q.db.Exec(ctx, projectsSettingsEnsure, arg.UserID, arg.Name)
+	return err
+}
+
 const projectsSettingsGet = `-- name: ProjectsSettingsGet :one
 SELECT id, user_id, name, repo_url, hidden, archived, created_at, updated_at FROM projects WHERE user_id = $1 AND name = $2
 `
@@ -243,6 +291,33 @@ type ProjectsSettingsGetParams struct {
 
 func (q *Queries) ProjectsSettingsGet(ctx context.Context, arg ProjectsSettingsGetParams) (Project, error) {
 	row := q.db.QueryRow(ctx, projectsSettingsGet, arg.UserID, arg.Name)
+	var i Project
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.Name,
+		&i.RepoUrl,
+		&i.Hidden,
+		&i.Archived,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const projectsSettingsGetForUpdate = `-- name: ProjectsSettingsGetForUpdate :one
+SELECT id, user_id, name, repo_url, hidden, archived, created_at, updated_at FROM projects WHERE user_id = $1 AND name = $2 FOR UPDATE
+`
+
+type ProjectsSettingsGetForUpdateParams struct {
+	UserID uuid.UUID
+	Name   string
+}
+
+// Locks the row until the transaction ends, so concurrent updates are
+// serialised and each audit entry sees the true previous values.
+func (q *Queries) ProjectsSettingsGetForUpdate(ctx context.Context, arg ProjectsSettingsGetForUpdateParams) (Project, error) {
+	row := q.db.QueryRow(ctx, projectsSettingsGetForUpdate, arg.UserID, arg.Name)
 	var i Project
 	err := row.Scan(
 		&i.ID,
@@ -428,6 +503,53 @@ type StatsQualifyingDaysParams struct {
 // Local dates on which the user was credited at least min_seconds.
 func (q *Queries) StatsQualifyingDays(ctx context.Context, arg StatsQualifyingDaysParams) ([]string, error) {
 	rows, err := q.db.Query(ctx, statsQualifyingDays, arg.Tz, arg.UserID, arg.MinSeconds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var day string
+		if err := rows.Scan(&day); err != nil {
+			return nil, err
+		}
+		items = append(items, day)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const statsQualifyingDaysBetween = `-- name: StatsQualifyingDaysBetween :many
+SELECT to_char((minute AT TIME ZONE $1::text)::date, 'YYYY-MM-DD')::text AS day
+FROM user_minutes
+WHERE user_id = $2 AND label = 'you'
+  AND minute >= $3
+  AND minute < $4
+GROUP BY (minute AT TIME ZONE $1::text)::date
+HAVING sum(seconds) >= $5::bigint
+ORDER BY (minute AT TIME ZONE $1::text)::date
+`
+
+type StatsQualifyingDaysBetweenParams struct {
+	Tz         string
+	UserID     uuid.UUID
+	FromTime   time.Time
+	ToTime     time.Time
+	MinSeconds int64
+}
+
+// Like StatsQualifyingDays, but only for minutes in [from_time, to_time).
+// Callers pass whole local days so each day's sum is complete.
+func (q *Queries) StatsQualifyingDaysBetween(ctx context.Context, arg StatsQualifyingDaysBetweenParams) ([]string, error) {
+	rows, err := q.db.Query(ctx, statsQualifyingDaysBetween,
+		arg.Tz,
+		arg.UserID,
+		arg.FromTime,
+		arg.ToTime,
+		arg.MinSeconds,
+	)
 	if err != nil {
 		return nil, err
 	}

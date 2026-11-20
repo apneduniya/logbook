@@ -10,15 +10,23 @@ import (
 
 var t0 = time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
 
+func must(t *testing.T) func(*Subscription, error) *Subscription {
+	return func(s *Subscription, err error) *Subscription {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(s.Close)
+		return s
+	}
+}
+
 func TestHubFanOutIsPerUser(t *testing.T) {
 	h := NewHub(DefaultLimits())
 	a, b := uuid.New(), uuid.New()
-	sa1, _ := h.Subscribe(a, false)
-	sa2, _ := h.Subscribe(a, true)
-	sb, _ := h.Subscribe(b, false)
-	defer sa1.Close()
-	defer sa2.Close()
-	defer sb.Close()
+	sa1 := must(t)(h.SubscribeOwner(a))
+	sa2 := must(t)(h.SubscribePublic(a, "203.0.113.1"))
+	sb := must(t)(h.SubscribeOwner(b))
 
 	h.MinutesChanged(a, t0, t0.Add(time.Minute))
 	for _, s := range []*Subscription{sa1, sa2} {
@@ -44,8 +52,7 @@ func TestHubFanOutIsPerUser(t *testing.T) {
 func TestHubCoalescesForSlowSubscriber(t *testing.T) {
 	h := NewHub(DefaultLimits())
 	u := uuid.New()
-	s, _ := h.Subscribe(u, false)
-	defer s.Close()
+	s := must(t)(h.SubscribeOwner(u))
 
 	done := make(chan struct{})
 	go func() {
@@ -73,43 +80,101 @@ func TestHubCoalescesForSlowSubscriber(t *testing.T) {
 }
 
 func TestHubLimits(t *testing.T) {
-	h := NewHub(Limits{PerUser: 2, PerProfile: 1, Global: 4})
+	limits := Limits{PerUser: 2, Owner: 3, PerProfile: 2, PerClient: 2, Public: 3}
 	a, b, c := uuid.New(), uuid.New(), uuid.New()
-	must := func(s *Subscription, err error) *Subscription {
-		t.Helper()
-		if err != nil {
-			t.Fatal(err)
-		}
-		return s
+	tests := []struct {
+		name string
+		run  func(t *testing.T, h *Hub)
+	}{
+		{"per user", func(t *testing.T, h *Hub) {
+			must(t)(h.SubscribeOwner(a))
+			must(t)(h.SubscribeOwner(a))
+			if _, err := h.SubscribeOwner(a); !errors.Is(err, ErrUserLimit) {
+				t.Fatalf("third owner stream err = %v", err)
+			}
+		}},
+		{"owner global", func(t *testing.T, h *Hub) {
+			must(t)(h.SubscribeOwner(a))
+			must(t)(h.SubscribeOwner(b))
+			must(t)(h.SubscribeOwner(c))
+			if _, err := h.SubscribeOwner(uuid.New()); !errors.Is(err, ErrGlobalLimit) {
+				t.Fatalf("owner global err = %v", err)
+			}
+		}},
+		{"per profile", func(t *testing.T, h *Hub) {
+			must(t)(h.SubscribePublic(a, "ip1"))
+			must(t)(h.SubscribePublic(a, "ip2"))
+			if _, err := h.SubscribePublic(a, "ip3"); !errors.Is(err, ErrUserLimit) {
+				t.Fatalf("third viewer err = %v", err)
+			}
+		}},
+		{"per client", func(t *testing.T, h *Hub) {
+			must(t)(h.SubscribePublic(a, "ip1"))
+			must(t)(h.SubscribePublic(b, "ip1"))
+			if _, err := h.SubscribePublic(c, "ip1"); !errors.Is(err, ErrClientLimit) {
+				t.Fatalf("third stream from one client err = %v", err)
+			}
+			must(t)(h.SubscribePublic(c, "ip2"))
+		}},
+		{"public global", func(t *testing.T, h *Hub) {
+			must(t)(h.SubscribePublic(a, "ip1"))
+			must(t)(h.SubscribePublic(b, "ip2"))
+			must(t)(h.SubscribePublic(c, "ip3"))
+			if _, err := h.SubscribePublic(uuid.New(), "ip4"); !errors.Is(err, ErrGlobalLimit) {
+				t.Fatalf("public global err = %v", err)
+			}
+		}},
+		{"public streams never use owner capacity", func(t *testing.T, h *Hub) {
+			for i := range limits.Public {
+				must(t)(h.SubscribePublic(uuid.New(), string(rune('a'+i))))
+			}
+			for _, u := range []uuid.UUID{a, b, c} {
+				must(t)(h.SubscribeOwner(u))
+			}
+		}},
+		{"owner streams never use public capacity", func(t *testing.T, h *Hub) {
+			for _, u := range []uuid.UUID{a, b, c} {
+				must(t)(h.SubscribeOwner(u))
+			}
+			must(t)(h.SubscribePublic(a, "ip1"))
+		}},
+		{"close frees the slot and is idempotent", func(t *testing.T, h *Hub) {
+			s := must(t)(h.SubscribePublic(a, "ip1"))
+			must(t)(h.SubscribePublic(b, "ip1"))
+			s.Close()
+			s.Close()
+			if h.Count() != 1 {
+				t.Fatalf("Count() = %d after close, want 1", h.Count())
+			}
+			must(t)(h.SubscribePublic(c, "ip1"))
+		}},
 	}
-	a1 := must(h.Subscribe(a, false))
-	must(h.Subscribe(a, false))
-	if _, err := h.Subscribe(a, false); !errors.Is(err, ErrUserLimit) {
-		t.Fatalf("third private stream err = %v", err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := NewHub(limits)
+			tt.run(t, h)
+		})
 	}
-	// Public viewers have their own cap, so they can't lock the owner out and vice versa.
-	must(h.Subscribe(a, true))
-	if _, err := h.Subscribe(a, true); !errors.Is(err, ErrUserLimit) {
-		t.Fatalf("second public stream err = %v", err)
+}
+
+func TestHubCountersReturnToZero(t *testing.T) {
+	h := NewHub(DefaultLimits())
+	u := uuid.New()
+	for range 3 {
+		must(t)(h.SubscribeOwner(u))
+		must(t)(h.SubscribePublic(u, "ip"))
 	}
-	must(h.Subscribe(b, false))
-	if _, err := h.Subscribe(c, false); !errors.Is(err, ErrGlobalLimit) {
-		t.Fatalf("global limit err = %v", err)
+	h.Close()
+	if len(h.subs) != 0 || len(h.ownerByUser) != 0 || len(h.publicByUser) != 0 || len(h.publicByClient) != 0 {
+		t.Fatalf("maps not emptied: %d %d %d %d", len(h.subs), len(h.ownerByUser), len(h.publicByUser), len(h.publicByClient))
 	}
-	a1.Close()
-	a1.Close() // idempotent
-	if h.Count() != 3 {
-		t.Fatalf("Count() = %d after close, want 3", h.Count())
-	}
-	must(h.Subscribe(c, false))
 }
 
 func TestHubProfileMadePrivateEndsPublicStreamsOnly(t *testing.T) {
 	h := NewHub(DefaultLimits())
 	u := uuid.New()
-	own, _ := h.Subscribe(u, false)
-	pub, _ := h.Subscribe(u, true)
-	defer own.Close()
+	own := must(t)(h.SubscribeOwner(u))
+	pub := must(t)(h.SubscribePublic(u, "ip"))
 
 	h.ProfileMadePrivate(u)
 	select {
@@ -130,17 +195,36 @@ func TestHubProfileMadePrivateEndsPublicStreamsOnly(t *testing.T) {
 
 func TestHubClose(t *testing.T) {
 	h := NewHub(DefaultLimits())
-	s, _ := h.Subscribe(uuid.New(), false)
+	s := must(t)(h.SubscribeOwner(uuid.New()))
 	h.Close()
 	select {
 	case <-s.Done():
 	default:
 		t.Fatal("subscription not ended by Close")
 	}
-	if _, err := h.Subscribe(uuid.New(), false); !errors.Is(err, ErrClosed) {
-		t.Fatalf("Subscribe after Close err = %v", err)
+	if _, err := h.SubscribeOwner(uuid.New()); !errors.Is(err, ErrClosed) {
+		t.Fatalf("SubscribeOwner after Close err = %v", err)
+	}
+	if _, err := h.SubscribePublic(uuid.New(), "ip"); !errors.Is(err, ErrClosed) {
+		t.Fatalf("SubscribePublic after Close err = %v", err)
 	}
 	if h.Count() != 0 {
 		t.Fatalf("Count() = %d", h.Count())
 	}
 }
+
+func TestFanoutCallsListenersInOrder(t *testing.T) {
+	var calls []string
+	f := Fanout{
+		listenerFunc(func() { calls = append(calls, "first") }),
+		listenerFunc(func() { calls = append(calls, "second") }),
+	}
+	f.MinutesChanged(uuid.New(), t0, t0.Add(time.Minute))
+	if len(calls) != 2 || calls[0] != "first" || calls[1] != "second" {
+		t.Fatalf("calls = %v", calls)
+	}
+}
+
+type listenerFunc func()
+
+func (f listenerFunc) MinutesChanged(uuid.UUID, time.Time, time.Time) { f() }

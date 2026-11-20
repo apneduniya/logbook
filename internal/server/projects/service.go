@@ -36,13 +36,22 @@ type Store interface {
 	InTx(ctx context.Context, fn func(q *db.Queries) error) error
 }
 
-// Service reads and updates one user's projects.
-type Service struct {
-	st Store
+// SettingsListener is told after a user's project settings change, so
+// caches of public data can be dropped. profiles.Service implements it.
+type SettingsListener interface {
+	ProjectSettingsChanged(userID uuid.UUID)
 }
 
-// NewService returns a Service backed by st.
-func NewService(st Store) *Service { return &Service{st: st} }
+// Service reads and updates one user's projects.
+type Service struct {
+	st       Store
+	listener SettingsListener
+}
+
+// NewService returns a Service backed by st. listener may be nil.
+func NewService(st Store, listener SettingsListener) *Service {
+	return &Service{st: st, listener: listener}
+}
 
 // Language is the credited time in one language within a project.
 type Language struct {
@@ -124,10 +133,17 @@ func (s *Service) Update(ctx context.Context, userID uuid.UUID, name string, p P
 	if _, err := s.Get(ctx, userID, name); err != nil {
 		return Project{}, err
 	}
+	changed := false
 	err := s.st.InTx(ctx, func(q *db.Queries) error {
-		before, err := q.ProjectsSettingsGet(ctx, db.ProjectsSettingsGetParams{UserID: userID, Name: name})
-		if err != nil && !store.IsNotFound(err) {
-			return fmt.Errorf("reading project settings: %w", err)
+		// Create the row with defaults if needed, then lock it, so concurrent
+		// updates are serialised and each audit entry records the value it
+		// actually replaced. A fresh row's defaults read as "no previous value".
+		if err := q.ProjectsSettingsEnsure(ctx, db.ProjectsSettingsEnsureParams{UserID: userID, Name: name}); err != nil {
+			return fmt.Errorf("creating project settings: %w", err)
+		}
+		before, err := q.ProjectsSettingsGetForUpdate(ctx, db.ProjectsSettingsGetForUpdateParams{UserID: userID, Name: name})
+		if err != nil {
+			return fmt.Errorf("locking project settings: %w", err)
 		}
 		after, err := q.ProjectsSettingsUpsert(ctx, db.ProjectsSettingsUpsertParams{
 			UserID: userID, Name: name,
@@ -155,10 +171,14 @@ func (s *Service) Update(ctx context.Context, userID uuid.UUID, name string, p P
 		}); err != nil {
 			return fmt.Errorf("writing audit log: %w", err)
 		}
+		changed = true
 		return nil
 	})
 	if err != nil {
 		return Project{}, fmt.Errorf("updating project: %w", err)
+	}
+	if changed && s.listener != nil {
+		s.listener.ProjectSettingsChanged(userID)
 	}
 	return s.Get(ctx, userID, name)
 }

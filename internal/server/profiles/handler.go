@@ -11,17 +11,19 @@ import (
 type Handler struct {
 	svc            *Service
 	requireSession httpapi.Middleware
+	publicLimit    httpapi.Middleware
 }
 
-// NewHandler returns a Handler; requireSession must authenticate the caller
-// and enforce CSRF on PATCH. The public profile route needs no auth.
-func NewHandler(svc *Service, requireSession httpapi.Middleware) *Handler {
-	return &Handler{svc: svc, requireSession: requireSession}
+// NewHandler returns a Handler. requireSession must authenticate the caller
+// and enforce CSRF on PATCH. The public profile route needs no auth;
+// publicLimit rate-limits it per client.
+func NewHandler(svc *Service, requireSession, publicLimit httpapi.Middleware) *Handler {
+	return &Handler{svc: svc, requireSession: requireSession, publicLimit: publicLimit}
 }
 
 // Register mounts the profile routes on mux.
 func (h *Handler) Register(mux *http.ServeMux) {
-	mux.Handle("GET /api/v1/users/{username}/profile", httpapi.Handle(h.public))
+	mux.Handle("GET /api/v1/users/{username}/profile", h.publicLimit(httpapi.Handle(h.public)))
 	mux.Handle("GET /api/v1/me/profile", h.requireSession(httpapi.Handle(h.me)))
 	mux.Handle("PATCH /api/v1/me/profile", h.requireSession(httpapi.Handle(h.update)))
 }

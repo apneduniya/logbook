@@ -12,26 +12,35 @@ import (
 var (
 	// ErrUserLimit means the user (or the watched profile) has too many open streams.
 	ErrUserLimit = errors.New("too many live streams for this user")
-	// ErrGlobalLimit means the server has too many open streams.
+	// ErrClientLimit means one client (IP) has too many public streams open.
+	ErrClientLimit = errors.New("too many live streams from this client")
+	// ErrGlobalLimit means the server has too many open streams of that kind.
 	ErrGlobalLimit = errors.New("too many live streams")
 	// ErrClosed means the hub is shutting down.
 	ErrClosed = errors.New("live hub closed")
 )
 
-// Limits caps open subscriptions.
+// Limits caps open subscriptions. Owner streams (a user's own dashboard) and
+// public streams (anonymous profile viewers) have separate budgets, so
+// strangers can never use up the capacity signed-in users need.
 type Limits struct {
-	// PerUser caps a user's own (private) streams, e.g. open dashboard tabs.
+	// PerUser caps a user's own streams, e.g. open dashboard tabs.
 	PerUser int
-	// PerProfile caps public streams watching one profile. It is separate
-	// from PerUser so strangers can't use up the owner's own streams.
+	// Owner caps all owner streams on this server.
+	Owner int
+
+	// PerProfile caps public streams watching one profile.
 	PerProfile int
-	// Global caps all streams on this server.
-	Global int
+	// PerClient caps public streams opened by one client (IP address).
+	PerClient int
+	// Public caps all public streams on this server.
+	Public int
 }
 
-// DefaultLimits are sized for one server process.
+// DefaultLimits are sized for one server process. PerClient allows a
+// shared NAT (a school, a hackathon venue) a few viewers per person.
 func DefaultLimits() Limits {
-	return Limits{PerUser: 5, PerProfile: 100, Global: 10_000}
+	return Limits{PerUser: 5, Owner: 10_000, PerProfile: 100, PerClient: 20, Public: 2_000}
 }
 
 // Event is a range of minutes whose rollups changed.
@@ -56,6 +65,7 @@ type Subscription struct {
 	hub    *Hub
 	userID uuid.UUID
 	public bool
+	client string // public streams only
 
 	notify chan struct{} // capacity 1: "there is a pending event"
 	done   chan struct{} // closed when the subscription ends
@@ -104,50 +114,77 @@ func (s *Subscription) offer(ev Event) {
 type Hub struct {
 	limits Limits
 
-	mu       sync.Mutex
-	subs     map[uuid.UUID]map[*Subscription]struct{}
-	private  map[uuid.UUID]int
-	public   map[uuid.UUID]int
-	total    int
-	isClosed bool
+	mu             sync.Mutex
+	subs           map[uuid.UUID]map[*Subscription]struct{}
+	ownerByUser    map[uuid.UUID]int
+	publicByUser   map[uuid.UUID]int
+	publicByClient map[string]int
+	owners         int
+	publics        int
+	isClosed       bool
 }
 
 // NewHub returns a Hub enforcing limits.
 func NewHub(limits Limits) *Hub {
 	return &Hub{
-		limits:  limits,
-		subs:    map[uuid.UUID]map[*Subscription]struct{}{},
-		private: map[uuid.UUID]int{},
-		public:  map[uuid.UUID]int{},
+		limits:         limits,
+		subs:           map[uuid.UUID]map[*Subscription]struct{}{},
+		ownerByUser:    map[uuid.UUID]int{},
+		publicByUser:   map[uuid.UUID]int{},
+		publicByClient: map[string]int{},
 	}
 }
 
-// Subscribe opens a subscription to userID's changes. public marks a stream
-// opened by a profile viewer rather than the user. Callers must Close it.
-func (h *Hub) Subscribe(userID uuid.UUID, public bool) (*Subscription, error) {
+// SubscribeOwner opens a subscription to the user's own changes. Callers
+// must Close it.
+func (h *Hub) SubscribeOwner(userID uuid.UUID) (*Subscription, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	switch {
 	case h.isClosed:
 		return nil, ErrClosed
-	case h.total >= h.limits.Global:
+	case h.owners >= h.limits.Owner:
 		return nil, ErrGlobalLimit
-	case public && h.public[userID] >= h.limits.PerProfile:
-		return nil, ErrUserLimit
-	case !public && h.private[userID] >= h.limits.PerUser:
+	case h.ownerByUser[userID] >= h.limits.PerUser:
 		return nil, ErrUserLimit
 	}
+	h.ownerByUser[userID]++
+	h.owners++
+	return h.addLocked(userID, false, ""), nil
+}
+
+// SubscribePublic opens a profile viewer's subscription to userID's changes.
+// client identifies the viewer (normally its IP) for the per-client cap.
+// Callers must Close it.
+func (h *Hub) SubscribePublic(userID uuid.UUID, client string) (*Subscription, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	switch {
+	case h.isClosed:
+		return nil, ErrClosed
+	case h.publics >= h.limits.Public:
+		return nil, ErrGlobalLimit
+	case h.publicByClient[client] >= h.limits.PerClient:
+		return nil, ErrClientLimit
+	case h.publicByUser[userID] >= h.limits.PerProfile:
+		return nil, ErrUserLimit
+	}
+	h.publicByUser[userID]++
+	h.publicByClient[client]++
+	h.publics++
+	return h.addLocked(userID, true, client), nil
+}
+
+func (h *Hub) addLocked(userID uuid.UUID, public bool, client string) *Subscription {
 	s := &Subscription{
-		hub: h, userID: userID, public: public,
+		hub: h, userID: userID, public: public, client: client,
 		notify: make(chan struct{}, 1), done: make(chan struct{}),
 	}
 	if h.subs[userID] == nil {
 		h.subs[userID] = map[*Subscription]struct{}{}
 	}
 	h.subs[userID][s] = struct{}{}
-	h.counter(public)[userID]++
-	h.total++
-	return s, nil
+	return s
 }
 
 // MinutesChanged notifies userID's subscribers that minutes in [from, to)
@@ -185,11 +222,11 @@ func (h *Hub) Close() {
 	}
 }
 
-// Count returns the number of open subscriptions.
+// Count returns the number of open subscriptions of both kinds.
 func (h *Hub) Count() int {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return h.total
+	return h.owners + h.publics
 }
 
 func (h *Hub) remove(s *Subscription) {
@@ -205,18 +242,21 @@ func (h *Hub) removeLocked(s *Subscription) {
 		if len(set) == 0 {
 			delete(h.subs, s.userID)
 		}
-		c := h.counter(s.public)
-		if c[s.userID]--; c[s.userID] <= 0 {
-			delete(c, s.userID)
+		if s.public {
+			decrement(h.publicByUser, s.userID)
+			decrement(h.publicByClient, s.client)
+			h.publics--
+		} else {
+			decrement(h.ownerByUser, s.userID)
+			h.owners--
 		}
-		h.total--
 	}
 	s.once.Do(func() { close(s.done) })
 }
 
-func (h *Hub) counter(public bool) map[uuid.UUID]int {
-	if public {
-		return h.public
+// decrement lowers m[k] and deletes it at zero so maps don't grow forever.
+func decrement[K comparable](m map[K]int, k K) {
+	if m[k]--; m[k] <= 0 {
+		delete(m, k)
 	}
-	return h.private
 }

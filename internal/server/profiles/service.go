@@ -3,6 +3,8 @@ package profiles
 import (
 	"cmp"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -51,11 +53,12 @@ type Service struct {
 	st       Store
 	listener PrivacyListener
 	now      func() time.Time
+	cache    *aggCache
 }
 
 // NewService returns a Service. listener may be nil.
 func NewService(st Store, listener PrivacyListener) *Service {
-	return &Service{st: st, listener: listener, now: time.Now}
+	return &Service{st: st, listener: listener, now: time.Now, cache: newAggCache(time.Now)}
 }
 
 // Me is the signed-in user's own profile settings.
@@ -138,18 +141,86 @@ func (s *Service) Public(ctx context.Context, username string) (Public, error) {
 	if err != nil {
 		return Public{}, fmt.Errorf("reading user: %w", err)
 	}
+	// Privacy is read fresh on every request; only the aggregates are cached.
 	if !u.ProfilePublic {
 		return Public{}, ErrNotFound
 	}
-	rows, err := s.st.ProfilePublicTotals(ctx, db.ProfilePublicTotalsParams{
-		UserID: u.ID, Since: s.now().Add(-recentWindow).UTC(),
-	})
+	agg, err := s.aggregates(ctx, u.ID, time.Time{})
 	if err != nil {
-		return Public{}, fmt.Errorf("querying public totals: %w", err)
+		return Public{}, err
 	}
-	p := buildPublic(rows)
+	p := agg.public
 	p.Username, p.DisplayName, p.AvatarURL, p.MemberSince = u.Username, u.DisplayName, u.AvatarUrl, u.CreatedAt
 	return p, nil
+}
+
+// PublicVersion fingerprints the time a public profile shows, from data read
+// no earlier than freshAfter (zero accepts the cached value). It changes
+// only when credited time in non-hidden projects, or their repo links,
+// change; hidden projects, agent and idle time never move it. ok is false
+// when the user is missing or the profile is private.
+func (s *Service) PublicVersion(ctx context.Context, userID uuid.UUID, freshAfter time.Time) (version string, ok bool, err error) {
+	u, err := s.st.ProfileGetByID(ctx, userID)
+	if store.IsNotFound(err) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("reading user: %w", err)
+	}
+	if !u.ProfilePublic {
+		return "", false, nil
+	}
+	agg, err := s.aggregates(ctx, userID, freshAfter)
+	if err != nil {
+		return "", false, err
+	}
+	return agg.version, true, nil
+}
+
+// ProjectSettingsChanged drops the user's cached aggregates, so hiding a
+// project or changing its repo link shows on the public profile at once.
+// projects.Service calls it after each change.
+func (s *Service) ProjectSettingsChanged(userID uuid.UUID) {
+	s.cache.invalidate(userID)
+}
+
+func (s *Service) aggregates(ctx context.Context, userID uuid.UUID, freshAfter time.Time) (aggregates, error) {
+	return s.cache.get(ctx, userID, freshAfter, func(ctx context.Context) (aggregates, error) {
+		rows, err := s.st.ProfilePublicTotals(ctx, db.ProfilePublicTotalsParams{
+			UserID: userID, Since: s.now().Add(-recentWindow).UTC(),
+		})
+		if err != nil {
+			return aggregates{}, fmt.Errorf("querying public totals: %w", err)
+		}
+		v, err := versionOf(rows)
+		if err != nil {
+			return aggregates{}, err
+		}
+		return aggregates{public: buildPublic(rows), version: v}, nil
+	})
+}
+
+// versionOf hashes the all-time rows. The last-7-days figures are left out:
+// they shift as time passes, and a version that moved without new visible
+// activity would hint at hidden activity.
+func versionOf(rows []db.ProfilePublicTotalsRow) (string, error) {
+	type key struct {
+		Project, Language, RepoURL string
+		Seconds                    int64
+	}
+	keys := make([]key, len(rows))
+	for i, r := range rows {
+		keys[i] = key{r.Project, r.Language, r.RepoUrl, r.Seconds}
+	}
+	slices.SortFunc(keys, func(a, b key) int {
+		return cmp.Or(cmp.Compare(a.Project, b.Project), cmp.Compare(a.Language, b.Language))
+	})
+	b, err := json.Marshal(keys)
+	if err != nil {
+		return "", fmt.Errorf("encoding version: %w", err)
+	}
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:16]), nil
 }
 
 // buildPublic folds per (project, language) rows into totals, the top
@@ -224,7 +295,9 @@ func (s *Service) Update(ctx context.Context, userID uuid.UUID, p Patch) (Me, er
 	}
 	var before, after db.ProfileUpdateRow
 	err = s.st.InTx(ctx, func(q *db.Queries) error {
-		b, err := q.ProfileGetByID(ctx, userID)
+		// Lock the row so concurrent updates are serialised and each audit
+		// entry records the value it actually replaced.
+		b, err := q.ProfileGetByIDForUpdate(ctx, userID)
 		if store.IsNotFound(err) {
 			return ErrNotFound
 		}

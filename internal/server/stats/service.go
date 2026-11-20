@@ -27,17 +27,26 @@ type Querier interface {
 	StatsUserTimezone(ctx context.Context, id uuid.UUID) (string, error)
 	StatsBreakdown(ctx context.Context, arg db.StatsBreakdownParams) ([]db.StatsBreakdownRow, error)
 	StatsQualifyingDays(ctx context.Context, arg db.StatsQualifyingDaysParams) ([]string, error)
+	StatsQualifyingDaysBetween(ctx context.Context, arg db.StatsQualifyingDaysBetweenParams) ([]string, error)
 }
 
 // Service computes aggregates for one user at a time.
 type Service struct {
-	q   Querier
-	now func() time.Time
+	q       Querier
+	now     func() time.Time
+	streaks *streakCache
 }
 
-// NewService returns a Service reading from q.
+// NewService returns a Service reading from q. Wire it into ingest's
+// Publisher (see live.Fanout) so streaks pick up new minutes at once.
 func NewService(q Querier) *Service {
-	return &Service{q: q, now: time.Now}
+	return &Service{q: q, now: time.Now, streaks: newStreakCache()}
+}
+
+// MinutesChanged records that userID's minutes in [from, to) changed, so the
+// next streak read re-queries those days. It does no I/O.
+func (s *Service) MinutesChanged(userID uuid.UUID, from, to time.Time) {
+	s.streaks.invalidate(userID, from.UTC(), to.UTC())
 }
 
 // Filter narrows a summary. A nil Project means all projects.
@@ -187,22 +196,58 @@ func SortItems(items []Item) {
 }
 
 // Streak returns the user's current and longest streak as of today in tz.
+// The user's qualifying days are cached; only days whose minutes changed
+// since the last call are queried again.
 func (s *Service) Streak(ctx context.Context, userID uuid.UUID, tz *time.Location) (Streak, error) {
-	raw, err := s.q.StatsQualifyingDays(ctx, db.StatsQualifyingDaysParams{
-		Tz: tz.String(), UserID: userID, MinSeconds: StreakMinSeconds,
-	})
-	if err != nil {
-		return Streak{}, fmt.Errorf("querying qualifying days: %w", err)
+	e := s.streaks.entry(userID)
+	e.refresh.Lock()
+	defer e.refresh.Unlock()
+	now := s.now()
+	switch plan := s.streaks.plan(e, tz.String(), now); {
+	case plan.full:
+		raw, err := s.q.StatsQualifyingDays(ctx, db.StatsQualifyingDaysParams{
+			Tz: tz.String(), UserID: userID, MinSeconds: StreakMinSeconds,
+		})
+		if err != nil {
+			return Streak{}, fmt.Errorf("querying qualifying days: %w", err)
+		}
+		days, err := parseDates(raw)
+		if err != nil {
+			return Streak{}, err
+		}
+		s.streaks.storeFull(e, tz.String(), days, now)
+	case plan.partial:
+		// Re-query the whole local days the changed instants fall on, so each
+		// day's sum is complete.
+		first, last := DateOf(plan.rng.From, tz), DateOf(plan.rng.To.Add(-time.Nanosecond), tz)
+		raw, err := s.q.StatsQualifyingDaysBetween(ctx, db.StatsQualifyingDaysBetweenParams{
+			Tz: tz.String(), UserID: userID, MinSeconds: StreakMinSeconds,
+			FromTime: first.Start(tz).UTC(), ToTime: last.AddDays(1).Start(tz).UTC(),
+		})
+		if err == nil {
+			var days []Date
+			if days, err = parseDates(raw); err == nil {
+				s.streaks.storeRange(e, first, last, days)
+			}
+		}
+		if err != nil {
+			s.streaks.markDirty(e, plan.rng)
+			return Streak{}, fmt.Errorf("querying qualifying days: %w", err)
+		}
 	}
+	return computeStreak(s.streaks.snapshot(e), DateOf(now, tz)), nil
+}
+
+func parseDates(raw []string) ([]Date, error) {
 	days := make([]Date, 0, len(raw))
 	for _, r := range raw {
 		d, err := ParseDate(r)
 		if err != nil {
-			return Streak{}, fmt.Errorf("reading qualifying day: %w", err)
+			return nil, fmt.Errorf("reading qualifying day: %w", err)
 		}
 		days = append(days, d)
 	}
-	return computeStreak(days, DateOf(s.now(), tz)), nil
+	return days, nil
 }
 
 // Today returns today's summary in the user's time zone and their streak.

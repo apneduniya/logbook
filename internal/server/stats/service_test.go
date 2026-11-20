@@ -11,7 +11,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/apneduniya/logbook/internal/server/stats/statstest"
+	"github.com/apneduniya/logbook/internal/server/httpapi/httpapitest"
+	"github.com/apneduniya/logbook/internal/server/store/seedtest"
 	"github.com/apneduniya/logbook/internal/server/store/storetest"
 )
 
@@ -31,17 +32,17 @@ func loc(t *testing.T, name string) *time.Location {
 func TestSummaryAggregates(t *testing.T) {
 	st := storetest.New(t)
 	ctx := context.Background()
-	a := statstest.User(t, st, "alice", "UTC", true)
-	b := statstest.User(t, st, "bob", "UTC", true)
+	a := seedtest.User(t, st, "alice", "UTC", true)
+	b := seedtest.User(t, st, "bob", "UTC", true)
 
-	statstest.Span(t, st, a, utc(2026, 11, 10, 9, 0), 30, statstest.Minute{Project: "logbook", Language: "Go"})
-	statstest.Span(t, st, a, utc(2026, 11, 10, 10, 0), 10, statstest.Minute{Project: "site", Language: "Svelte", Editor: "zed"})
-	statstest.Span(t, st, a, utc(2026, 11, 11, 9, 0), 5, statstest.Minute{Project: "logbook", Label: "agent"})
-	statstest.Span(t, st, a, utc(2026, 11, 11, 9, 5), 2, statstest.Minute{Project: "logbook", Label: "idle"})
-	statstest.Minutes(t, st, a, statstest.Minute{At: utc(2026, 11, 12, 0, 0), Project: "logbook", Category: "debugging", Seconds: 42})
+	seedtest.Span(t, st, a, utc(2026, 11, 10, 9, 0), 30, seedtest.Minute{Project: "logbook", Language: "Go"})
+	seedtest.Span(t, st, a, utc(2026, 11, 10, 10, 0), 10, seedtest.Minute{Project: "site", Language: "Svelte", Editor: "zed"})
+	seedtest.Span(t, st, a, utc(2026, 11, 11, 9, 0), 5, seedtest.Minute{Project: "logbook", Label: "agent"})
+	seedtest.Span(t, st, a, utc(2026, 11, 11, 9, 5), 2, seedtest.Minute{Project: "logbook", Label: "idle"})
+	seedtest.Minutes(t, st, a, seedtest.Minute{At: utc(2026, 11, 12, 0, 0), Project: "logbook", Category: "debugging", Seconds: 42})
 	// Outside the range and another user's data must not count.
-	statstest.Span(t, st, a, utc(2026, 11, 13, 0, 0), 10, statstest.Minute{})
-	statstest.Span(t, st, b, utc(2026, 11, 10, 9, 0), 60, statstest.Minute{Project: "logbook"})
+	seedtest.Span(t, st, a, utc(2026, 11, 13, 0, 0), 10, seedtest.Minute{})
+	seedtest.Span(t, st, b, utc(2026, 11, 10, 9, 0), 60, seedtest.Minute{Project: "logbook"})
 
 	svc := NewService(st)
 	sum, err := svc.Summary(ctx, a, utc(2026, 11, 10, 0, 0), utc(2026, 11, 13, 0, 0), time.UTC, Filter{})
@@ -102,18 +103,18 @@ func equalItems(a, b []Item) bool {
 func TestSummaryTimezones(t *testing.T) {
 	st := storetest.New(t)
 	ctx := context.Background()
-	u := statstest.User(t, st, "tz", "UTC", true)
+	u := seedtest.User(t, st, "tz", "UTC", true)
 	ny := loc(t, "America/New_York")
 	kol := loc(t, "Asia/Kolkata")
 
 	// 2026-11-01 is the US fall-back day: 01:30 local happens twice.
-	statstest.Span(t, st, u, utc(2026, 11, 1, 5, 30), 1, statstest.Minute{})   // 01:30 EDT
-	statstest.Span(t, st, u, utc(2026, 11, 1, 6, 30), 1, statstest.Minute{})   // 01:30 EST
-	statstest.Span(t, st, u, utc(2026, 11, 2, 4, 59), 1, statstest.Minute{})   // 23:59 EST on Nov 1
-	statstest.Span(t, st, u, utc(2026, 11, 2, 5, 0), 1, statstest.Minute{})    // 00:00 EST on Nov 2
-	statstest.Span(t, st, u, utc(2026, 3, 8, 6, 59), 1, statstest.Minute{})    // 01:59 EST, spring-forward day
-	statstest.Span(t, st, u, utc(2026, 3, 8, 7, 0), 1, statstest.Minute{})     // 03:00 EDT, same day
-	statstest.Span(t, st, u, utc(2026, 11, 20, 18, 29), 2, statstest.Minute{}) // 23:59 and 00:00 IST
+	seedtest.Span(t, st, u, utc(2026, 11, 1, 5, 30), 1, seedtest.Minute{})   // 01:30 EDT
+	seedtest.Span(t, st, u, utc(2026, 11, 1, 6, 30), 1, seedtest.Minute{})   // 01:30 EST
+	seedtest.Span(t, st, u, utc(2026, 11, 2, 4, 59), 1, seedtest.Minute{})   // 23:59 EST on Nov 1
+	seedtest.Span(t, st, u, utc(2026, 11, 2, 5, 0), 1, seedtest.Minute{})    // 00:00 EST on Nov 2
+	seedtest.Span(t, st, u, utc(2026, 3, 8, 6, 59), 1, seedtest.Minute{})    // 01:59 EST, spring-forward day
+	seedtest.Span(t, st, u, utc(2026, 3, 8, 7, 0), 1, seedtest.Minute{})     // 03:00 EDT, same day
+	seedtest.Span(t, st, u, utc(2026, 11, 20, 18, 29), 2, seedtest.Minute{}) // 23:59 and 00:00 IST
 
 	tests := []struct {
 		name       string
@@ -177,18 +178,18 @@ func TestSummaryRangeValidation(t *testing.T) {
 func TestStreakFromMinutes(t *testing.T) {
 	st := storetest.New(t)
 	ctx := context.Background()
-	u := statstest.User(t, st, "streaky", "Asia/Kolkata", true)
+	u := seedtest.User(t, st, "streaky", "Asia/Kolkata", true)
 	kol := loc(t, "Asia/Kolkata")
 	day := func(s string, h int) time.Time { return mustDate(t, s).Start(kol).Add(time.Duration(h) * time.Hour) }
 
-	statstest.Span(t, st, u, day("2026-11-10", 10), 15, statstest.Minute{})               // qualifies
-	statstest.Span(t, st, u, day("2026-11-11", 10), 15, statstest.Minute{})               // qualifies
-	statstest.Span(t, st, u, day("2026-11-12", 10), 15, statstest.Minute{})               // qualifies
-	statstest.Span(t, st, u, day("2026-11-18", 10), 14, statstest.Minute{})               // 14 min: no
-	statstest.Span(t, st, u, day("2026-11-18", 11), 30, statstest.Minute{Label: "agent"}) // agent time doesn't count
-	statstest.Span(t, st, u, day("2026-11-19", 23), 8, statstest.Minute{Project: "a"})    // split across
-	statstest.Span(t, st, u, day("2026-11-19", 23).Add(8*time.Minute), 7, statstest.Minute{Project: "b"})
-	statstest.Span(t, st, u, day("2026-11-20", 0), 20, statstest.Minute{}) // today, after IST midnight
+	seedtest.Span(t, st, u, day("2026-11-10", 10), 15, seedtest.Minute{})               // qualifies
+	seedtest.Span(t, st, u, day("2026-11-11", 10), 15, seedtest.Minute{})               // qualifies
+	seedtest.Span(t, st, u, day("2026-11-12", 10), 15, seedtest.Minute{})               // qualifies
+	seedtest.Span(t, st, u, day("2026-11-18", 10), 14, seedtest.Minute{})               // 14 min: no
+	seedtest.Span(t, st, u, day("2026-11-18", 11), 30, seedtest.Minute{Label: "agent"}) // agent time doesn't count
+	seedtest.Span(t, st, u, day("2026-11-19", 23), 8, seedtest.Minute{Project: "a"})    // split across
+	seedtest.Span(t, st, u, day("2026-11-19", 23).Add(8*time.Minute), 7, seedtest.Minute{Project: "b"})
+	seedtest.Span(t, st, u, day("2026-11-20", 0), 20, seedtest.Minute{}) // today, after IST midnight
 
 	svc := NewService(st)
 	svc.now = func() time.Time { return day("2026-11-20", 12) }
@@ -211,14 +212,14 @@ func TestStreakFromMinutes(t *testing.T) {
 
 func TestHandlerSummary(t *testing.T) {
 	st := storetest.New(t)
-	a := statstest.User(t, st, "alice", "UTC", true)
-	b := statstest.User(t, st, "bob", "UTC", true)
-	statstest.Span(t, st, a, utc(2026, 11, 10, 9, 0), 30, statstest.Minute{Project: "secret"})
+	a := seedtest.User(t, st, "alice", "UTC", true)
+	b := seedtest.User(t, st, "bob", "UTC", true)
+	seedtest.Span(t, st, a, utc(2026, 11, 10, 9, 0), 30, seedtest.Minute{Project: "secret"})
 
 	svc := NewService(st)
 	svc.now = func() time.Time { return utc(2026, 11, 12, 12, 0) }
 	mux := http.NewServeMux()
-	NewHandler(svc, statstest.StubSession).Register(mux)
+	NewHandler(svc, httpapitest.StubSession).Register(mux)
 
 	tests := []struct {
 		name       string
@@ -243,7 +244,7 @@ func TestHandlerSummary(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			rec := httptest.NewRecorder()
-			mux.ServeHTTP(rec, statstest.Request(t, http.MethodGet, tt.target, tt.user, ""))
+			mux.ServeHTTP(rec, httpapitest.Request(t, http.MethodGet, tt.target, tt.user, ""))
 			if rec.Code != tt.wantStatus {
 				t.Fatalf("status = %d, want %d: %s", rec.Code, tt.wantStatus, rec.Body)
 			}
@@ -263,15 +264,15 @@ func TestHandlerSummary(t *testing.T) {
 
 func TestHandlerTodayIsolation(t *testing.T) {
 	st := storetest.New(t)
-	a := statstest.User(t, st, "alice", "UTC", true)
-	b := statstest.User(t, st, "bob", "UTC", true)
+	a := seedtest.User(t, st, "alice", "UTC", true)
+	b := seedtest.User(t, st, "bob", "UTC", true)
 	now := utc(2026, 11, 12, 12, 0)
-	statstest.Span(t, st, a, utc(2026, 11, 12, 9, 0), 20, statstest.Minute{})
+	seedtest.Span(t, st, a, utc(2026, 11, 12, 9, 0), 20, seedtest.Minute{})
 
 	svc := NewService(st)
 	svc.now = func() time.Time { return now }
 	mux := http.NewServeMux()
-	NewHandler(svc, statstest.StubSession).Register(mux)
+	NewHandler(svc, httpapitest.StubSession).Register(mux)
 
 	for _, tc := range []struct {
 		user       uuid.UUID
@@ -279,7 +280,7 @@ func TestHandlerTodayIsolation(t *testing.T) {
 		wantStreak int
 	}{{a, 1200, 1}, {b, 0, 0}} {
 		rec := httptest.NewRecorder()
-		mux.ServeHTTP(rec, statstest.Request(t, http.MethodGet, "/api/v1/me/today", tc.user, ""))
+		mux.ServeHTTP(rec, httpapitest.Request(t, http.MethodGet, "/api/v1/me/today", tc.user, ""))
 		if rec.Code != 200 {
 			t.Fatalf("status = %d: %s", rec.Code, rec.Body)
 		}
