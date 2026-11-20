@@ -14,6 +14,7 @@ import (
 
 	"github.com/apneduniya/logbook/internal/agent/config"
 	"github.com/apneduniya/logbook/internal/agent/localdb"
+	"github.com/apneduniya/logbook/internal/agent/spoolfile"
 	"github.com/apneduniya/logbook/pkg/wire"
 )
 
@@ -35,11 +36,7 @@ func appendSpool(t *testing.T, path string, i int) {
 		Time: time.Now().UTC(), Harness: wire.HarnessClaudeCode, Kind: wire.AIToolEnd, SessionID: fmt.Sprint(i),
 	}}
 	b, _ := json.Marshal(ev)
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		t.Error(err)
-		return
-	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	f, err := spoolfile.OpenAppend(path) // how hook commands append
 	if err != nil {
 		t.Error(err)
 		return

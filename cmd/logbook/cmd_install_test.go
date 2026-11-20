@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -63,6 +64,9 @@ func TestPathHint(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			if tt.goos != "windows" && runtime.GOOS == "windows" {
+				t.Skip("POSIX paths aren't absolute on Windows, and this branch never runs there")
+			}
 			got := pathHint(tt.goos, tt.bin, tt.path)
 			if (tt.want == "" && got != "") || !strings.Contains(got, tt.want) {
 				t.Fatalf("pathHint() = %q, want it to contain %q", got, tt.want)

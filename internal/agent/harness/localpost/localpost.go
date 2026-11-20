@@ -10,11 +10,10 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/apneduniya/logbook/internal/agent/spoolfile"
 	"github.com/apneduniya/logbook/pkg/wire"
 )
 
@@ -145,12 +144,11 @@ func (s *Sender) spool(events []wire.LocalEvent) error {
 			return fmt.Errorf("encoding event: %w", err)
 		}
 	}
-	if err := os.MkdirAll(filepath.Dir(s.SpoolPath), 0o700); err != nil { //nolint:gosec // inside the agent's data dir
-		return fmt.Errorf("creating spool dir: %w", err)
-	}
-	f, err := os.OpenFile(s.SpoolPath, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600) //nolint:gosec // path comes from config.SpoolPath
+	// spoolfile lets the daemon rename the spool while this hook has it
+	// open, which Windows otherwise forbids.
+	f, err := spoolfile.OpenAppend(s.SpoolPath)
 	if err != nil {
-		return fmt.Errorf("opening spool: %w", err)
+		return err
 	}
 	st, err := f.Stat()
 	if err != nil {

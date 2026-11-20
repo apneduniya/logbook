@@ -10,9 +10,10 @@ import (
 	"testing"
 
 	"github.com/apneduniya/logbook/internal/agent/harness/cmdline"
+	"github.com/apneduniya/logbook/internal/agent/harness/harnesstest"
 )
 
-const bin = "/opt/logbook/bin/logbook"
+const bin = harnesstest.Bin
 
 // testSpec is a minimal Flat-layout harness writing to dir/conf/hooks.json.
 func testSpec(dir string) Spec {
@@ -116,7 +117,7 @@ func TestBackupKeepsFirstOriginal(t *testing.T) {
 	if err := in.Install(bin); err != nil {
 		t.Fatal(err)
 	}
-	if err := in.Install("/elsewhere/logbook"); err != nil {
+	if err := in.Install(harnesstest.OtherBin); err != nil {
 		t.Fatal(err)
 	}
 	b, err := os.ReadFile(filepath.Join(dir, "backups", "codex.hooks.json.orig")) //nolint:gosec // test path

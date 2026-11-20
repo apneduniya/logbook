@@ -1,6 +1,7 @@
 package claudecode
 
 import (
+	"path/filepath"
 	"testing"
 
 	"github.com/apneduniya/logbook/internal/agent/harness/aievent"
@@ -106,14 +107,15 @@ func TestInstallRelativeBin(t *testing.T) {
 
 func TestSettingsPathHonoursConfigDir(t *testing.T) {
 	env, _ := harnesstest.Env(t)
+	dir := filepath.Join(t.TempDir(), "claude")
 	env.Getenv = func(k string) string {
 		if k == "CLAUDE_CONFIG_DIR" {
-			return "/custom/claude"
+			return dir
 		}
 		return ""
 	}
 	got, err := SettingsPath(env)
-	if err != nil || got != "/custom/claude/settings.json" {
+	if err != nil || got != filepath.Join(dir, "settings.json") {
 		t.Fatalf("SettingsPath = %q, %v", got, err)
 	}
 }

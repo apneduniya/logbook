@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -16,11 +17,18 @@ import (
 	"github.com/apneduniya/logbook/pkg/wire"
 )
 
-// Bin and OtherBin are the absolute binary paths the install tests use.
-const (
-	Bin      = "/opt/logbook/bin/logbook"
-	OtherBin = "/home/teen/.local/bin/logbook"
-)
+// GoldenBin is how golden files show Bin, so one golden file serves every
+// OS. Bin and OtherBin (bin_*.go) are the absolute binary paths the install
+// tests use; they differ per OS because a POSIX path isn't absolute on
+// Windows.
+const GoldenBin = "/opt/logbook/bin/logbook"
+
+// Encoded returns s as it appears inside a JSON or JavaScript string
+// literal; on Windows the backslashes in a path are doubled.
+func Encoded(s string) string {
+	b, _ := json.Marshal(s) // marshalling a string can't fail
+	return string(b[1 : len(b)-1])
+}
 
 // Sentinel is planted in every fixture field Logbook must never keep
 // (prompts, tool input and output, transcripts, messages).
@@ -35,10 +43,12 @@ type Installer interface {
 }
 
 // Env returns a test Env rooted at a fresh temp home, and its backup dir.
+// It reports the host OS, so installers write the commands this OS's
+// shells need.
 func Env(t *testing.T) (hostenv.Env, string) {
 	t.Helper()
 	backups := filepath.Join(t.TempDir(), "backups")
-	return hostenv.ForTest(t.TempDir(), "linux", backups), backups
+	return hostenv.ForTest(t.TempDir(), runtime.GOOS, backups), backups
 }
 
 // Golden compares got with testdata/<name>.golden, rewriting the file when
@@ -46,6 +56,7 @@ func Env(t *testing.T) (hostenv.Env, string) {
 func Golden(t *testing.T, name string, got []byte) {
 	t.Helper()
 	path := filepath.Join("testdata", name+".golden")
+	got = bytes.ReplaceAll(got, []byte(Encoded(Bin)), []byte(GoldenBin))
 	if os.Getenv("LOGBOOK_UPDATE_GOLDEN") == "1" {
 		if err := os.MkdirAll("testdata", 0o750); err != nil {
 			t.Fatal(err)
@@ -140,7 +151,8 @@ func JSONInstallRoundTrip(t *testing.T, newInstaller func(hostenv.Env) Installer
 				t.Fatalf("Install(OtherBin): %v", err)
 			}
 			moved := ReadFile(t, path)
-			if bytes.Contains(moved, []byte(Bin)) || bytes.Count(moved, []byte(OtherBin)) != bytes.Count(first, []byte(Bin)) {
+			bin, other := []byte(Encoded(Bin)), []byte(Encoded(OtherBin))
+			if bytes.Count(first, bin) == 0 || bytes.Contains(moved, bin) || bytes.Count(moved, other) != bytes.Count(first, bin) {
 				t.Fatalf("install with a new binary path didn't replace entries one for one:\n%s", moved)
 			}
 
