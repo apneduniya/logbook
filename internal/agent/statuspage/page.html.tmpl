@@ -62,6 +62,8 @@ code { font-size: .9em; }
 {{if .Minutes.Refused}}<tr><th>Minutes on hold</th><td class="bad">{{.Minutes.Refused}}</td></tr>{{end}}
 {{if .Minutes.Rejected}}<tr><th>Minutes rejected by server</th><td>{{.Minutes.Rejected}}</td></tr>{{end}}
 {{if .Minutes.Clock}}<tr><th>Clock</th><td class="bad">{{.Minutes.Clock}}</td></tr>{{end}}
+{{if .Minutes.Settling}}<tr><th>Settling</th><td>{{.Minutes.Settling}}</td></tr>{{end}}
+{{if .Minutes.LateIgnored}}<tr><th>Late events ignored</th><td>{{.Minutes.LateIgnored}} <span class="muted">latest {{ago .Minutes.LateLatest}}</span></td></tr>{{end}}
 <tr><th>Evidence chain</th><td>{{if .Evidence.LastDay}}signed through {{.Evidence.LastDay}} <span class="muted"><code>{{printf "%.12s" .Evidence.ChainHash}}</code></span>{{else}}<span class="muted">no day sealed yet</span>{{end}}</td></tr>
 {{if .Evidence.State}}<tr><th>Evidence stopped</th><td class="bad">{{.Evidence.Error}}</td></tr>{{end}}
 {{if .Evidence.LocalError}}<tr><th>Sealing failed (retrying)</th><td class="bad">{{.Evidence.LocalError}}</td></tr>{{end}}

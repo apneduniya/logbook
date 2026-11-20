@@ -15,14 +15,29 @@ import (
 	"github.com/apneduniya/logbook/pkg/wire"
 )
 
-// Window arithmetic (ADR 0010).
+// Window arithmetic (ADR 0010, ADR 0016).
 const (
 	// Window is how far back each run recomputes minutes.
 	Window = 60 * time.Minute
-	// History is the extra context before the window the engine reads.
-	History = 30 * time.Minute
-	// FinalAfter is the age at which a minute becomes final.
+	// History is the extra context before the window the engine reads: the
+	// engine's whole look-back, so every minute in the window, also one
+	// finalized at the window's start after a restart, is computed from
+	// all the events its rules read.
+	History = struggle.ContextBefore
+	// FinalAfter is the age at which the server takes no more rewrites of
+	// a minute it has seen.
 	FinalAfter = 30 * time.Minute
+	// FinalLead is when a minute becomes final on the agent: the first
+	// settled run at or after minute + FinalLead computes it for the last
+	// time, with that run's arrival cutoff, while the server still takes
+	// the rewrite. It is past struggle.Lookahead, so the minute's rules have
+	// all the events after it they read.
+	FinalLead = FinalAfter - time.Minute
+	// DefaultSettle is how long after a start (or a gap in runs, such as a
+	// sleep) the agent waits before making minutes final, so events that
+	// arrive late because it was down (the hook spool, wakatime-cli's
+	// offline queue) still count.
+	DefaultSettle = 15 * time.Minute
 	// DayGrace is how long after a UTC day ends before it is sealed.
 	DayGrace = time.Hour
 )
@@ -51,21 +66,43 @@ func finalBefore(now time.Time) time.Time {
 	return now.UTC().Add(-FinalAfter).Truncate(time.Minute).Add(time.Minute)
 }
 
-// engineInput builds the engine's Input for one run from local events.
+// cutoff is a run's arrival cutoff: the end of its window. The run reads
+// the events stored by then; one stored later counts from the next run.
+// It is a whole minute, a few seconds before the run starts, so every row
+// stamped by then is committed when the run reads (rows are stamped while
+// their transaction holds the write lock).
+func (s span) cutoff() time.Time { return s.to }
+
+// engineInput builds the engine's Input for one run from local events: those
+// in [s.history, s.to) that arrived by the run's cutoff.
 func engineInput(s span, ev localdb.Events, active []struggle.ActiveTime, repos []struggle.Repo, tz *time.Location) struggle.Input {
-	hbs := make([]struggle.Heartbeat, len(ev.Heartbeats))
-	for i, h := range ev.Heartbeats {
-		hbs[i] = engineHeartbeat(h)
+	cutoff := s.cutoff()
+	var hbs []struggle.Heartbeat
+	for _, h := range arrivedBy(ev.Heartbeats, s, cutoff, heartbeatTime) {
+		hbs = append(hbs, engineHeartbeat(h))
 	}
 	return struggle.Input{
 		Window:     struggle.Window{From: s.from, To: s.to},
-		Activity:   ev.Activity,
+		Activity:   arrivedBy(ev.Activity, s, cutoff, activityTime),
 		Heartbeats: hbs,
-		AI:         ev.AI,
+		AI:         arrivedBy(ev.AI, s, cutoff, aiTime),
 		ActiveTime: active,
 		Repos:      repos,
 		TZ:         tz,
 	}
+}
+
+// arrivedBy returns the events of s that arrived by cutoff, with time in
+// [s.history, s.to).
+func arrivedBy[T any](evs []evidence.Received[T], s span, cutoff time.Time,
+	at func(evidence.Received[T]) time.Time) []T {
+	out := make([]T, 0, len(evs))
+	for _, e := range evs {
+		if t := at(e); !t.Before(s.history) && t.Before(s.to) && !e.Arrived.After(cutoff) {
+			out = append(out, e.Event)
+		}
+	}
+	return out
 }
 
 // engineHeartbeat is the part of a heartbeat the engine reads.

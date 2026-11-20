@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 
 	"golang.org/x/sync/errgroup"
@@ -146,7 +147,11 @@ func Run(ctx context.Context, o Options) error {
 		}),
 	}
 	repos := NewRepos(db, nil)
-	credit := newCrediting(o, db, client, set, repos)
+	// drained is closed once the startup spool drain has run, so crediting
+	// starts from the events hooks spooled while the agent was down and
+	// makes no minute final before (ADR 0016).
+	drained := make(chan struct{})
+	credit := newCrediting(o, db, client, set, repos, drained)
 	started := time.Now()
 	snapshot := func(ctx context.Context) (status.Snapshot, error) {
 		s, err := status.Collect(ctx, status.Input{
@@ -196,7 +201,14 @@ func Run(ctx context.Context, o Options) error {
 		g.Go(func() error { return w.Run(gctx) })
 	}
 	g.Go(func() error {
-		return every(gctx, spoolEvery, func(ctx context.Context) { drainSpool(ctx, log, spool) })
+		var once sync.Once
+		return every(gctx, spoolEvery, func(ctx context.Context) {
+			drainSpool(ctx, log, spool)
+			// After the first attempt, finished or not: a spool that can't
+			// be drained now is retried every minute and its events count
+			// as late ones.
+			once.Do(func() { close(drained) })
+		})
 	})
 	g.Go(func() error { return every(gctx, pruneEvery, func(ctx context.Context) { prune(ctx, log, db) }) })
 	g.Go(func() error {

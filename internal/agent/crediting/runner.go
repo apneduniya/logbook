@@ -31,6 +31,9 @@ const (
 	maxBatchesPerRun = 20
 	// maxDaysPerRun bounds how many evidence days one run seals.
 	maxDaysPerRun = 7
+	// drainWait bounds how long Run waits for the startup spool drain
+	// before its first run.
+	drainWait = 2 * time.Minute
 )
 
 // Store is the local storage the Runner needs. *localdb.DB satisfies it.
@@ -38,8 +41,12 @@ type Store interface {
 	EventsBetween(ctx context.Context, from, to time.Time, upto *localdb.HighWater) (localdb.Events, error)
 	EventsAfter(ctx context.Context, after, upto localdb.HighWater, from, to time.Time) (localdb.Events, error)
 	HighWater(ctx context.Context) (localdb.HighWater, error)
+	EventGeneration(ctx context.Context) (int64, error)
+	LateSince(ctx context.Context, after localdb.HighWater, cutoff, finalBefore time.Time) (localdb.LateResult, localdb.HighWater, error)
 	SaveMinutes(ctx context.Context, u localdb.MinuteUpdate) (localdb.SaveResult, error)
-	UnsentMinutes(ctx context.Context, finalBefore time.Time, limit int) ([]localdb.CreditedMinute, error)
+	FinalThrough(ctx context.Context) (time.Time, error)
+	CutoffsBetween(ctx context.Context, from, to time.Time) ([]localdb.CutoffRange, error)
+	UnsentMinutes(ctx context.Context, finalBefore time.Time, held localdb.Span, limit int) ([]localdb.CreditedMinute, error)
 	MarkMinutesSent(ctx context.Context, ms []localdb.CreditedMinute, finalBefore time.Time) error
 	RetireMinutesBefore(ctx context.Context, t time.Time) error
 	UnsentMinuteCount(ctx context.Context) (int64, error)
@@ -107,6 +114,15 @@ type Options struct {
 	TZ     *time.Location
 	Logger *slog.Logger
 	Now    func() time.Time
+	// Settle is how long after the Runner starts, or after a gap in its
+	// runs (a sleep), it waits before making minutes final (DefaultSettle).
+	// Negative means no wait (tests).
+	Settle time.Duration
+	// Drained is closed once the daemon's startup spool drain has finished.
+	// Run waits for it (at most drainWait) before its first run, and no
+	// minute becomes final before it is closed. nil means there is no
+	// spool to wait for.
+	Drained <-chan struct{}
 
 	Interval, MinBackoff, MaxBackoff, Reprobe time.Duration
 	// Batch is the minutes per upload (serverapi.MaxMinutes).
@@ -132,6 +148,14 @@ type Runner struct {
 	// clock from this run's latest minutes response.
 	clockBehind, clockChecked bool
 	server                    serverClock
+	// upSince is when this run of the agent began receiving events: the
+	// Runner's first run, or the first run after a gap. lastRun is the
+	// previous run's clock.
+	upSince, lastRun time.Time
+	// late is the high-water mark of rows already checked for lateness
+	// (lateKnown once read or set).
+	late      localdb.HighWater
+	lateKnown bool
 
 	mu    sync.Mutex
 	gate  gate
@@ -170,12 +194,30 @@ func New(o Options) *Runner {
 	if o.Jitter == nil {
 		o.Jitter = rand.Float64 //nolint:gosec // jitter needs no cryptographic randomness
 	}
+	if o.Settle == 0 {
+		o.Settle = DefaultSettle
+	}
 	return &Runner{opt: o, batch: o.Batch}
 }
 
 // Run runs the pipeline every Interval (a few seconds past each minute with
-// the default interval) until ctx is done. It always returns nil.
+// the default interval) until ctx is done. It always returns nil. The first
+// run waits for the startup spool drain (Options.Drained), at most
+// drainWait, so it starts from every event the hooks spooled while the
+// agent was down.
 func (r *Runner) Run(ctx context.Context) error {
+	if r.opt.Drained != nil {
+		wait := time.NewTimer(drainWait)
+		select {
+		case <-ctx.Done():
+			wait.Stop()
+			return nil
+		case <-r.opt.Drained:
+		case <-wait.C:
+			r.opt.Logger.WarnContext(ctx, "the hook spool is still draining; crediting starts without making minutes final")
+		}
+		wait.Stop()
+	}
 	var lastPrune time.Time
 	timer := time.NewTimer(r.untilNext())
 	defer timer.Stop()
@@ -238,22 +280,26 @@ func (r *Runner) RunOnce(ctx context.Context) {
 	if !r.checkClock(ctx, now, through) {
 		return
 	}
-	if err := r.compute(ctx, now, through); err != nil {
+	st := r.settle(ctx, now)
+	if err := r.compute(ctx, now, through, st); err != nil {
 		if ctx.Err() == nil {
 			r.opt.Logger.ErrorContext(ctx, "computing credited minutes", "err", err)
 		}
 		return
 	}
-	r.upload(ctx, now)
+	r.upload(ctx, now, st)
 	if n, err := r.opt.Store.UnsentMinuteCount(ctx); err == nil {
 		r.persist(ctx, localdb.KV{Key: keyWaiting, Value: strconv.FormatInt(n, 10)})
 	}
 }
 
-// compute runs the engine over the window and stores the result. Minutes
-// before through (the end of the last sealed day) are never stored: the
-// engine still reads the whole window, so the rest come out the same.
-func (r *Runner) compute(ctx context.Context, now, through time.Time) error {
+// compute runs the engine over the window, with the events that arrived by
+// the run's cutoff, and stores the result. When the agent has settled
+// (settleState), the minutes up to minute + FinalLead before the cutoff
+// become final in the same write. Minutes before through (the end of the
+// last sealed day) are never stored: the engine still reads the whole
+// window, so the rest come out the same.
+func (r *Runner) compute(ctx context.Context, now, through time.Time, st settleState) error {
 	s := spanAt(now)
 	if err := r.cache.refresh(ctx, r.opt.Store, s.history, s.to); err != nil {
 		return err
@@ -272,7 +318,7 @@ func (r *Runner) compute(ctx context.Context, now, through time.Time) error {
 	if err != nil {
 		return err
 	}
-	res := r.computeByMapping(s, ev, active, mapping)
+	res := computeSpan(r.opt.Compute, s, ev, active, mapping, r.opt.TZ)
 	keep := s
 	if keep.from.Before(through) {
 		keep.from = through
@@ -280,16 +326,38 @@ func (r *Runner) compute(ctx context.Context, now, through time.Time) error {
 	if !keep.to.After(keep.from) {
 		return nil
 	}
-	saved, err := r.opt.Store.SaveMinutes(ctx, localdb.MinuteUpdate{
-		From: keep.from, To: keep.to, OpenFrom: s.finalBefore, Minutes: minuteRows(keep, res), Superseded: superseded,
-	})
+	wasFinal, err := r.opt.Store.FinalThrough(ctx)
 	if err != nil {
 		return err
 	}
+	u := localdb.MinuteUpdate{
+		From: keep.from, To: keep.to, Cutoff: s.cutoff(), ServerFinalBefore: s.finalBefore,
+		Minutes: minuteRows(keep, res), Superseded: superseded, Lead: FinalLead,
+		Ceiling: finalThrough(s.cutoff()),
+	}
+	if st.settled {
+		u.FinalBefore = finalThrough(s.cutoff())
+	}
+	saved, err := r.opt.Store.SaveMinutes(ctx, u)
+	if err != nil {
+		return err
+	}
+	if saved.Rewound {
+		r.opt.Logger.WarnContext(ctx, "the system clock went back before minutes already final; computing them again",
+			"now", now.UTC().Format(time.RFC3339), "was_final_through", wasFinal.Format(time.RFC3339))
+		wasFinal = finalThrough(s.cutoff())
+	}
 	r.opt.Logger.DebugContext(ctx, "credited minutes computed", "inserted", saved.Inserted,
-		"updated", saved.Updated, "deleted", saved.Deleted)
+		"updated", saved.Updated, "deleted", saved.Deleted, "finalized", saved.Finalized)
 	r.persist(ctx, localdb.KV{Key: keyLastComputed, Value: formatTime(now)})
+	r.countLate(ctx, s.cutoff(), wasFinal)
 	return nil
+}
+
+// finalThrough is where a settled run with the given cutoff moves the final
+// watermark: every minute m with m + FinalLead <= cutoff is final.
+func finalThrough(cutoff time.Time) time.Time {
+	return cutoff.Add(-FinalLead).Add(time.Minute)
 }
 
 // repoMap records the active repos in the mapping journal and returns the
@@ -307,10 +375,12 @@ func (r *Runner) repoMap(ctx context.Context, now time.Time) ([]localdb.RepoMapp
 	return r.opt.Store.RepoMap(ctx)
 }
 
-// computeByMapping runs the engine once per run of minutes that share a repo
-// mapping (ReposAt) and joins the results: each minute comes from the run
-// computed with the mapping that stood when it became final, never with one
-// recorded after.
+// computeSpan runs the engine over span s with the events that arrived by
+// its cutoff, once per run of minutes that share a repo mapping (ReposAt),
+// and joins the results: each minute comes from the run computed with the
+// mapping that stood when it became final, never with one recorded after.
+// Its result depends only on its arguments, so a replay with the same
+// events, journal and cutoff gets the same minutes (ReplayMinutes).
 //
 // Only the mapping differs between those runs. Each one is over the whole
 // span, with the same events, active time and time zone, and with DataEnd at
@@ -319,12 +389,13 @@ func (r *Runner) repoMap(ctx context.Context, now time.Time) ([]localdb.RepoMapp
 // has ended; long_day and otel_mismatch total the window), so cutting the
 // window per group would change a group's minutes even when the mapping
 // moves no event to another project.
-func (r *Runner) computeByMapping(s span, ev localdb.Events, active []struggle.ActiveTime, mapping []localdb.RepoMapping) struggle.Result {
+func computeSpan(compute func(struggle.Input) struggle.Result, s span, ev localdb.Events,
+	active []struggle.ActiveTime, mapping []localdb.RepoMapping, tz *time.Location) struggle.Result {
 	var out struggle.Result
 	for _, g := range repoGroups(mapping, s.from, s.to) {
-		in := engineInput(s, ev, active, g.repos, r.opt.TZ)
+		in := engineInput(s, ev, active, g.repos, tz)
 		in.DataEnd = s.to
-		res := r.opt.Compute(in)
+		res := compute(in)
 		out.RulesVersion = res.RulesVersion
 		for _, m := range res.Minutes {
 			if at := m.Minute.UTC().Truncate(time.Minute); !at.Before(g.from) && at.Before(g.to) {
@@ -336,7 +407,7 @@ func (r *Runner) computeByMapping(s span, ev localdb.Events, active []struggle.A
 }
 
 // upload registers the device if needed, then sends minutes and evidence.
-func (r *Runner) upload(ctx context.Context, now time.Time) {
+func (r *Runner) upload(ctx context.Context, now time.Time, st settleState) {
 	t := r.opt.Target()
 	if !r.ready(ctx, t, now) {
 		return
@@ -370,7 +441,7 @@ func (r *Runner) upload(ctx context.Context, now time.Time) {
 	if now.Before(r.holdMinutes) {
 		r.opt.Logger.DebugContext(ctx, "minute uploads on hold after a refused batch", "until", r.holdMinutes)
 	} else {
-		drained, err := r.uploadMinutes(ctx, t.Target, dev, now)
+		drained, err := r.uploadMinutes(ctx, t.Target, dev, now, st)
 		var refused *refusedError
 		switch {
 		case errors.As(err, &refused):

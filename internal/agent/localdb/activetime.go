@@ -60,9 +60,10 @@ func (d *DB) InsertActiveTime(ctx context.Context, pts []ActiveTimePoint) error 
 		}
 	}
 	return d.inTx(ctx, func(tx *sql.Tx) error {
+		arrived := d.now().UnixMilli() // see InsertEvents
 		for _, p := range pts {
 			if _, err := tx.ExecContext(ctx, qActiveInsert, p.From.UnixMilli(), p.To.UnixMilli(), p.SessionID,
-				p.Type, p.Secs, p.Repository, seriesMillis(p.SeriesStart), p.Cumulative); err != nil {
+				p.Type, p.Secs, p.Repository, seriesMillis(p.SeriesStart), p.Cumulative, arrived); err != nil {
 				return fmt.Errorf("storing active time: %w", err)
 			}
 		}

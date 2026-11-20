@@ -27,23 +27,29 @@ func fixtureDay() DayEvents {
 	}
 	return DayEvents{
 		Day: "2026-11-19",
-		Activity: []wire.ActivitySample{
-			{Time: at(9, 0, 0), IdleSeconds: 1.5, FocusApp: "Code", FocusKind: "editor"},
-			{Time: at(9, 0, 5).In(ist), IdleSeconds: 0, FocusApp: "WindowsTerminal.exe", FocusKind: "terminal"},
-			{Time: at(9, 0, 5), IdleSeconds: 0, FocusApp: "Code", FocusKind: "editor"},
+		Activity: []Received[wire.ActivitySample]{
+			{wire.ActivitySample{Time: at(9, 0, 0), IdleSeconds: 1.5, FocusApp: "Code", FocusKind: "editor"}, at(9, 0, 0)},
+			{wire.ActivitySample{Time: at(9, 0, 5).In(ist), IdleSeconds: 0, FocusApp: "WindowsTerminal.exe", FocusKind: "terminal"}, at(9, 0, 5)},
+			{wire.ActivitySample{Time: at(9, 0, 5), IdleSeconds: 0, FocusApp: "Code", FocusKind: "editor"}, at(9, 0, 5).In(ist)},
+			// The same sample stored twice, the second time 40 minutes late:
+			// only the arrival tells the two lines apart.
+			{wire.ActivitySample{Time: at(9, 0, 10), IdleSeconds: 2, FocusApp: "Code", FocusKind: "editor"}, at(9, 0, 10)},
+			{wire.ActivitySample{Time: at(9, 0, 10), IdleSeconds: 2, FocusApp: "Code", FocusKind: "editor"}, at(9, 40, 10)},
 		},
-		Heartbeats: []wire.Heartbeat{
-			{Entity: "/home/me/app/main.go", Type: "file", Category: "coding", Time: float64(at(9, 0, 3).Unix()) + 0.25,
-				Project: "app", Language: "Go", Lineno: ptr(12), Cursorpos: ptr(4), IsWrite: true},
-			{Entity: "/home/me/app/<b>&.go", Time: float64(at(9, 0, 5).Unix()), Project: "app", AILineChanges: ptr(3)},
+		Heartbeats: []Received[wire.Heartbeat]{
+			{wire.Heartbeat{Entity: "/home/me/app/main.go", Type: "file", Category: "coding", Time: float64(at(9, 0, 3).Unix()) + 0.25,
+				Project: "app", Language: "Go", Lineno: ptr(12), Cursorpos: ptr(4), IsWrite: true}, at(9, 0, 3).Add(300 * time.Millisecond)},
+			// From wakatime-cli's offline queue, an hour late.
+			{wire.Heartbeat{Entity: "/home/me/app/<b>&.go", Time: float64(at(9, 0, 5).Unix()), Project: "app", AILineChanges: ptr(3)}, at(10, 0, 7)},
 		},
-		AI: []wire.AIEvent{
-			{Time: at(9, 0, 5), Harness: wire.HarnessClaudeCode, Kind: wire.AIPromptSubmit, SessionID: "s1",
-				Project: "app", Cwd: "/home/me/app", PromptChars: 42, PromptHash: "ab12"},
-			{Time: at(9, 1, 0).In(ist), Harness: wire.HarnessClaudeCode, Kind: wire.AITurnEnd, SessionID: "s1"},
+		AI: []Received[wire.AIEvent]{
+			{wire.AIEvent{Time: at(9, 0, 5), Harness: wire.HarnessClaudeCode, Kind: wire.AIPromptSubmit, SessionID: "s1",
+				Project: "app", Cwd: "/home/me/app", PromptChars: 42, PromptHash: "ab12"}, at(9, 0, 5)},
+			// Drained from the hook spool after a restart.
+			{wire.AIEvent{Time: at(9, 1, 0).In(ist), Harness: wire.HarnessClaudeCode, Kind: wire.AITurnEnd, SessionID: "s1"}, at(9, 48, 2)},
 		},
-		Git: []wire.GitEvent{
-			{Time: at(9, 30, 0), Project: "app", Kind: "commit", CommitHash: "0123abcd", FilesChanged: 2, Insertions: 10, Deletions: 1},
+		Git: []Received[wire.GitEvent]{
+			{wire.GitEvent{Time: at(9, 30, 0), Project: "app", Kind: "commit", CommitHash: "0123abcd", FilesChanged: 2, Insertions: 10, Deletions: 1}, at(9, 30, 1)},
 		},
 		ActiveTime: []ActiveTime{
 			{From: at(9, 0, 0), To: at(9, 1, 0), SessionID: "s1", UserSecs: 30, CLISecs: 12.5,
@@ -80,7 +86,7 @@ func TestContentHashGolden(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const want = "c627b5619c17ff1164bdb6bfcae1f6a51f9286b6eb8933615d0066bc19b5e648"
+	const want = "ddb8e86f4fe15bb5abf389ef579151baeb83a50d6e9654593ca2080681913c7d"
 	if got != want {
 		t.Fatalf("ContentHash = %s, want %s", got, want)
 	}
@@ -113,13 +119,19 @@ func TestContentHashSensitive(t *testing.T) {
 		name   string
 		mutate func(*DayEvents)
 	}{
-		{"idle seconds", func(d *DayEvents) { d.Activity[0].IdleSeconds = 1.6 }},
-		{"heartbeat write", func(d *DayEvents) { d.Heartbeats[0].IsWrite = false }},
-		{"prompt hash", func(d *DayEvents) { d.AI[0].PromptHash = "ab13" }},
-		{"git deletions", func(d *DayEvents) { d.Git[0].Deletions = 2 }},
+		{"idle seconds", func(d *DayEvents) { d.Activity[0].Event.IdleSeconds = 1.6 }},
+		{"heartbeat write", func(d *DayEvents) { d.Heartbeats[0].Event.IsWrite = false }},
+		{"prompt hash", func(d *DayEvents) { d.AI[0].Event.PromptHash = "ab13" }},
+		{"git deletions", func(d *DayEvents) { d.Git[0].Event.Deletions = 2 }},
 		{"active secs", func(d *DayEvents) { d.ActiveTime[0].UserSecs = 31 }},
 		{"dropped event", func(d *DayEvents) { d.Activity = d.Activity[1:] }},
 		{"duplicated event", func(d *DayEvents) { d.Git = append(d.Git, d.Git[0]) }},
+		// A replay leaves out events that arrived after a minute's cutoff,
+		// so moving an arrival must change the hash.
+		{"heartbeat arrival", func(d *DayEvents) { d.Heartbeats[1].Arrived = d.Heartbeats[1].Arrived.Add(-time.Hour) }},
+		{"activity arrival", func(d *DayEvents) { d.Activity[0].Arrived = d.Activity[0].Arrived.Add(time.Millisecond) }},
+		{"ai arrival", func(d *DayEvents) { d.AI[1].Arrived = d.AI[1].Arrived.Add(time.Second) }},
+		{"git arrival", func(d *DayEvents) { d.Git[0].Arrived = d.Git[0].Arrived.Add(time.Minute) }},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -143,14 +155,16 @@ func TestEncodeRejectsEventsOutsideDay(t *testing.T) {
 		mutate func(*DayEvents)
 		want   error
 	}{
-		{"activity at next midnight", func(d *DayEvents) { d.Activity[0].Time = end }, ErrOutsideDay},
-		{"ai before day", func(d *DayEvents) { d.AI[0].Time = end.AddDate(0, 0, -1).Add(-time.Nanosecond) }, ErrOutsideDay},
-		{"heartbeat next day", func(d *DayEvents) { d.Heartbeats[0].Time = float64(end.Unix()) + 1 }, ErrOutsideDay},
+		{"activity at next midnight", func(d *DayEvents) { d.Activity[0].Event.Time = end }, ErrOutsideDay},
+		{"ai before day", func(d *DayEvents) { d.AI[0].Event.Time = end.AddDate(0, 0, -1).Add(-time.Nanosecond) }, ErrOutsideDay},
+		{"heartbeat next day", func(d *DayEvents) { d.Heartbeats[0].Event.Time = float64(end.Unix()) + 1 }, ErrOutsideDay},
 		{"active time ending next day", func(d *DayEvents) { d.ActiveTime[0].To = end }, ErrOutsideDay},
 		{"local time on the next UTC day", func(d *DayEvents) {
-			d.Git[0].Time = time.Date(2026, 11, 20, 1, 0, 0, 0, time.FixedZone("CET", 3600)) // 00:00 UTC
+			d.Git[0].Event.Time = time.Date(2026, 11, 20, 1, 0, 0, 0, time.FixedZone("CET", 3600)) // 00:00 UTC
 		}, ErrOutsideDay},
 		{"bad day", func(d *DayEvents) { d.Day = "19/11/2026" }, ErrInvalidDay},
+		{"heartbeat without arrival", func(d *DayEvents) { d.Heartbeats[0].Arrived = time.Time{} }, ErrNoArrival},
+		{"activity without arrival", func(d *DayEvents) { d.Activity[2].Arrived = time.Time{} }, ErrNoArrival},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -176,7 +190,7 @@ func TestEmptyDay(t *testing.T) {
 
 func TestCounts(t *testing.T) {
 	c := Counts(fixtureDay())
-	want := map[string]int{TypeActivity: 3, TypeActiveTime: 1, TypeAI: 2, TypeGit: 1, TypeHeartbeat: 2}
+	want := map[string]int{TypeActivity: 5, TypeActiveTime: 1, TypeAI: 2, TypeGit: 1, TypeHeartbeat: 2}
 	if len(c) != len(want) {
 		t.Fatalf("Counts = %v", c)
 	}
@@ -192,13 +206,13 @@ func BenchmarkContentHashDay(b *testing.B) {
 	day := time.Date(2026, 11, 19, 0, 0, 0, 0, time.UTC)
 	d := DayEvents{Day: "2026-11-19"}
 	for i := range 17280 {
-		d.Activity = append(d.Activity, wire.ActivitySample{Time: day.Add(time.Duration(i) * 5 * time.Second), FocusKind: "editor", FocusApp: "Code"})
+		d.Activity = append(d.Activity, Received[wire.ActivitySample]{wire.ActivitySample{Time: day.Add(time.Duration(i) * 5 * time.Second), FocusKind: "editor", FocusApp: "Code"}, day})
 	}
 	for i := range 5000 {
-		d.Heartbeats = append(d.Heartbeats, wire.Heartbeat{Entity: "/src/app/main.go", Time: float64(day.Unix() + int64(i*17)), Project: "app"})
+		d.Heartbeats = append(d.Heartbeats, Received[wire.Heartbeat]{wire.Heartbeat{Entity: "/src/app/main.go", Time: float64(day.Unix() + int64(i*17)), Project: "app"}, day})
 	}
 	for i := range 2000 {
-		d.AI = append(d.AI, wire.AIEvent{Time: day.Add(time.Duration(i) * 40 * time.Second), Harness: wire.HarnessCodex, Kind: wire.AIToolStart, SessionID: "s"})
+		d.AI = append(d.AI, Received[wire.AIEvent]{wire.AIEvent{Time: day.Add(time.Duration(i) * 40 * time.Second), Harness: wire.HarnessCodex, Kind: wire.AIToolStart, SessionID: "s"}, day})
 	}
 	b.ReportAllocs()
 	for b.Loop() {

@@ -19,7 +19,7 @@ import (
 
 // newCrediting wires the crediting pipeline: the device identity, the
 // server client and the Runner, all reading the live config.
-func newCrediting(o Options, db *localdb.DB, client *http.Client, set *settings, repos RepoSource) *crediting.Runner {
+func newCrediting(o Options, db *localdb.DB, client *http.Client, set *settings, repos RepoSource, drained <-chan struct{}) *crediting.Runner {
 	api := serverapi.New(client, o.UserAgent)
 	name := o.DeviceName
 	if name == "" {
@@ -38,6 +38,7 @@ func newCrediting(o Options, db *localdb.DB, client *http.Client, set *settings,
 		Repos:       engineRepos{repos},
 		Logger:      o.Logger.With("task", "crediting"),
 		Interval:    o.creditingInterval,
+		Drained:     drained,
 	})
 }
 

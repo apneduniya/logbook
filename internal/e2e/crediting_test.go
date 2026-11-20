@@ -37,6 +37,7 @@ type rig struct {
 	st     *store.Store
 	db     *localdb.DB
 	runner *crediting.Runner
+	opts   crediting.Options
 	device uuid.UUID
 
 	mu  sync.Mutex
@@ -51,6 +52,8 @@ type rig struct {
 	down bool
 	// computed is the engine's last output per minute, for comparison.
 	computed map[time.Time][]struggle.Minute
+	// arrived, when set, is when events stored now arrive (see arrival).
+	arrived time.Time
 }
 
 // identity is a registered device that never changes.
@@ -63,7 +66,9 @@ func (identity) MarkRevoked(context.Context, serverapi.Target) (bool, error) { r
 func (identity) Confirm(context.Context, serverapi.Target) error             { return nil }
 func (identity) Forget(context.Context) error                                { return nil }
 
-func newRig(t *testing.T, start time.Time) *rig {
+// newRig starts a rig with no settle period after a start (Settle < 0);
+// opts change the Runner's options (tests of settling set their own).
+func newRig(t *testing.T, start time.Time, opts ...func(*crediting.Options)) *rig {
 	t.Helper()
 	r := &rig{t: t, now: start, computed: map[time.Time][]struggle.Minute{}}
 	r.st = storetest.New(t)
@@ -102,13 +107,13 @@ func newRig(t *testing.T, start time.Time) *rig {
 	}))
 	t.Cleanup(srv.Close)
 
-	ldb, err := localdb.Open(context.Background(), filepath.Join(t.TempDir(), "agent.db"), localdb.WithClock(r.clock))
+	ldb, err := localdb.Open(context.Background(), filepath.Join(t.TempDir(), "agent.db"), localdb.WithClock(r.arrival))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = ldb.Close() })
 	r.db = ldb
-	r.runner = crediting.New(crediting.Options{
+	r.opts = crediting.Options{
 		Store: ldb, Server: serverapi.New(srv.Client(), "logbook-agent/e2e"),
 		Identity: identity{devicekey.Device{ID: r.device.String(), RegisteredAt: registered, Key: key}},
 		Target: func() crediting.Target {
@@ -116,8 +121,35 @@ func newRig(t *testing.T, start time.Time) *rig {
 		},
 		Compute: r.compute, TZ: time.UTC, Now: r.clock,
 		Jitter: func() float64 { return 0 },
-	})
+		Settle: -1,
+	}
+	for _, o := range opts {
+		o(&r.opts)
+	}
+	r.runner = crediting.New(r.opts)
 	return r
+}
+
+// restart replaces the Runner with a new one, as a daemon restart does.
+func (r *rig) restart(opts ...func(*crediting.Options)) {
+	o := r.opts
+	for _, fn := range opts {
+		fn(&o)
+	}
+	r.runner = crediting.New(o)
+}
+
+// arrival is the local database's clock, which stamps when events arrive:
+// the start of the current minute unless a test pins it (arriveAt), so
+// what a test stores before a run (a few seconds past the minute) arrived
+// by that run's cutoff.
+func (r *rig) arrival() time.Time {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.arrived.IsZero() {
+		return r.arrived
+	}
+	return r.now.Truncate(time.Minute)
 }
 
 func (r *rig) clock() time.Time {

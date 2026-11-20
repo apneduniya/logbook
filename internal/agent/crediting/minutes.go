@@ -24,11 +24,15 @@ const maxLoggedRejections = 5
 //
 // drained is true when nothing is left to send, and false when the run's
 // budget (maxBatchesPerRun) ran out first; the rest goes on the next run.
-func (r *Runner) uploadMinutes(ctx context.Context, t serverapi.Target, dev devicekey.Device, now time.Time) (drained bool, err error) {
+func (r *Runner) uploadMinutes(ctx context.Context, t serverapi.Target, dev devicekey.Device, now time.Time, st settleState) (drained bool, err error) {
 	final := finalBefore(now)
+	held, err := r.held(ctx, now, st)
+	if err != nil {
+		return false, err
+	}
 	for range maxBatchesPerRun {
 		size := r.batchSize()
-		rows, err := r.opt.Store.UnsentMinutes(ctx, final, size)
+		rows, err := r.opt.Store.UnsentMinutes(ctx, final, held, size)
 		if err != nil {
 			return false, err
 		}

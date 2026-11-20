@@ -8,13 +8,18 @@ import (
 	"time"
 
 	"github.com/apneduniya/logbook/internal/agent/localdb"
+	"github.com/apneduniya/logbook/pkg/evidence"
 	"github.com/apneduniya/logbook/pkg/struggle"
 	"github.com/apneduniya/logbook/pkg/wire"
 )
 
-// realEngineRunner is a Runner that only computes, with the real engine.
-func realEngineRunner() *Runner {
-	return New(Options{Compute: struggle.Compute, TZ: time.UTC})
+// received wraps events as stored ones that arrived before any cutoff.
+func received[T any](es ...T) []evidence.Received[T] {
+	out := make([]evidence.Received[T], len(es))
+	for i, e := range es {
+		out[i] = evidence.Received[T]{Event: e}
+	}
+	return out
 }
 
 // fullRun computes the whole span in one engine call with the mapping of
@@ -51,12 +56,12 @@ func TestEarlierMappingGroupSeesTheRunsDataEnd(t *testing.T) {
 			SessionID: "cc", Cwd: "/src/app", PromptChars: 40, PromptHash: "same"}
 	}
 	ev := localdb.Events{
-		AI: []wire.AIEvent{
-			prompt(at("11:40").Add(5 * time.Second)),
-			prompt(at("11:50").Add(5 * time.Second)),
-			prompt(at("12:00").Add(5 * time.Second)),
-		},
-		Activity: []wire.ActivitySample{{Time: at("12:02").Add(30 * time.Second), IdleSeconds: 1, FocusKind: "terminal"}},
+		AI: received(
+			prompt(at("11:40").Add(5*time.Second)),
+			prompt(at("11:50").Add(5*time.Second)),
+			prompt(at("12:00").Add(5*time.Second)),
+		),
+		Activity: received(wire.ActivitySample{Time: at("12:02").Add(30 * time.Second), IdleSeconds: 1, FocusKind: "terminal"}),
 	}
 	mapping := []localdb.RepoMapping{
 		{Since: at("10:00"), Path: "/src/app", Project: "app"},
@@ -68,7 +73,7 @@ func TestEarlierMappingGroupSeesTheRunsDataEnd(t *testing.T) {
 		t.Fatalf("groups = %+v, want two with the first ending at 12:05", g)
 	}
 
-	got := minuteAt(realEngineRunner().computeByMapping(s, ev, nil, mapping), at("12:02"))
+	got := minuteAt(computeSpan(struggle.Compute, s, ev, nil, mapping, time.UTC), at("12:02"))
 	want := minuteAt(fullRun(s, ev, nil, ReposAt(mapping, s.to.Add(-time.Minute))), at("12:02"))
 	if len(want) != 1 || want[0].Credited != 60 || len(want[0].Cuts) != 0 {
 		t.Fatalf("full run 12:02 = %+v, want 60 s with no cuts", want)
@@ -99,9 +104,7 @@ func TestGroupedComputationMatchesFullRun(t *testing.T) {
 				since := now.Add(-time.Duration(rng.IntN(int(FinalAfter/time.Second))) * time.Second)
 				mapping = append(mapping, localdb.RepoMapping{Since: since, Path: fmt.Sprintf("/unused/%d", i), Project: "unused"})
 			}
-			r := realEngineRunner()
-			r.opt.TZ = time.UTC
-			got := r.computeByMapping(s, ev, active, mapping)
+			got := computeSpan(struggle.Compute, s, ev, active, mapping, time.UTC)
 			want := fullRun(s, ev, active, ReposAt(mapping, s.from))
 			if !reflect.DeepEqual(normalized(got), normalized(want)) {
 				t.Fatalf("grouped result differs from one full computation\n got %+v\nwant %+v", got.Minutes, want.Minutes)
@@ -138,13 +141,13 @@ func randomEvents(rng *rand.Rand, from, to time.Time) (localdb.Events, []struggl
 			e.PromptChars = 1 + rng.IntN(200)
 			e.PromptHash = fmt.Sprint("h", rng.IntN(2))
 		}
-		ev.AI = append(ev.AI, e)
+		ev.AI = append(ev.AI, received(e)...)
 	}
 	for range rng.IntN(60) {
-		ev.Heartbeats = append(ev.Heartbeats, wire.Heartbeat{
+		ev.Heartbeats = append(ev.Heartbeats, received(wire.Heartbeat{
 			Time: float64(when().Unix()), Entity: "/src/app/main.go", Project: projects[rng.IntN(2)],
 			IsWrite: rng.IntN(3) == 0, Lineno: new(1 + rng.IntN(50)),
-		})
+		})...)
 	}
 	focus := []string{"terminal", "editor", "browser", "ai", "other"}
 	quiet := from.Add(time.Duration(span) * time.Second) // all data stops here
@@ -152,8 +155,8 @@ func randomEvents(rng *rand.Rand, from, to time.Time) (localdb.Events, []struggl
 		if rng.IntN(4) == 0 {
 			continue
 		}
-		ev.Activity = append(ev.Activity, wire.ActivitySample{Time: t, IdleSeconds: float64(rng.IntN(400)),
-			FocusKind: focus[rng.IntN(len(focus))]})
+		ev.Activity = append(ev.Activity, received(wire.ActivitySample{Time: t, IdleSeconds: float64(rng.IntN(400)),
+			FocusKind: focus[rng.IntN(len(focus))]})...)
 	}
 	for range rng.IntN(5) {
 		f := when()

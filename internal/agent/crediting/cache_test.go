@@ -16,7 +16,8 @@ import (
 // The cached loader returns exactly what a cold read of the window returns,
 // in the same order, for random sequences of window moves (a minute on,
 // back by minutes, jumps of days either way) and random inserts, many of
-// them late (times well before the window's end) or ahead of it.
+// them late (times well before the window's end) or ahead of it, while
+// rows are pruned by age and trimmed by a small row cap.
 func TestEventCacheMatchesColdRead(t *testing.T) {
 	for seed := range uint64(25) {
 		t.Run(fmt.Sprint(seed), func(t *testing.T) {
@@ -24,7 +25,8 @@ func TestEventCacheMatchesColdRead(t *testing.T) {
 			rng := rand.New(rand.NewPCG(seed, 7))
 			base := time.Date(2026, 11, 20, 12, 0, 5, 0, time.UTC)
 			now := base
-			db, err := localdb.Open(ctx, filepath.Join(t.TempDir(), "agent.db"), localdb.WithClock(func() time.Time { return now }))
+			db, err := localdb.Open(ctx, filepath.Join(t.TempDir(), "agent.db"), localdb.WithClock(func() time.Time { return now }),
+				localdb.WithEventCap(int64(10+rng.IntN(40))), localdb.WithRetention(time.Duration(1+rng.IntN(6))*time.Hour))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -33,6 +35,14 @@ func TestEventCacheMatchesColdRead(t *testing.T) {
 			var c eventCache
 			for step := range 80 {
 				insertRandom(t, db, rng, now)
+				if rng.IntN(5) == 0 {
+					if _, err := db.Prune(ctx); err != nil {
+						t.Fatal(err)
+					}
+					if _, err := db.PruneCrediting(ctx); err != nil {
+						t.Fatal(err)
+					}
+				}
 				switch k := rng.IntN(10); {
 				case k < 5:
 					now = now.Add(time.Minute)
@@ -130,6 +140,41 @@ func diffEvents(got, want localdb.Events) string {
 	return ""
 }
 
+// With a cap of two rows, a third sample trims the oldest. The cache must
+// drop it too: a presence sample kept in memory but gone from the table
+// would credit a minute (60 s) that a cold read, or a replay, leaves idle.
+func TestEventCacheDropsTrimmedRows(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 11, 20, 12, 0, 5, 0, time.UTC)
+	db, err := localdb.Open(ctx, filepath.Join(t.TempDir(), "agent.db"),
+		localdb.WithClock(func() time.Time { return now }), localdb.WithEventCap(2))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	store := func(at time.Time) {
+		t.Helper()
+		if err := db.InsertEvents(ctx, []wire.LocalEvent{{Type: "activity",
+			Activity: &wire.ActivitySample{Time: at, IdleSeconds: 1, FocusKind: "editor"}}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	store(now.Add(-10 * time.Minute))
+	store(now.Add(-5 * time.Minute))
+	var c eventCache
+	s := spanAt(now)
+	if err := c.refresh(ctx, db, s.history, s.to); err != nil {
+		t.Fatal(err)
+	}
+	store(now.Add(-2 * time.Minute)) // trims the sample at -10
+	if err := c.refresh(ctx, db, s.history, s.to); err != nil {
+		t.Fatal(err)
+	}
+	if got := c.before(s.to); len(got.Activity) != 2 || !got.Activity[0].Event.Time.Equal(now.Add(-5*time.Minute)) {
+		t.Fatalf("cache holds %d samples (first %v), want the 2 the table keeps", len(got.Activity), got.Activity)
+	}
+}
+
 // A row stored with a time past the cached range (more than futureSlack
 // ahead) is not read when it arrives. When the window later moves over it
 // one minute at a time, it must be read then: the cache can't rely on ids
@@ -155,7 +200,7 @@ func TestEventCacheRowAheadOfWindow(t *testing.T) {
 		}
 		now = now.Add(time.Minute)
 	}
-	if got := c.before(now); len(got.Activity) != 1 || !got.Activity[0].Time.Equal(ahead) {
+	if got := c.before(now); len(got.Activity) != 1 || !got.Activity[0].Event.Time.Equal(ahead) {
 		t.Fatalf("cached activity = %+v, want the sample at %s", got.Activity, ahead.Format(time.TimeOnly))
 	}
 }
