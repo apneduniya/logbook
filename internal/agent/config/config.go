@@ -72,6 +72,9 @@ func SpoolPath(dir string) string { return filepath.Join(dir, "spool", "events.j
 // LogPath returns the daemon log file path inside dir.
 func LogPath(dir string) string { return filepath.Join(dir, "agent.log") }
 
+// DeviceKeyPath returns the device's ed25519 private key file inside dir.
+func DeviceKeyPath(dir string) string { return filepath.Join(dir, "device.key") }
+
 // Default returns a fresh config with a new local token.
 func Default() (Config, error) {
 	tok, err := NewToken()
