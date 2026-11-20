@@ -8,6 +8,7 @@ The long-running part of the agent (ADR 0009): `logbook run`, the local database
 | `internal/agent/localapi` | Loopback HTTP server |
 | `internal/agent/upload` | Logbook uploader and Hackatime mirror |
 | `internal/agent/daemon` | Wires everything, supervises sensors, drains the hook spool, finds active repos |
+| `internal/agent/spoolfile` | Opens the hook spool for appending so the drainer can rename it on every OS |
 | `internal/agent/status` | The health snapshot shared by the status page, `/local/v1/status` and `logbook status` |
 | `internal/agent/statuspage` | Renders the status page |
 | `internal/agent/doctor` | Turns facts about the setup into findings with fixes |
@@ -105,7 +106,15 @@ Hooks append to `spool/events.jsonl` when the daemon is down. The drainer:
 3. reads it line by line (lines over 1 MiB and invalid events are skipped and counted), storing 500 events per transaction together with `kv` `spool.offset = <file>:<byte offset>`;
 4. deletes it.
 
-A crash mid-drain resumes from the saved offset, so events are neither lost nor duplicated. Leftover `.draining` files are processed first, oldest first. On Windows the rename fails while a hook holds the file open; the drainer retries a minute later.
+A crash mid-drain resumes from the saved offset, so events are neither lost nor duplicated. Leftover `.draining` files are processed first, oldest first.
+
+Hooks append through `internal/agent/spoolfile`: one write per hook (so lines from concurrent hooks never interleave), at the end of the file, capped at 10 MiB, file 0600 in a 0700 directory. The rename in step 1 has to work while hooks hold the file open:
+
+- **macOS and Linux** rename open files freely; a hook's open descriptor follows the file to its new name.
+- **Windows** refuses to rename a file while any handle to it lacks `FILE_SHARE_DELETE`, and `os.OpenFile` never sets it. So hooks open the spool with `CreateFile(FILE_APPEND_DATA, FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE, OPEN_ALWAYS)`. The handle then follows the rename exactly as on POSIX, the grace period covers it, and no hook ever waits for the daemon. Mode bits are advisory on Windows; the file inherits the data directory's ACL.
+- Other programs (antivirus, backup tools) may still open the spool without delete sharing. The drainer retries a sharing violation after 10, 20, 40 and 80 ms, then gives up until the next drain a minute later. Nothing is lost meanwhile: hooks keep appending to the live file.
+
+Per-writer segment files were rejected: they would also avoid the rename conflict, but make the 10 MiB cap a directory-wide sum each hook has to compute, and leave many small files behind.
 
 ### Active repos (`RepoSource`)
 
@@ -124,7 +133,7 @@ A crash mid-drain resumes from the saved offset, so events are neither lost nor 
 
 The core has no OS-specific code paths and builds with `CGO_ENABLED=0` for windows, darwin and linux on amd64 and arm64. Behaviour that differs by OS:
 
-- **Windows:** file modes are advisory; `config.Dir()` is `%AppData%\logbook`. `os.Rename` replaces existing files (log rotation relies on this). Rotation fails while another process holds `agent.log` without delete sharing (antivirus, a user tailing it); the writer then reopens the live file, notes the failure once in the log and retries a minute later, so logging never stops. Renaming the spool fails while a hook holds it open (see above). Stderr may be unusable when started from the `Run` key, so logging to it is best effort.
+- **Windows:** file modes are advisory; `config.Dir()` is `%AppData%\logbook`. `os.Rename` replaces existing files (log rotation relies on this). Rotation fails while another process holds `agent.log` without delete sharing (antivirus, a user tailing it); the writer then reopens the live file, notes the failure once in the log and retries a minute later, so logging never stops. Hooks open the spool with delete sharing so the drainer can rename it (see Hook spool). Stderr may be unusable when started from the `Run` key, so logging to it is best effort.
 - **macOS:** `config.Dir()` is `~/Library/Application Support/logbook`.
 - **Linux:** `config.Dir()` is `$XDG_CONFIG_HOME/logbook` (default `~/.config/logbook`).
 

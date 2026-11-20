@@ -27,6 +27,9 @@ const (
 	maxSpoolLine   = 1 << 20
 	spoolOffsetKey = "spool.offset" // "<draining file name>:<byte offset>"
 	drainingSuffix = ".draining"
+	// A claim blocked by another program retries after 10, 20, 40 and 80 ms.
+	claimAttempts = 5
+	claimBackoff  = 10 * time.Millisecond
 )
 
 // EventStore is where drained events go. *localdb.DB satisfies it.
@@ -67,7 +70,7 @@ func (s *Spool) Drain(ctx context.Context) (DrainResult, error) {
 	if err != nil {
 		return total, err
 	}
-	fresh, err := s.claim()
+	fresh, err := s.claim(ctx)
 	if err != nil {
 		return total, err
 	}
@@ -115,18 +118,31 @@ func (s *Spool) leftovers() ([]string, error) {
 
 // claim renames the live spool to a unique draining name. It returns "" if
 // there is no spool.
-func (s *Spool) claim() (string, error) {
+//
+// Hooks open the spool with delete sharing (package spoolfile), so on
+// Windows the rename works while they append. Another program can still hold
+// it without that sharing for a moment (an antivirus scan, a backup tool), so
+// a sharing violation is retried briefly; if it persists, the next drain
+// claims the file.
+func (s *Spool) claim(ctx context.Context) (string, error) {
 	name := fmt.Sprintf("%s.%020d%s", s.path, s.now().UnixNano(), drainingSuffix)
-	err := os.Rename(s.path, name)
-	if errors.Is(err, fs.ErrNotExist) {
-		return "", nil
+	backoff := claimBackoff
+	for attempt := 1; ; attempt++ {
+		err := os.Rename(s.path, name)
+		switch {
+		case err == nil:
+			return name, nil
+		case errors.Is(err, fs.ErrNotExist):
+			return "", nil
+		case attempt < claimAttempts && isSharingViolation(err):
+			if err := sleep(ctx, backoff); err != nil {
+				return "", err
+			}
+			backoff *= 2
+		default:
+			return "", fmt.Errorf("claiming spool: %w", err)
+		}
 	}
-	if err != nil {
-		// On Windows the rename fails while a hook has the file open; the
-		// next drain picks it up.
-		return "", fmt.Errorf("claiming spool: %w", err)
-	}
-	return name, nil
 }
 
 func (s *Spool) drainFile(ctx context.Context, path string) (DrainResult, error) {
