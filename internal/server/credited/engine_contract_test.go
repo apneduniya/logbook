@@ -77,3 +77,50 @@ func TestEngineOutputSurvivesNormalisation(t *testing.T) {
 		}
 	}
 }
+
+// Adversarial many-project minutes: up to 40 projects with uneven counts,
+// from heartbeats and AI events, over a few minutes. Plan stores all of the
+// engine's credit.
+func TestEngineOutputSurvivesManyProjects(t *testing.T) {
+	r := uint64(1)
+	next := func(n int) int { // xorshift, stable across Go releases
+		r ^= r << 13
+		r ^= r >> 7
+		r ^= r << 17
+		return int(r % uint64(n))
+	}
+	for scenario := range 200 {
+		start := at(10, 0)
+		in := engineMinute()
+		in.Window.To = start.Add(3 * time.Minute)
+		for x := start.Add(5 * time.Minute); x.Before(start.Add(8 * time.Minute)); x = x.Add(5 * time.Second) {
+			in.Activity = append(in.Activity, wire.ActivitySample{Time: x, IdleSeconds: 1, FocusKind: "editor"})
+		}
+		projects := 1 + next(40)
+		for range 1 + next(150) {
+			p := fmt.Sprintf("p%02d", next(projects))
+			if next(4) == 0 {
+				p = " " + p // a spelling that normalises to the same project
+			}
+			ts := start.Add(time.Duration(next(180_000)) * time.Millisecond)
+			if next(3) == 0 {
+				in.AI = append(in.AI, wire.AIEvent{Time: ts, Kind: wire.AIToolStart, Harness: wire.HarnessClaudeCode, SessionID: "s", Project: p})
+				continue
+			}
+			in.Heartbeats = append(in.Heartbeats, struggle.Heartbeat{Time: ts, Project: p, Entity: "/" + p, IsWrite: next(2) == 0, AI: next(5) == 0})
+		}
+		res := struggle.Compute(in)
+		if got, want := uploadEngineOutput(t, res), engineCredit(res); got != want {
+			t.Fatalf("scenario %d: engine credited %d s, server stored %d s", scenario, want, got)
+		}
+		perMinute := map[time.Time]int{}
+		for _, m := range res.Minutes {
+			perMinute[m.Minute] += m.Credited
+		}
+		for m, c := range perMinute {
+			if c != 60 {
+				t.Fatalf("scenario %d: minute %s credited %d s, want 60", scenario, m.Format("15:04"), c)
+			}
+		}
+	}
+}

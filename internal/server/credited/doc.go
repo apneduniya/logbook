@@ -31,7 +31,8 @@
 //     CatchUpWindow after the minute's first upload, but only when every
 //     row of it was first uploaded after it was final;
 //   - one device stores at most MaxProjectsPerMinute projects per minute,
-//     which bounds rows per device-minute whatever their credit;
+//     which bounds rows per device-minute whatever their credit. The engine
+//     (pkg/struggle) never emits more, so this only stops other clients;
 //   - across all projects of one minute of one device, credited seconds
 //     never exceed 60. Items that lower a minute's credit are applied first,
 //     then the rest in request order, so moving a minute from one project

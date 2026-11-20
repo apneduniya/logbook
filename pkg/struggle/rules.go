@@ -15,6 +15,13 @@ const (
 	Lookahead = 25 * time.Minute
 )
 
+// MaxProjectsPerMinute is the most rows Compute emits for one minute. It is
+// part of the output contract: the server stores at most this many projects
+// per device-minute (internal/server/credited), so a minute with more
+// projects gives its seconds to its busiest ones (see topProjects) rather
+// than losing them on upload.
+const MaxProjectsPerMinute = 8
+
 // Thresholds of rules v1. docs/STRUGGLE-RULES.md explains each one; changing
 // any of them changes credited time, so it needs a new RulesVersion.
 const (

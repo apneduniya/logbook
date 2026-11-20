@@ -19,8 +19,10 @@ const (
 	MaxCodes        = 16
 	MaxCreditedSecs = 60
 	// MaxProjectsPerMinute bounds the rows one device can store for one
-	// minute, whatever their credit.
-	MaxProjectsPerMinute = 8
+	// minute, whatever their credit. It is the engine's own limit, so
+	// correct engine output is never rejected for it; the check here
+	// guards against other clients.
+	MaxProjectsPerMinute = struggle.MaxProjectsPerMinute
 	FinalAfter           = 30 * time.Minute
 	// CatchUpWindow is how long after a final minute's first upload more
 	// of its projects may still arrive, for an offline agent whose catch-up

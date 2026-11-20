@@ -71,3 +71,35 @@ func TestProjectNamesAreNormalized(t *testing.T) {
 		})
 	}
 }
+
+// A minute never has more rows than the server stores per device-minute
+// (MaxProjectsPerMinute), and capping keeps the minute's credit.
+func TestProjectsPerMinuteAreCapped(t *testing.T) {
+	tests := []struct {
+		name     string
+		projects []string
+		want     map[string]int
+	}{
+		{"nine equal projects", []string{"p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8", "p9"},
+			// The 8 smallest names win the tie and share the minute.
+			map[string]int{"p1": 8, "p2": 8, "p3": 8, "p4": 8, "p5": 7, "p6": 7, "p7": 7, "p8": 7}},
+		{"the smallest shares go", []string{
+			"a", "a", "a", "b", "b", "c", "c", "d", "d", "e", "e", "f", "f", "g", "g", "h", "i", "j",
+		}, // h, i and j tie for the last place; h wins it by name.
+			map[string]int{"a": 11, "b": 8, "c": 8, "d": 8, "e": 7, "f": 7, "g": 7, "h": 4}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			res := Compute(presentMinute(tt.projects...))
+			got := map[string]int{}
+			total := 0
+			for _, m := range res.Minutes {
+				got[m.Project] = m.Credited
+				total += m.Credited
+			}
+			if len(res.Minutes) > MaxProjectsPerMinute || total != 60 || fmt.Sprint(got) != fmt.Sprint(tt.want) {
+				t.Fatalf("got %d rows %v (%d s), want %v (60 s)", len(res.Minutes), got, total, tt.want)
+			}
+		})
+	}
+}
