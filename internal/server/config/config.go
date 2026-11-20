@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"time"
 
@@ -28,7 +29,20 @@ type Config struct {
 	SessionTTL        time.Duration `env:"LOGBOOK_SESSION_TTL" envDefault:"720h"`
 	ShutdownTimeout   time.Duration `env:"LOGBOOK_SHUTDOWN_TIMEOUT" envDefault:"15s"`
 	DevInsecureCookie bool          `env:"LOGBOOK_DEV_INSECURE_COOKIE" envDefault:"false"`
+
+	// DevLogin enables POST /auth/dev-login for local development. Load
+	// refuses it unless BaseURL points at localhost or 127.0.0.1 and Addr
+	// listens on loopback only.
+	DevLogin bool `env:"LOGBOOK_DEV_LOGIN" envDefault:"false"`
+
+	// TrustProxy makes rate limits key on the last X-Forwarded-For hop, as
+	// set by the reverse proxy in front of the server. Enable it only when
+	// such a proxy always overwrites or appends that header.
+	TrustProxy bool `env:"LOGBOOK_TRUST_PROXY" envDefault:"false"`
 }
+
+// DefaultHCABaseURL is Hack Club Auth's production host.
+const DefaultHCABaseURL = "https://auth.hackclub.com"
 
 // OAuthClient is the configuration for one upstream OAuth provider.
 type OAuthClient struct {
@@ -54,6 +68,9 @@ func Load() (Config, error) {
 	var c Config
 	if err := env.Parse(&c); err != nil {
 		return Config{}, fmt.Errorf("parsing env: %w", err)
+	}
+	if c.HCA.BaseURL == "" {
+		c.HCA.BaseURL = DefaultHCABaseURL
 	}
 	if err := c.validate(); err != nil {
 		return Config{}, err
@@ -84,5 +101,25 @@ func (c Config) validate() error {
 	if u.Scheme != "https" && !c.DevInsecureCookie {
 		return errors.New("LOGBOOK_BASE_URL must be https unless LOGBOOK_DEV_INSECURE_COOKIE=true")
 	}
+	if c.DevLogin && !IsLoopbackHost(u.Hostname()) {
+		return errors.New("LOGBOOK_DEV_LOGIN is only allowed when LOGBOOK_BASE_URL is on localhost or 127.0.0.1")
+	}
+	if c.DevLogin {
+		// An empty or wildcard host (":8080", "0.0.0.0:8080") listens on
+		// every interface and would expose dev sign-in to the network.
+		host, _, err := net.SplitHostPort(c.Addr)
+		if err != nil || !IsLoopbackHost(host) {
+			return fmt.Errorf("LOGBOOK_DEV_LOGIN requires LOGBOOK_ADDR to listen on loopback only (got %q)", c.Addr)
+		}
+	}
+	hca, err := url.Parse(c.HCA.BaseURL)
+	if err != nil || hca.Host == "" || (hca.Scheme != "https" && !IsLoopbackHost(hca.Hostname())) {
+		return fmt.Errorf("LOGBOOK_HCA_BASE_URL %q must be an https URL", c.HCA.BaseURL)
+	}
 	return nil
+}
+
+// IsLoopbackHost reports whether host (without port) names this machine.
+func IsLoopbackHost(host string) bool {
+	return host == "localhost" || host == "127.0.0.1" || host == "::1"
 }

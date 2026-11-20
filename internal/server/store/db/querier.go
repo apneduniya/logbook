@@ -6,15 +6,33 @@ package db
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 )
 
 type Querier interface {
+	CountActiveAPIKeys(ctx context.Context, userID uuid.UUID) (int64, error)
+	CreateAPIKey(ctx context.Context, arg CreateAPIKeyParams) (ApiKey, error)
+	CreateSession(ctx context.Context, arg CreateSessionParams) error
+	DeleteExpiredSessions(ctx context.Context, expiresAt time.Time) (int64, error)
+	DeleteSession(ctx context.Context, idHash []byte) error
+	GetActiveAPIKeyByHash(ctx context.Context, keyHash []byte) (GetActiveAPIKeyByHashRow, error)
+	GetActiveSession(ctx context.Context, arg GetActiveSessionParams) (GetActiveSessionRow, error)
 	GetUserByHCAID(ctx context.Context, hcaID string) (User, error)
 	GetUserByID(ctx context.Context, id uuid.UUID) (User, error)
 	GetUserByUsername(ctx context.Context, username string) (User, error)
 	InsertAuditLog(ctx context.Context, arg InsertAuditLogParams) error
+	// Creates a user on first sign-in. A concurrent first sign-in of the same
+	// identity updates the profile instead of failing.
+	InsertSignInUser(ctx context.Context, arg InsertSignInUserParams) (User, error)
+	ListActiveAPIKeys(ctx context.Context, userID uuid.UUID) ([]ApiKey, error)
+	LockUser(ctx context.Context, id uuid.UUID) error
+	RevokeAPIKey(ctx context.Context, arg RevokeAPIKeyParams) (ApiKey, error)
+	TouchAPIKey(ctx context.Context, arg TouchAPIKeyParams) error
+	TouchSession(ctx context.Context, arg TouchSessionParams) (int64, error)
+	UpdateSignInProfile(ctx context.Context, arg UpdateSignInProfileParams) (User, error)
+	UsernameExists(ctx context.Context, username string) (bool, error)
 }
 
 var _ Querier = (*Queries)(nil)
