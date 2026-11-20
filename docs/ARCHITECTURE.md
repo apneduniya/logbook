@@ -26,6 +26,7 @@ laptop                                     server (Go + Postgres)
 | `pkg/wire` | Wire types shared by server and agent (heartbeats, minute batches, evidence) |
 | `pkg/struggle` | Pure rules engine: events in, labelled minutes and cuts out |
 | `pkg/evidence` | Canonical encoding, hash chain, ed25519 signing and verification |
+| `pkg/projectname` | Project name normalisation shared by heartbeat ingest and credited minutes |
 | `internal/server/config` | Typed env config |
 | `internal/server/store` | sqlc-generated queries and transaction helpers |
 | `internal/server/auth` | HCA sign-in, sessions, API keys, CSRF |
