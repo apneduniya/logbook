@@ -37,9 +37,8 @@ func TestBuild(t *testing.T) {
 			wire.AIEvent{Kind: wire.AIToolEnd}},
 		{"cwd with newline dropped", Fields{Kind: wire.AIToolEnd, Cwd: "/a\nb"},
 			wire.AIEvent{Kind: wire.AIToolEnd}},
-		{"ago", Fields{Kind: wire.AIToolStart, Ago: 2 * time.Second},
-			wire.AIEvent{Kind: wire.AIToolStart, Time: now.Add(-2 * time.Second).UTC()}},
-		{"ago too big ignored", Fields{Kind: wire.AIToolStart, Ago: 48 * time.Hour},
+		// Events are always stamped at delivery (zero Time here means now).
+		{"stamped at delivery", Fields{Kind: wire.AIToolStart},
 			wire.AIEvent{Kind: wire.AIToolStart}},
 	}
 	for _, tc := range tests {

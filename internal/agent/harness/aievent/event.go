@@ -32,29 +32,19 @@ type Fields struct {
 	PromptDigest PromptDigest
 	// Decision is "allow", "deny" or "".
 	Decision string
-	// Ago is how long before the hook ran the event happened. It is zero
-	// except where a harness reports a duration instead of a start hook (see
-	// package cursor). Values outside (0, MaxAgo] are ignored.
-	Ago time.Duration
 }
-
-// MaxAgo bounds Fields.Ago, so a bogus duration can't move an event far into
-// the past.
-const MaxAgo = 6 * time.Hour
 
 // ProjectFunc names the project a working directory belongs to.
 type ProjectFunc func(cwd string) string
 
-// Build assembles the wire event. Text fields are cleaned of control
+// Build assembles the wire event, stamped with now: events are always dated
+// when their hook delivers them, never back-dated, so a late event can't
+// reach into minutes that are already final (docs/STRUGGLE-RULES.md). Text fields are cleaned of control
 // characters and cut to the wire limits; a cwd too long to keep is dropped
 // rather than cut, since a truncated path would name the wrong directory.
 func Build(h wire.Harness, f Fields, now time.Time, project ProjectFunc) wire.AIEvent {
-	at := now
-	if f.Ago > 0 && f.Ago <= MaxAgo {
-		at = now.Add(-f.Ago)
-	}
 	ev := wire.AIEvent{
-		Time:      at.UTC(),
+		Time:      now.UTC(),
 		Harness:   h,
 		Kind:      f.Kind,
 		SessionID: Clean(f.SessionID, maxID),
