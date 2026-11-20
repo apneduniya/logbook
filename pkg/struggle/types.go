@@ -55,8 +55,9 @@ type Input struct {
 	// DataEnd, if set, says the events are complete up to this time even if
 	// the latest of them is earlier: an agent turn whose last event is more
 	// than 10 minutes before DataEnd has ended. Zero means the later of
-	// Window.To and the latest event. Added in v1 for server re-runs over
-	// closed history; the agent leaves it zero.
+	// Window.To and the latest event. Server re-runs over closed history set
+	// it; the agent sets it to the end of its run when it computes a window in
+	// several repo-mapping groups, so every group sees the same data end.
 	DataEnd    time.Time
 	Activity   []wire.ActivitySample
 	Heartbeats []Heartbeat
