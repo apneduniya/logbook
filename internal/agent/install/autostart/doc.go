@@ -2,7 +2,9 @@
 // can start it right away, without admin rights (ADR 0009):
 //
 //   - Windows: a value in HKCU\Software\Microsoft\Windows\CurrentVersion\Run,
-//     and a hidden, detached process for Start;
+//     and a hidden, detached process for Start. Windows gives the Run entry
+//     a visible console at login; Background, called first by `logbook run`,
+//     moves the daemon into a hidden process;
 //   - macOS: a LaunchAgent plist in ~/Library/LaunchAgents, loaded with
 //     launchctl bootstrap gui/<uid>;
 //   - Linux: a systemd --user unit, or an XDG autostart .desktop file when

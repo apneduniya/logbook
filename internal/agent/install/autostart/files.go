@@ -58,15 +58,27 @@ func xmlEscape(s string) string {
 
 // SystemdUnit returns the systemd --user service for binPath. It restarts
 // only on failure, is capped at 64 MB of memory and 10% of one CPU, and
-// runs at a lower priority so editors stay responsive. It starts after the
-// graphical session when there is one, so DISPLAY and the session bus are
-// in its environment for the idle and focus sensors.
-func SystemdUnit(binPath string) []byte {
+// runs at a lower priority so editors stay responsive.
+//
+// With graphical set, the unit belongs to the desktop session: it is
+// wanted by graphical-session.target, ordered after it and stopped with it
+// (PartOf). Desktops import DISPLAY, WAYLAND_DISPLAY and the session bus
+// into the user manager before starting that target, so the idle and focus
+// sensors see them. Ordering alone (After=) would not do this for a unit
+// pulled in by default.target, which the user manager reaches at first
+// login, before the desktop has started. Without a graphical session
+// (SSH-only, WSL, desktops without systemd integration) the unit is wanted
+// by default.target instead.
+func SystemdUnit(binPath string, graphical bool) []byte {
+	unit, wantedBy := "", "default.target"
+	if graphical {
+		unit = "PartOf=graphical-session.target\nAfter=graphical-session.target\n"
+		wantedBy = "graphical-session.target"
+	}
 	return []byte(`[Unit]
 Description=Logbook agent (passive time tracker)
 Documentation=https://github.com/apneduniya/logbook
-After=graphical-session.target
-
+` + unit + `
 [Service]
 Type=simple
 ExecStart=` + systemdQuote(binPath) + ` ` + runArg + `
@@ -79,7 +91,7 @@ IOSchedulingClass=best-effort
 IOSchedulingPriority=7
 
 [Install]
-WantedBy=default.target
+WantedBy=` + wantedBy + `
 `)
 }
 

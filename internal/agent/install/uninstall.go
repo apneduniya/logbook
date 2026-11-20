@@ -178,11 +178,26 @@ func checkPurgeable(dir string) error {
 	if home, err := os.UserHomeDir(); err == nil && filepath.Clean(home) == abs {
 		return fmt.Errorf("refusing to delete %s: it is the home directory", abs)
 	}
-	if filepath.Base(abs) == "logbook" {
+	for _, marker := range purgeMarkers(abs) {
+		if _, err := os.Stat(marker); err == nil {
+			return nil
+		}
+	}
+	// The default data directory may be purged even without a marker file
+	// (an install that failed before saving its config). A directory that
+	// merely shares its name, such as a checkout called "logbook" that a
+	// mistaken LOGBOOK_HOME points at, may not.
+	if base, err := os.UserConfigDir(); err == nil && filepath.Clean(filepath.Join(base, "logbook")) == abs {
 		return nil
 	}
-	if _, err := os.Stat(config.Path(abs)); err != nil {
-		return fmt.Errorf("refusing to delete %s: it does not look like a Logbook data directory", abs)
+	return fmt.Errorf("refusing to delete %s: it does not look like a Logbook data directory", abs)
+}
+
+// purgeMarkers are files only a Logbook data directory holds.
+func purgeMarkers(dir string) []string {
+	return []string{
+		config.Path(dir),
+		filepath.Join(dir, "wakatime.cfg.state.json"),
+		filepath.Join(dir, "wakatime.cfg.backup"),
 	}
-	return nil
 }

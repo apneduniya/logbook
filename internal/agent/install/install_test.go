@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -60,13 +61,16 @@ type fakeAutostart struct {
 	log       *log
 	installed bool
 	startErr  error
+	// installErr fails Install after the entry was written, like a
+	// systemctl enable or launchctl bootstrap that fails.
+	installErr error
 }
 
 func (f *fakeAutostart) Path() string { return "/autostart/entry" }
 func (f *fakeAutostart) Install(bin string) error {
 	f.log.add("autostart.install " + bin)
 	f.installed = true
-	return nil
+	return f.installErr
 }
 func (f *fakeAutostart) Uninstall() error {
 	f.log.add("autostart.uninstall")
@@ -403,6 +407,13 @@ func TestCheckPurgeable(t *testing.T) {
 	if err := os.WriteFile(config.Path(marked), []byte("{}"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.MkdirAll(filepath.Join(other, "logbook"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	stateOnly := t.TempDir()
+	if err := os.WriteFile(filepath.Join(stateOnly, "wakatime.cfg.state.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	tests := []struct {
 		dir string
 		ok  bool
@@ -411,11 +422,78 @@ func TestCheckPurgeable(t *testing.T) {
 		{home, false},
 		{other, false},
 		{marked, true},
-		{filepath.Join(other, "logbook"), true},
+		// Same name as the data dir but nothing of ours inside, e.g. a
+		// checkout a mistaken LOGBOOK_HOME points at.
+		{filepath.Join(other, "logbook"), false},
+		{stateOnly, true},
 	}
 	for _, tt := range tests {
 		if err := checkPurgeable(tt.dir); (err == nil) != tt.ok {
 			t.Errorf("checkPurgeable(%q) = %v, want ok=%v", tt.dir, err, tt.ok)
 		}
+	}
+}
+
+func TestInstallRollsBackPartialAutostart(t *testing.T) {
+	e := newEnv(t, nil)
+	e.auto.installErr = errors.New("Bootstrap failed: 5: Input/output error")
+	err := e.svc.Install(context.Background(), Options{Key: key, SourceBinary: "/tmp/logbook"})
+	if err == nil || !strings.Contains(err.Error(), "Bootstrap failed") {
+		t.Fatalf("Install() = %v", err)
+	}
+	if e.auto.installed {
+		t.Fatal("a partly written autostart entry was left behind")
+	}
+	if !slices.Contains(e.log.calls, "autostart.uninstall") {
+		t.Fatalf("calls = %q, want autostart.uninstall", e.log.calls)
+	}
+	if e.waka(t) != origWaka || e.bin.installed {
+		t.Fatal("earlier steps not rolled back")
+	}
+}
+
+func TestFailedReinstallRestoresWakaKey(t *testing.T) {
+	e := newEnv(t, nil)
+	ctx := context.Background()
+	if err := e.svc.Install(ctx, Options{Key: key}); err != nil {
+		t.Fatal(err)
+	}
+	before := e.waka(t)
+	const newKey = "4e4e4e4e-0000-4000-8000-000000000000"
+	e.auto.startErr = errors.New("boom")
+	if err := e.svc.Install(ctx, Options{Key: newKey}); err == nil {
+		t.Fatal("Install() = nil")
+	}
+	cfg, err := config.Load(e.data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// config.json and .wakatime.cfg must agree on the key after rollback.
+	if cfg.APIKey != key || e.waka(t) != before {
+		t.Fatalf("config key %q, .wakatime.cfg:\n%s", cfg.APIKey, e.waka(t))
+	}
+	e.auto.startErr = nil
+	if err := e.svc.Uninstall(ctx, UninstallOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if e.waka(t) != origWaka {
+		t.Fatalf("uninstall after a failed reinstall did not restore exactly:\n%s", e.waka(t))
+	}
+}
+
+func TestDescribeMirrorOffSuggestsWorkingFlag(t *testing.T) {
+	e := newEnv(t, nil)
+	if err := e.svc.Install(context.Background(), Options{Key: key, NoMirror: true}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(e.out.String(), "--mirror-url "+hackURL) {
+		t.Fatalf("output:\n%s", e.out)
+	}
+	// The suggested command really turns mirroring back on.
+	if err := e.svc.Install(context.Background(), Options{Key: key, MirrorURL: hackURL}); err != nil {
+		t.Fatal(err)
+	}
+	if cfg, _ := config.Load(e.data); !cfg.Hackatime.Mirror || cfg.Hackatime.APIKey != hackKey {
+		t.Fatalf("mirror = %+v", cfg.Hackatime)
 	}
 }

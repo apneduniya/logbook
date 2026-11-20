@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -38,5 +39,34 @@ func TestCommandsRegistered(t *testing.T) {
 		if !names[n] {
 			t.Errorf("command %q not registered", n)
 		}
+	}
+}
+
+func TestInstallNeedsDaemonCommand(t *testing.T) {
+	if hasCommand(commands(), daemonCommand) {
+		t.Skip("this build has the daemon command")
+	}
+	err := runInstall(context.Background(), []string{"--key", "k"})
+	if !errors.Is(err, errNoDaemon) {
+		t.Fatalf("err = %v, want errNoDaemon", err)
+	}
+}
+
+func TestPathHint(t *testing.T) {
+	winBin := `C:\Users\Ada\AppData\Local\Programs\Logbook\logbook.exe`
+	tests := []struct {
+		name, goos, bin, path, want string
+	}{
+		{"linux on PATH", "linux", "/home/u/.local/bin/logbook", "/usr/bin:/home/u/.local/bin/", ""},
+		{"linux not on PATH", "linux", "/home/u/.local/bin/logbook", "/usr/bin", `add "/home/u/.local/bin" to your PATH`},
+		{"windows prints the path and uninstall", "windows", winBin, "", `& "` + winBin + `" uninstall`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := pathHint(tt.goos, tt.bin, tt.path)
+			if (tt.want == "" && got != "") || !strings.Contains(got, tt.want) {
+				t.Fatalf("pathHint() = %q, want it to contain %q", got, tt.want)
+			}
+		})
 	}
 }

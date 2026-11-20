@@ -24,6 +24,22 @@ import (
 // where other local users could see it in the process list.
 const keyEnv = "LOGBOOK_API_KEY"
 
+// daemonCommand is the subcommand every autostart entry runs.
+const daemonCommand = "run"
+
+// errNoDaemon stops install in a build without the daemon command.
+var errNoDaemon = errors.New("this build has no `logbook run` daemon, so there is nothing to start at login; install a release build")
+
+// hasCommand reports whether cmds has a command called name.
+func hasCommand(cmds []Command, name string) bool {
+	for _, c := range cmds {
+		if c.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
 func installCommand() Command {
 	return Command{
 		Name:  "install",
@@ -68,6 +84,11 @@ func runInstall(ctx context.Context, args []string) error {
 	if o.Key == "" {
 		return errors.New("--key is required; copy your API key from Logbook's settings page")
 	}
+	if !hasCommand(commands(), daemonCommand) {
+		// Autostart would point at a command this binary lacks, and
+		// systemd/launchd would restart the failing daemon forever.
+		return errNoDaemon
+	}
 	src, err := executable()
 	if err != nil {
 		return err
@@ -92,7 +113,7 @@ func runInstall(ctx context.Context, args []string) error {
 	}
 	fmt.Printf("\nDone. Logbook is tracking. Status page: http://%s/\n", cfg.LocalAddr)
 	fmt.Println("Restart your editors so their WakaTime plugins pick up the new settings.")
-	printPathHint(filepath.Dir(svc.BinaryPath()))
+	fmt.Print(pathHint(runtime.GOOS, svc.BinaryPath(), os.Getenv("PATH")))
 	return nil
 }
 
@@ -175,17 +196,20 @@ func executable() (string, error) {
 	return p, nil
 }
 
-// printPathHint tells Linux users to add ~/.local/bin to PATH when it isn't,
-// so they can type `logbook` later. Autostart and hooks use the full path
-// and work either way.
-func printPathHint(binDir string) {
-	if runtime.GOOS == "windows" {
-		return
+// pathHint tells the user how to run `logbook` later. On macOS and Linux
+// it suggests adding the binary's folder to PATH when it isn't there. On
+// Windows the folder is never on PATH (changing it would mean editing the
+// user's environment), so it prints the full path and the uninstall
+// command. Autostart and hooks use the full path and work either way.
+func pathHint(goos, bin, pathEnv string) string {
+	if goos == "windows" {
+		return fmt.Sprintf("Logbook is installed at %s\nTo remove it later, run in PowerShell: & \"%s\" uninstall\n", bin, bin)
 	}
-	for _, d := range filepath.SplitList(os.Getenv("PATH")) {
-		if filepath.Clean(d) == binDir {
-			return
+	dir := filepath.Dir(bin)
+	for _, d := range filepath.SplitList(pathEnv) {
+		if filepath.Clean(d) == dir {
+			return ""
 		}
 	}
-	fmt.Printf("To run `logbook` from a terminal, add %q to your PATH.\n", binDir)
+	return fmt.Sprintf("To run `logbook` from a terminal, add %q to your PATH.\n", dir)
 }

@@ -19,6 +19,9 @@ const (
 	settings  = "settings"
 	keyURL    = "api_url"
 	keyAPIKey = "api_key"
+	// keyLegacyAPIKey is the older spelling wakatime-cli still reads when
+	// api_key is empty (pkg/params apiKeyOrder).
+	keyLegacyAPIKey = "apikey"
 
 	// maxConfigSize bounds what we read. Real files are a few hundred bytes.
 	maxConfigSize = 1 << 20
@@ -98,6 +101,17 @@ type InstallResult struct {
 	BackupWritten bool
 	// Warnings are settings that may route some heartbeats around Logbook.
 	Warnings []string
+
+	// prev is what a repeat install replaced, for Revert.
+	prev *snapshot
+}
+
+// snapshot is the file and state as they were before a repeat install.
+type snapshot struct {
+	target  string
+	raw     []byte
+	existed bool
+	state   state
 }
 
 // Install points api_url at localURL and sets api_key to key. It is
@@ -130,6 +144,13 @@ func (m *Manager) Install(localURL, key string) (InstallResult, error) {
 	res.AlreadyInstalled = hasState && sameURL(cur, st.LocalURL)
 
 	if res.AlreadyInstalled {
+		res.prev = &snapshot{target: target, raw: raw, existed: existed, state: st}
+		if digest(raw) != st.WrittenSHA256 {
+			// Someone edited the file since Logbook last wrote it. Those
+			// edits are not ours, so the backup no longer matches what an
+			// exact restore would have to preserve: restore keys only.
+			st.RestoreExact = false
+		}
 		st.LocalURL = localURL
 	} else {
 		st = state{Path: m.path, Existed: existed, LocalURL: localURL, Original: m.original(d, localURL)}
@@ -161,6 +182,28 @@ func (m *Manager) Install(localURL, key string) (InstallResult, error) {
 		}
 	}
 	return res, nil
+}
+
+// Revert undoes the Install that returned res, for rolling back a failed
+// `logbook install`. A first install is undone like Uninstall; a repeat
+// install puts back the file bytes and state it replaced, so a failed
+// re-install leaves the earlier install exactly as it was.
+func (m *Manager) Revert(res InstallResult) error {
+	if res.prev == nil {
+		_, err := m.Uninstall()
+		return err
+	}
+	if err := m.saveState(res.prev.state); err != nil {
+		return err
+	}
+	if !res.Changed {
+		return nil
+	}
+	if !res.prev.existed {
+		_, err := atomicfile.RemoveOptional(res.prev.target)
+		return err
+	}
+	return writePreservingMode(res.prev.target, res.prev.raw)
 }
 
 // UninstallResult says what Uninstall did.
@@ -303,6 +346,14 @@ func (m *Manager) original(d *doc, localURL string) Original {
 	o.APIKey, o.HadKey = d.get(settings, keyAPIKey)
 	if o.HadURL && sameURL(o.URL, localURL) {
 		return Original{}
+	}
+	if o.APIKey == "" {
+		// wakatime-cli reads the legacy apikey when api_key is empty. It
+		// stays in the file untouched (api_key takes precedence while
+		// Logbook is installed), so HadKey keeps describing api_key only.
+		if legacy, ok := d.get(settings, keyLegacyAPIKey); ok {
+			o.APIKey = legacy
+		}
 	}
 	if o.APIKey == "" && m.envKey != "" {
 		// wakatime-cli falls back to WAKATIME_API_KEY when the file has no

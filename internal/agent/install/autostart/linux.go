@@ -60,6 +60,14 @@ func (l *Linux) hasSystemd() bool {
 	return err == nil
 }
 
+// graphical reports whether the user is in a desktop session that systemd
+// knows about. Install is normally run from a terminal on that desktop; an
+// install over SSH gets the default.target unit, as there is no session to
+// bind to.
+func (l *Linux) graphical() bool {
+	return run(l.run, "systemctl", "--user", "is-active", "--quiet", "graphical-session.target") == nil
+}
+
 // Install writes the unit and enables it, or writes the XDG entry. It
 // removes the other kind, so switching between them never starts two
 // daemons.
@@ -71,13 +79,15 @@ func (l *Linux) Install(binPath string) error {
 		}
 		return nil
 	}
-	if err := writeIfChanged(l.unitPath, SystemdUnit(binPath)); err != nil {
+	if err := writeIfChanged(l.unitPath, SystemdUnit(binPath, l.graphical())); err != nil {
 		return fmt.Errorf("writing systemd unit: %w", err)
 	}
 	if err := run(l.run, "systemctl", "--user", "daemon-reload"); err != nil {
 		return err
 	}
-	if err := run(l.run, "systemctl", "--user", "enable", unitName); err != nil {
+	// reenable = disable + enable: it drops a wants link left by an
+	// earlier install with the other WantedBy target.
+	if err := run(l.run, "systemctl", "--user", "reenable", unitName); err != nil {
 		return err
 	}
 	if _, err := atomicfile.RemoveOptional(l.desktopPath); err != nil {

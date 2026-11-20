@@ -4,6 +4,7 @@ package autostart
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"syscall"
@@ -21,6 +22,7 @@ type DetachedSpawner struct{}
 func (DetachedSpawner) Spawn(binPath string, args ...string) error {
 	cmd := exec.Command(binPath, args...) //nolint:gosec,noctx // binPath is our own installed binary; the daemon must outlive any context
 	cmd.Dir = filepath.Dir(binPath)       // don't hold the installer's directory open
+	cmd.Env = append(os.Environ(), DetachedEnv+"=1")
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		HideWindow:    true,
 		CreationFlags: windows.CREATE_NO_WINDOW | windows.CREATE_NEW_PROCESS_GROUP,

@@ -53,6 +53,8 @@ type WakaConfig interface {
 	Path() string
 	Install(localURL, key string) (wakacfg.InstallResult, error)
 	Uninstall() (wakacfg.UninstallResult, error)
+	// Revert undoes one Install call, for rollback.
+	Revert(res wakacfg.InstallResult) error
 }
 
 // KeyChecker asks the Logbook server whether an API key is valid.
@@ -165,11 +167,14 @@ func (s *Service) Install(ctx context.Context, o Options) (err error) {
 	if err != nil {
 		return fmt.Errorf("checking autostart: %w", err)
 	}
+	if !before {
+		// Registered before Install: a partial entry (unit written but
+		// not enabled, plist written but not loaded) must be removed too,
+		// and Uninstall is safe on one.
+		undos = append(undos, undo{"autostart", s.d.Autostart.Uninstall})
+	}
 	if err := s.d.Autostart.Install(s.d.Binary.Path()); err != nil {
 		return fmt.Errorf("setting up autostart: %w", err)
-	}
-	if !before {
-		undos = append(undos, undo{"autostart", s.d.Autostart.Uninstall})
 	}
 	s.say("autostart", "starts at login via %s", s.d.Autostart.Path())
 	if err := s.d.Autostart.Start(); err != nil {
@@ -228,10 +233,10 @@ func (s *Service) installWaka(cfg *config.Config, o Options) (undo, error) {
 	if err != nil {
 		return undo{}, fmt.Errorf("updating %s: %w", s.d.Waka.Path(), err)
 	}
-	u := undo{}
-	if !res.AlreadyInstalled {
-		u = undo{"wakatime config", func() error { _, err := s.d.Waka.Uninstall(); return err }}
-	}
+	// A first install is undone like uninstall; a repeat install puts back
+	// the bytes and state it replaced (a new --key, say), so the file and
+	// config.json never disagree after a rollback.
+	u := undo{"wakatime config", func() error { return s.d.Waka.Revert(res) }}
 	switch {
 	case res.Changed && res.BackupWritten:
 		s.say("wakatime", "pointed %s at Logbook (original backed up)", res.Path)
@@ -261,7 +266,7 @@ func (s *Service) installWaka(cfg *config.Config, o Options) (undo, error) {
 func describeMirror(h config.Hackatime) string {
 	if !h.Mirror {
 		if h.URL != "" && h.APIKey != "" {
-			return "off (turn on by reinstalling without --no-mirror)"
+			return "off (to turn it on, run install again with --mirror-url " + h.URL + ")"
 		}
 		return "off (no previous WakaTime or Hackatime key found)"
 	}

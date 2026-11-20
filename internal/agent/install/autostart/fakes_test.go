@@ -8,14 +8,19 @@ import (
 
 // fakeRunner records commands. Commands whose joined text starts with a
 // key in fail return that error.
+// When fn is set it decides every result instead.
 type fakeRunner struct {
 	calls []string
 	fail  map[string]error
+	fn    func(cmd string) error
 }
 
 func (f *fakeRunner) Run(_ context.Context, name string, args ...string) (string, error) {
 	c := strings.Join(append([]string{name}, args...), " ")
 	f.calls = append(f.calls, c)
+	if f.fn != nil {
+		return "", f.fn(c)
+	}
 	for prefix, err := range f.fail {
 		if strings.HasPrefix(c, prefix) {
 			return "", err

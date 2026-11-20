@@ -5,7 +5,9 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
+	"time"
 )
 
 var update = flag.Bool("update", false, "rewrite golden files")
@@ -34,8 +36,9 @@ func TestGoldenFiles(t *testing.T) {
 	}{
 		{"launchd.plist.golden", LaunchdPlist("/Users/ada/Library/Application Support/Logbook/bin/logbook", "/Users/ada/Library/Application Support/logbook/launchd.log")},
 		{"launchd-escaped.plist.golden", LaunchdPlist("/Users/a&b/<x>/logbook", "/tmp/l.log")},
-		{"logbook.service.golden", SystemdUnit("/home/ada/.local/bin/logbook")},
-		{"logbook-escaped.service.golden", SystemdUnit(`/home/a b/100%/$x/"q"\logbook`)},
+		{"logbook.service.golden", SystemdUnit("/home/ada/.local/bin/logbook", true)},
+		{"logbook-headless.service.golden", SystemdUnit("/home/ada/.local/bin/logbook", false)},
+		{"logbook-escaped.service.golden", SystemdUnit(`/home/a b/100%/$x/"q"\logbook`, true)},
 		{"logbook.desktop.golden", DesktopEntry("/home/ada/.local/bin/logbook")},
 		{"logbook-escaped.desktop.golden", DesktopEntry(`/home/a b/100%/$x/"q"\logbook`)},
 		{"windows-run.golden", []byte(WindowsRunValue(`C:\Users\Ada Lovelace\AppData\Local\Programs\Logbook\logbook.exe`))},
@@ -73,19 +76,63 @@ func TestLaunchd(t *testing.T) {
 		t.Fatalf("idempotent install ran %q", r.calls)
 	}
 
-	// Loaded and changed: unload, then load.
+	// Loaded and changed: unload, wait until launchd has really dropped
+	// the job (it is still listed for a moment after bootout), then load.
 	r.calls = nil
+	var slept []time.Duration
+	l.sleep = func(d time.Duration) { slept = append(slept, d) }
+	printsAfterBootout := -1
+	r.fn = func(c string) error {
+		switch {
+		case strings.HasPrefix(c, "launchctl bootout"):
+			printsAfterBootout = 0
+		case strings.HasPrefix(c, "launchctl print") && printsAfterBootout >= 0:
+			printsAfterBootout++
+			if printsAfterBootout > 2 {
+				return errFake
+			}
+		}
+		return nil
+	}
 	if err := l.Install("/other/logbook"); err != nil {
 		t.Fatal(err)
 	}
 	wantCalls = []string{
 		"launchctl print gui/501/dev.boogles.logbook",
 		"launchctl bootout gui/501/dev.boogles.logbook",
+		"launchctl print gui/501/dev.boogles.logbook",
+		"launchctl print gui/501/dev.boogles.logbook",
+		"launchctl print gui/501/dev.boogles.logbook",
 		"launchctl bootstrap gui/501 " + l.Path(),
 	}
 	if !reflect.DeepEqual(r.calls, wantCalls) {
 		t.Fatalf("calls = %q, want %q", r.calls, wantCalls)
 	}
+	if len(slept) != 2 {
+		t.Fatalf("slept %v, want two polls", slept)
+	}
+	r.fn = nil
+
+	// A job that never goes away fails after a bounded wait instead of
+	// sending a bootstrap that launchd would reject.
+	r.calls, slept = nil, nil
+	if err := l.Install("/third/logbook"); err == nil {
+		t.Fatal("Install() = nil while the old job stayed loaded")
+	}
+	if len(slept) != bootoutPolls {
+		t.Fatalf("slept %d times, want %d", len(slept), bootoutPolls)
+	}
+	for _, c := range r.calls {
+		if strings.HasPrefix(c, "launchctl bootstrap") {
+			t.Fatal("bootstrap sent while the old job was still loaded")
+		}
+	}
+	// Put the expected plist back for the rest of the test.
+	r.fail = map[string]error{"launchctl print": errFake}
+	if err := l.Install("/other/logbook"); err != nil {
+		t.Fatal(err)
+	}
+	r.fail = nil
 
 	r.calls = nil
 	if err := l.Start(); err != nil {
@@ -128,7 +175,7 @@ func TestLinuxSystemd(t *testing.T) {
 		t.Fatal(err)
 	}
 	unit := filepath.Join(cfg, "systemd", "user", "logbook.service")
-	if b, err := os.ReadFile(unit); err != nil || string(b) != string(SystemdUnit("/home/u/.local/bin/logbook")) {
+	if b, err := os.ReadFile(unit); err != nil || string(b) != string(SystemdUnit("/home/u/.local/bin/logbook", true)) {
 		t.Fatalf("unit = %q, %v", b, err)
 	}
 	if _, err := os.Stat(desktop); !os.IsNotExist(err) {
@@ -142,8 +189,9 @@ func TestLinuxSystemd(t *testing.T) {
 	}
 	want := []string{
 		"systemctl --user show-environment",
+		"systemctl --user is-active --quiet graphical-session.target",
 		"systemctl --user daemon-reload",
-		"systemctl --user enable logbook.service",
+		"systemctl --user reenable logbook.service",
 		"systemctl --user show-environment",
 		"systemctl --user restart logbook.service",
 		"systemctl --user show-environment",
@@ -159,6 +207,46 @@ func TestLinuxSystemd(t *testing.T) {
 	}
 	if ok, _ := l.Installed(); ok {
 		t.Fatal("still installed")
+	}
+}
+
+func TestLinuxSystemdWithoutGraphicalSession(t *testing.T) {
+	cfg := t.TempDir()
+	r := &fakeRunner{fail: map[string]error{"systemctl --user is-active": exitErr(3)}}
+	l := NewLinux(cfg, r, &fakeSpawner{})
+	if err := l.Install("/home/u/.local/bin/logbook"); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(filepath.Join(cfg, "systemd", "user", "logbook.service"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(b) != string(SystemdUnit("/home/u/.local/bin/logbook", false)) {
+		t.Fatalf("unit = %s", b)
+	}
+	if !strings.Contains(string(b), "WantedBy=default.target") || strings.Contains(string(b), "graphical-session") {
+		t.Fatalf("headless unit binds to a graphical session:\n%s", b)
+	}
+}
+
+func TestNeedsRelaunch(t *testing.T) {
+	tests := []struct {
+		name  string
+		env   string
+		procs int
+		want  bool
+	}{
+		{"login: own visible console", "", 1, true},
+		{"started from a terminal", "", 2, false},
+		{"no console", "", 0, false},
+		{"already detached", "1", 1, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := needsRelaunch(tt.env, tt.procs); got != tt.want {
+				t.Fatalf("needsRelaunch(%q, %d) = %v, want %v", tt.env, tt.procs, got, tt.want)
+			}
+		})
 	}
 }
 

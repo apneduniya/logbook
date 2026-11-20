@@ -25,17 +25,17 @@ Both scripts:
 logbook install --key <key> [--server <url>] [--no-mirror] [--mirror-url <url>] [--harness all|none|claude-code,codex,...]
 ```
 
-`--key` falls back to `LOGBOOK_API_KEY`. Input is checked before anything changes: the key must be a Logbook key (lowercase UUIDv4), `--harness` names must exist, URLs must be http(s). The steps then run in this order, each printing one line:
+`--key` falls back to `LOGBOOK_API_KEY`. Install refuses to run in a build without the `run` daemon command, because every autostart entry runs it (and `release.yml` refuses to publish such a build). Input is checked before anything changes: the key must be a Logbook key (lowercase UUIDv4), `--harness` names must exist, URLs must be http(s). The steps then run in this order, each printing one line:
 
 | # | Step | What changes | Undo on a later failure |
 |---|---|---|---|
 | 1 | config | Loads `config.json` or creates it with `config.Default()` (new local token). Checks the key with `GET <server>/api/v1/users/current/statusbar/today` (`Authorization: Basic base64(key)`, 15 s timeout; https only, except plain http to localhost). Saves the key and server. | Restore the previous config, or delete a new one. |
 | 2 | binary | Copies the running binary into place (below). | Put the previous binary back, or delete the new one. |
-| 3 | wakatime | Points `.wakatime.cfg` at the daemon (below) and saves the mirror target in `config.json`. | Restore the file, if this run was the first to change it. |
+| 3 | wakatime | Points `.wakatime.cfg` at the daemon (below) and saves the mirror target in `config.json`. | First install: restore the file as uninstall would. Re-install: put back the file bytes and state this run replaced (for example the old `api_key` after a new `--key`), so the file and `config.json` agree. |
 | 4 | hooks | For each selected harness that `Detect()`s, `Install(<installed binary>)`. A harness that fails is reported and skipped; it doesn't undo the install. | `Uninstall()` hooks this run added. |
-| 5 | autostart | Writes the login entry (below), then `Start()`s the daemon, restarting one that is already running so the new binary takes over. | Remove an entry this run added. |
+| 5 | autostart | Writes the login entry (below), then `Start()`s the daemon, restarting one that is already running so the new binary takes over. | Remove an entry this run added, including one left half-done when `Install` itself failed (unit written but not enabled, plist written but not loaded). |
 
-Then the previous binary is deleted, and a summary prints the status page URL. Running install again with the same flags changes nothing; a failed re-install undoes only its own changes and leaves the working install alone.
+Then the previous binary is deleted, and a summary prints the status page URL. On macOS and Linux it also says how to put the binary's folder on `PATH` when it isn't there; on Windows, where the folder is never added to `PATH`, it prints the full path of `logbook.exe` and the PowerShell command to uninstall (`& "<path>" uninstall`). Running install again with the same flags changes nothing; a failed re-install undoes only its own changes and leaves the working install alone.
 
 Harness installers come from `harness.All()` (the harness module). Until that is merged, `harnessInstallers()` returns an empty list.
 
@@ -63,6 +63,10 @@ Every other byte stays: comments, blank lines, other keys and sections, key orde
 - `wakatime.cfg.backup`: the file exactly as it was before the first install. It is never overwritten. If one is already there from an older install that was undone by hand, it is kept, and uninstall only restores keys (below).
 - `wakatime.cfg.state.json`: which file was changed, whether it existed, the SHA-256 of what install wrote, the local URL, and the original `api_url`/`api_key` (with whether each was present). It is written before the config file, so a crash in between can still be undone.
 
+**Original key.** wakatime-cli reads `api_key`, then the legacy `apikey`, then `WAKATIME_API_KEY`. The first non-empty one is saved as the key to mirror with. Only `api_key` is ever written; a legacy `apikey` line stays in the file untouched (`api_key` wins while Logbook is installed), and uninstall removes the `api_key` line Logbook added.
+
+**Re-install.** If the file changed since Logbook last wrote it (the user or a plugin edited it), a re-install marks the backup as no longer exact, so uninstall later restores only the keys and keeps those edits.
+
 **Uninstall:**
 - File unchanged since install: the backup is copied back byte for byte (or the file is deleted, if install created it), and the backup is removed.
 - File edited since (by the user or a plugin) but still pointing at Logbook: only `api_url` and `api_key` go back to their originals (or are removed, if there were none). The other edits stay, and the backup is kept and its path printed.
@@ -79,9 +83,9 @@ The mirror target is whatever `.wakatime.cfg` pointed at before, so nothing the 
 | WakaTime, or no `api_url` (wakatime-cli's default `https://api.wakatime.com/api/v1`) | to WakaTime |
 | Any other server (e.g. self-hosted wakapi) | to that server |
 | Already the Logbook server or the local daemon | off (it would count time twice) |
-| No `api_key` (the `WAKATIME_API_KEY` env var counts as a key) | off |
+| No `api_key` (the legacy `apikey`, then the `WAKATIME_API_KEY` env var, count as a key, in wakatime-cli's order) | off |
 
-`--no-mirror` saves the URL and key with `mirror: false`. `--mirror-url` keeps the original key but sends to a different URL. A re-install without either flag keeps the earlier choice. The original key is stored only in `config.json` and the state file (both `0600`, in the `0700` data directory) and is never printed.
+`--no-mirror` saves the URL and key with `mirror: false`. `--mirror-url` keeps the original key but sends to a different URL. A re-install without either flag keeps the earlier choice, so to turn mirroring back on after `--no-mirror`, re-install with `--mirror-url <saved url>`; the install output prints that exact command. The original key is stored only in `config.json` and the state file (both `0600`, in the `0700` data directory) and is never printed.
 
 ## Binary location (`selfinstall`)
 
@@ -100,6 +104,7 @@ Every entry runs `<installed binary> run`. The file contents are built by pure f
 **Windows.**
 - Value `Logbook` under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, set to `"<path>" run` (REG_SZ, quoted because the path may contain spaces).
 - `Start` first runs `taskkill /F /IM logbook.exe /FI "PID ne <self>"`, so an older daemon holding the port goes away. It then starts the daemon with `CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP`, so the daemon has a hidden console that `git` and other console children inherit, and no window flashes. Its working directory is the binary's folder.
+- At login, Windows starts the Run value as a console program, so Explorer gives it its own visible console (or a Windows Terminal window on Windows 11), and closing that window would kill the daemon. `autostart.Background(bin, args)` handles this and **must be the first thing `logbook run` does on Windows**: when the process is the only one attached to its console (`GetConsoleProcessList` returns 1) and `LOGBOOK_DETACHED` isn't `1`, it starts a hidden copy (same arguments, `CREATE_NO_WINDOW`, `LOGBOOK_DETACHED=1`) and returns true, and `run` exits. The window flashes for a moment at login, then closes. A daemon started from a terminal shares that console with the shell and stays in the foreground. `Start` sets `LOGBOOK_DETACHED=1` too. On macOS and Linux `Background` does nothing.
 - Uninstall deletes the value and runs the same `taskkill`.
 
 **macOS.**
@@ -109,7 +114,7 @@ Every entry runs `<installed binary> run`. The file contents are built by pure f
   - `ThrottleInterval` 30;
   - `ProcessType Background`, which gives lower CPU and I/O priority;
   - stdout and stderr appended to `<data dir>/launchd.log`.
-- Install runs `launchctl bootstrap gui/<uid> <plist>`. If the job is already loaded (`launchctl print` succeeds) and the plist changed, it runs `launchctl bootout gui/<uid>/dev.boogles.logbook` first. An unchanged, loaded job is left alone.
+- Install runs `launchctl bootstrap gui/<uid> <plist>`. If the job is already loaded (`launchctl print` succeeds) and the plist changed, it runs `launchctl bootout gui/<uid>/dev.boogles.logbook` first, then polls `launchctl print` every 250 ms (up to 5 s) until launchd has really dropped the job: `bootout` returns before that, and an early `bootstrap` fails with `Bootstrap failed: 5: Input/output error`. An unchanged, loaded job is left alone.
 - `Start` runs `launchctl kickstart -k gui/<uid>/dev.boogles.logbook`.
 - Uninstall runs `bootout` and deletes the plist.
 
@@ -118,10 +123,10 @@ Every entry runs `<installed binary> run`. The file contents are built by pure f
   - `Restart=on-failure`, `RestartSec=10`;
   - `MemoryMax=64M`, `CPUQuota=10%`;
   - `Nice=10`, best-effort I/O priority 7;
-  - `After=graphical-session.target`, so `DISPLAY` and the session bus are present on desktops that import them;
-  - `WantedBy=default.target`.
+  - on a desktop (`systemctl --user is-active graphical-session.target` succeeds at install): `PartOf=`, `After=` and `WantedBy=graphical-session.target`. Desktops import `DISPLAY`, `WAYLAND_DISPLAY` and the session bus address into the user manager before they start that target, so the X11/Wayland idle and focus sensors see them, and the daemon stops with the session. `After=` alone would not help a unit pulled in by `default.target`, which the user manager reaches at first login, before the desktop starts;
+  - otherwise (install over SSH, WSL, desktops without systemd integration): `WantedBy=default.target`. Re-running install from the desktop switches the unit over.
 
-  It then runs `systemctl --user daemon-reload` and `enable logbook.service`. `Start` runs `systemctl --user restart logbook.service`. Uninstall runs `disable --now`, deletes the unit and runs `daemon-reload`.
+  It then runs `systemctl --user daemon-reload` and `reenable logbook.service` (disable then enable, so a link under the other target from an earlier install is dropped). `Start` runs `systemctl --user restart logbook.service`. Uninstall runs `disable --now`, deletes the unit and runs `daemon-reload`.
 - Without a user systemd (WSL, minimal distros), it writes `$XDG_CONFIG_HOME/autostart/logbook.desktop` (`Type=Application`, `NoDisplay=true`, `Terminal=false`, `Exec` quoted per the Desktop Entry spec). `Start` runs `pkill -f '(^|/)logbook run$'` and then starts the daemon in a new session (`setsid`). Uninstall stops it the same way and deletes the file.
 - Installing one kind removes the other, so two daemons never run.
 
@@ -135,7 +140,7 @@ Steps run in reverse order, and a failed step doesn't stop the rest:
 3. Restore `.wakatime.cfg`.
 4. Remove the binary.
 
-The data directory (config, local database, logs) is kept unless `--purge --yes` is given. `--purge` without `--yes` fails before anything changes. Purge is skipped if any earlier step failed, because the directory holds what a retry needs. If the `.wakatime.cfg` backup wasn't used, it is first copied to `<.wakatime.cfg path>.logbook-backup`, so the user's original is never lost. Purge refuses a filesystem root, the home directory, and any directory that is neither named `logbook` nor holds a `config.json`. On Windows it retries for a couple of seconds while the stopped daemon releases its files.
+The data directory (config, local database, logs) is kept unless `--purge --yes` is given. `--purge` without `--yes` fails before anything changes. Purge is skipped if any earlier step failed, because the directory holds what a retry needs. If the `.wakatime.cfg` backup wasn't used, it is first copied to `<.wakatime.cfg path>.logbook-backup`, so the user's original is never lost. Purge refuses a filesystem root and the home directory. It deletes only a directory that holds `config.json`, `wakatime.cfg.state.json` or `wakatime.cfg.backup`, or that is exactly the default data directory (`<user config dir>/logbook`). A directory that is merely named `logbook`, such as a checkout a mistaken `LOGBOOK_HOME` points at, is refused. On Windows it retries for a couple of seconds while the stopped daemon releases its files.
 
 ## Releases
 

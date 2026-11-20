@@ -66,6 +66,11 @@ func TestInstallUninstallFixtures(t *testing.T) {
 		{"wakatime-sections.cfg", "wakatime-sections.golden", Original{
 			APIKey: "waka_33333333-3333-4333-8333-333333333333", HadKey: true}},
 		{"no-settings.cfg", "no-settings.golden", Original{}},
+		// Only the legacy "apikey" spelling, which wakatime-cli still reads
+		// when api_key is empty: it is the key to mirror with, but it is
+		// not an api_key to write back on uninstall.
+		{"wakatime-legacy-apikey.cfg", "wakatime-legacy-apikey.golden", Original{
+			APIKey: "waka_44444444-4444-4444-8444-444444444444"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.golden, func(t *testing.T) {
@@ -349,4 +354,88 @@ func TestWarnings(t *testing.T) {
 	if got := warnings(d); len(got) != 3 {
 		t.Fatalf("warnings() = %q, want 3", got)
 	}
+}
+
+func TestReinstallAfterUserEditKeepsTheEdit(t *testing.T) {
+	m, cfg, _ := setup(t, "hackatime-setup.cfg")
+	if _, err := m.Install(localURL, logbookKey); err != nil {
+		t.Fatal(err)
+	}
+	// The user (or a plugin) edits the file, then runs install again, as
+	// the docs say to do when upgrading.
+	if err := os.WriteFile(cfg, append(read(t, cfg), "\n[git]\nsubmodules_disabled = true\n"...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if res, err := m.Install(localURL, logbookKey); err != nil || !res.AlreadyInstalled {
+		t.Fatalf("Install() = %+v, %v", res, err)
+	}
+	un, err := m.Uninstall()
+	if err != nil || un.Restored != "keys" {
+		t.Fatalf("Uninstall() = %+v, %v; want a keys-only restore", un, err)
+	}
+	got := string(read(t, cfg))
+	if !strings.Contains(got, "[git]\nsubmodules_disabled = true") {
+		t.Fatalf("the edit made between installs was lost:\n%s", got)
+	}
+	if !strings.Contains(got, "api_key = 11111111-1111-4111-8111-111111111111") || strings.Contains(got, localURL) {
+		t.Fatalf("keys not restored:\n%s", got)
+	}
+}
+
+func TestLegacyAPIKeyUninstallAfterEdit(t *testing.T) {
+	m, cfg, _ := setup(t, "wakatime-legacy-apikey.cfg")
+	if _, err := m.Install(localURL, logbookKey); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfg, append(read(t, cfg), "[projectmap]\nx = y\n"...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if un, err := m.Uninstall(); err != nil || un.Restored != "keys" {
+		t.Fatalf("Uninstall() = %+v, %v", un, err)
+	}
+	got := string(read(t, cfg))
+	if strings.Contains(got, "api_key") || !strings.Contains(got, "apikey = waka_44444444-4444-4444-8444-444444444444") {
+		t.Fatalf("file = %s", got)
+	}
+}
+
+func TestRevert(t *testing.T) {
+	t.Run("first install", func(t *testing.T) {
+		m, cfg, orig := setup(t, "hackatime-setup.cfg")
+		res, err := m.Install(localURL, logbookKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := m.Revert(res); err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(read(t, cfg), orig) {
+			t.Fatal("file not restored")
+		}
+		if _, ok, err := m.loadState(); err != nil || ok {
+			t.Fatalf("state left behind: %v, %v", ok, err)
+		}
+	})
+	t.Run("repeat install with a new key", func(t *testing.T) {
+		m, cfg, orig := setup(t, "hackatime-setup.cfg")
+		if _, err := m.Install(localURL, logbookKey); err != nil {
+			t.Fatal(err)
+		}
+		before := read(t, cfg)
+		stBefore := read(t, m.statePath())
+		res, err := m.Install(localURL, "99999999-9999-4999-8999-999999999999")
+		if err != nil || !res.Changed {
+			t.Fatalf("Install() = %+v, %v", res, err)
+		}
+		if err := m.Revert(res); err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(read(t, cfg), before) || !bytes.Equal(read(t, m.statePath()), stBefore) {
+			t.Fatal("repeat install not reverted to the earlier install")
+		}
+		// The earlier install is intact: uninstall still restores exactly.
+		if un, err := m.Uninstall(); err != nil || un.Restored != "exact" || !bytes.Equal(read(t, cfg), orig) {
+			t.Fatalf("Uninstall() = %+v, %v", un, err)
+		}
+	})
 }
