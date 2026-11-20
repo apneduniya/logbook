@@ -50,6 +50,11 @@ type AIEvent struct {
 	Tool string `json:"tool,omitempty"`
 	// PromptChars is the prompt's length in characters, for prompt_submit only.
 	PromptChars int `json:"prompt_chars,omitempty"`
+	// PromptHash is a keyed hash (HMAC-SHA256, key derived from the device's
+	// local token) of the normalised prompt, hex-encoded, for prompt_submit
+	// only. It lets the engine spot repeated prompts without storing them; it
+	// can't be reversed and isn't comparable across devices.
+	PromptHash string `json:"prompt_hash,omitempty"`
 	// Decision records the human's answer to a permission ask: "allow", "deny" or "".
 	Decision string `json:"decision,omitempty"`
 }
@@ -88,7 +93,7 @@ func (e AIEvent) Validate() error {
 	case e.Kind == "" || len(e.Kind) > 64:
 		return fmt.Errorf("%w: kind is required", ErrInvalidEvent)
 	case len(e.SessionID) > maxIDLen || len(e.Project) > maxShortLen || len(e.Model) > maxShortLen ||
-		len(e.Tool) > maxShortLen || len(e.Cwd) > maxEntityLen:
+		len(e.Tool) > maxShortLen || len(e.Cwd) > maxEntityLen || len(e.PromptHash) > 64:
 		return fmt.Errorf("%w: field too long", ErrInvalidEvent)
 	case e.PromptChars < 0:
 		return fmt.Errorf("%w: negative prompt length", ErrInvalidEvent)
