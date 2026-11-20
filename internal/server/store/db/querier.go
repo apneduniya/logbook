@@ -23,12 +23,33 @@ type Querier interface {
 	GetUserByID(ctx context.Context, id uuid.UUID) (User, error)
 	GetUserByUsername(ctx context.Context, username string) (User, error)
 	InsertAuditLog(ctx context.Context, arg InsertAuditLogParams) error
+	// Inserts a batch in one round trip. rows is a JSON array of objects whose
+	// keys match the column list below (fields_hash hex-encoded, time RFC 3339).
+	// Duplicates are skipped; projects rows are created for new project names.
+	// Returns the time of each heartbeat that was actually inserted.
+	InsertHeartbeats(ctx context.Context, arg InsertHeartbeatsParams) ([]time.Time, error)
 	// Creates a user on first sign-in. A concurrent first sign-in of the same
 	// identity updates the profile instead of failing.
 	InsertSignInUser(ctx context.Context, arg InsertSignInUserParams) (User, error)
 	ListActiveAPIKeys(ctx context.Context, userID uuid.UUID) ([]ApiKey, error)
+	// Reads the heartbeats a rollup recompute needs. The ranges are inclusive and
+	// never overlap, so no row is returned twice. The read is driven from the
+	// ranges: each one gets its own index range scan on (user_id, time) with
+	// runtime partition pruning, so a batch spread over months reads only the
+	// few minutes around each heartbeat, not everything in between.
+	ListRollupHeartbeats(ctx context.Context, arg ListRollupHeartbeatsParams) ([]ListRollupHeartbeatsRow, error)
 	LockUser(ctx context.Context, id uuid.UUID) error
+	// Queries for internal/server/ingest. Every query is scoped to one user_id.
+	// Serialises ingest batches for one user until the transaction ends.
+	// 1001 namespaces the lock so it can't collide with other advisory locks.
+	LockUserIngest(ctx context.Context, userID uuid.UUID) error
+	// Makes the 'you' rows inside the given windows equal to the supplied set in
+	// one round trip: upserts the fresh rows and deletes every other 'you' row in
+	// the windows. Both parts see the same snapshot and touch disjoint rows.
+	ReplaceUserMinutes(ctx context.Context, arg ReplaceUserMinutesParams) error
 	RevokeAPIKey(ctx context.Context, arg RevokeAPIKeyParams) (ApiKey, error)
+	// Totals a user's 'you' seconds in [start_time, end_time) per rollup group.
+	SumUserMinutesByGroup(ctx context.Context, arg SumUserMinutesByGroupParams) ([]SumUserMinutesByGroupRow, error)
 	TouchAPIKey(ctx context.Context, arg TouchAPIKeyParams) error
 	TouchSession(ctx context.Context, arg TouchSessionParams) (int64, error)
 	UpdateSignInProfile(ctx context.Context, arg UpdateSignInProfileParams) (User, error)
