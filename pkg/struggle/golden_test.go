@@ -102,18 +102,35 @@ func minutesIn(res Result, from, to time.Time) map[time.Time][]string {
 func TestFinalMinutesMatchAgentReplay(t *testing.T) {
 	for _, path := range fixturePaths(t) {
 		t.Run(filepath.Base(path), func(t *testing.T) {
-			full := withLateSamples(expandFixture(t, loadFixture(t, path)))
-			server := Compute(full)
-			fullFinal := full.Window.To.Add(-Lookahead)
-			for now := full.Window.From.Add(Lookahead + time.Minute); !now.After(full.Window.To); now = now.Add(time.Minute) {
-				agent := sliceInput(full, now.Add(-ContextBefore-finalAge), now)
-				agent.Window = Window{From: now.Add(-time.Hour), To: now}
-				from := maxTime(full.Window.From, now.Add(-finalAge))
-				to := minTime(now.Add(-Lookahead), fullFinal)
-				compareMinutes(t, "agent at "+now.Format("15:04"), Compute(agent), server, from, to)
-			}
+			checkAgentReplay(t, withLateSamples(expandFixture(t, loadFixture(t, path))))
 		})
 	}
+}
+
+// checkAgentReplay replays full as the agent sees it, minute by minute, with
+// events in arrival order (sliceInput), and compares every minute the agent
+// finalises with a re-run over all of full. It returns the full run.
+func checkAgentReplay(t *testing.T, full Input) Result {
+	t.Helper()
+	server := Compute(full)
+	fullFinal := full.Window.To.Add(-Lookahead)
+	for now := full.Window.From.Add(Lookahead + time.Minute); !now.After(full.Window.To); now = now.Add(time.Minute) {
+		agent := sliceInput(full, now.Add(-ContextBefore-finalAge), now)
+		agent.Window = Window{From: now.Add(-time.Hour), To: now}
+		from := maxTime(full.Window.From, now.Add(-finalAge))
+		to := minTime(now.Add(-Lookahead), fullFinal)
+		compareMinutes(t, "agent at "+now.Format("15:04"), Compute(agent), server, from, to)
+	}
+	return server
+}
+
+// cursorToolCall is what Cursor's hooks deliver for a tool call that runs
+// from start to end (package cursor): only a tool_end, stamped when it
+// arrives. Cursor has no hook when a tool starts, and a tool_start
+// back-dated to start would arrive at end, possibly after minutes it would
+// change were final (arrivals).
+func cursorToolCall(ev func(time.Time, wire.AIEventKind) wire.AIEvent, _, end time.Time) []wire.AIEvent {
+	return []wire.AIEvent{ev(end, wire.AIToolEnd)}
 }
 
 // withLateSamples adds, for every prompt, activity samples taken just past
@@ -177,11 +194,18 @@ func minTime(a, b time.Time) time.Time {
 	return b
 }
 
-// sliceInput keeps the events in [from, to), as the agent's local database
-// would return them at time to.
+// sliceInput keeps the events in [from, to) that had arrived by to, as the
+// agent's local database would return them at time to. Every event arrives
+// at its Time except as arrivals says.
 func sliceInput(in Input, from, to time.Time) Input {
 	keep := func(t time.Time) bool { return !t.Before(from) && t.Before(to) }
 	out := Input{Repos: in.Repos, TZ: in.TZ}
+	arrived := arrivals(in.AI)
+	for i, e := range in.AI {
+		if keep(e.Time) && arrived[i].Before(to) {
+			out.AI = append(out.AI, e)
+		}
+	}
 	for _, s := range in.Activity {
 		if keep(s.Time) {
 			out.Activity = append(out.Activity, s)
@@ -192,14 +216,45 @@ func sliceInput(in Input, from, to time.Time) Input {
 			out.Heartbeats = append(out.Heartbeats, h)
 		}
 	}
-	for _, e := range in.AI {
-		if keep(e.Time) {
-			out.AI = append(out.AI, e)
-		}
-	}
 	for _, a := range in.ActiveTime {
 		if keep(a.From) && !a.To.After(to) {
 			out.ActiveTime = append(out.ActiveTime, a)
+		}
+	}
+	return out
+}
+
+// arrivals returns when the agent receives each of ai's events. Most hooks
+// run as the event happens, so an event arrives at its Time. Cursor runs no
+// hook when a tool starts (docs/agent/harness.md), so a Cursor tool_start
+// stamped earlier can only arrive with its session's next tool_end, and one
+// with no later tool_end never arrives. With arrivals, every replay in these
+// tests sees events in arrival order: a minute final when an event arrived
+// must not change because of it.
+func arrivals(ai []wire.AIEvent) []time.Time {
+	order := make([]int, len(ai))
+	for i := range order {
+		order[i] = i
+	}
+	slices.SortStableFunc(order, func(a, b int) int { return compareAI(ai[a], ai[b]) })
+	out := make([]time.Time, len(ai))
+	pending := map[string][]int{} // Cursor session -> tool_starts not yet delivered
+	never := time.Date(9999, 1, 1, 0, 0, 0, 0, time.UTC)
+	for _, i := range order {
+		e := ai[i]
+		out[i] = e.Time
+		if e.Harness != wire.HarnessCursor {
+			continue
+		}
+		switch e.Kind {
+		case wire.AIToolStart:
+			out[i] = never
+			pending[e.SessionID] = append(pending[e.SessionID], i)
+		case wire.AIToolEnd:
+			for _, j := range pending[e.SessionID] {
+				out[j] = e.Time
+			}
+			pending[e.SessionID] = nil
 		}
 	}
 	return out

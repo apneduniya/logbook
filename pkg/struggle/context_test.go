@@ -55,7 +55,10 @@ var boundedSeeds = flag.Int("seeds", 40, "random scenarios for TestBoundedContex
 // [minute-ContextBefore, minute+Lookahead) equals its result computed from
 // all events, apart from the window-relative flags. The scenarios include
 // sensor stalls, late samples that reveal old input, and events far before
-// and after the minute.
+// and after the minute. Slices hold only the events that had arrived by
+// their end (sliceInput), so an event stamped before it arrived, as Cursor's
+// hooks could produce, must not change a minute that was final by then. The
+// agent's own replay, minute by minute, is checked on every scenario too.
 func TestBoundedContext(t *testing.T) {
 	seeds := *boundedSeeds
 	if testing.Short() {
@@ -70,6 +73,7 @@ func TestBoundedContext(t *testing.T) {
 			in.DataEnd = m.Add(Lookahead)
 			compareMinutes(t, fmt.Sprintf("seed %d, bounded context", seed+1), Compute(in), want, m, m.Add(time.Minute))
 		}
+		t.Run(fmt.Sprintf("seed %d agent replay", seed+1), func(t *testing.T) { checkAgentReplay(t, full) })
 	}
 }
 
@@ -133,8 +137,9 @@ func randomScenario(seed uint64) Input {
 	// permission asks and answers, turn ends, timeouts, session starts
 	// mid-turn (Claude Code's compaction). Sessions 3 to 5 have the shapes
 	// of other harnesses' hooks (docs/agent/harness.md): Copilot's tool ends
-	// with no tool starts, Cursor's tool starts back-dated by the tool's
-	// duration, OpenCode's replies as decided asks. Their turns can run for
+	// with no tool starts, Cursor's tool calls reported only when they end
+	// (cursorToolCall), some after more than Lookahead, OpenCode's replies as
+	// decided asks. Their turns can run for
 	// over an hour, so the prompt is often outside a minute's context.
 	harnesses := []wire.Harness{wire.HarnessClaudeCode, wire.HarnessClaudeCode, wire.HarnessClaudeCode,
 		wire.HarnessCopilot, wire.HarnessCursor, wire.HarnessOpenCode}
@@ -171,8 +176,13 @@ func randomScenario(seed uint64) Input {
 				case h == wire.HarnessCopilot:
 					in.AI = append(in.AI, ev(x, wire.AIToolEnd))
 				case h == wire.HarnessCursor:
+					// Some calls run for longer than Lookahead: Cursor reports
+					// them only when they end.
 					took := secs(r.between(0, 1200))
-					in.AI = append(in.AI, ev(x.Add(-took), wire.AIToolStart), ev(x, wire.AIToolEnd))
+					if chance(0.15) {
+						took = secs(r.between(1200, 3600))
+					}
+					in.AI = append(in.AI, cursorToolCall(ev, x.Add(-took), x)...)
 				default:
 					in.AI = append(in.AI, ev(x, wire.AIToolStart), ev(x.Add(time.Second), wire.AIToolEnd))
 				}
@@ -279,6 +289,39 @@ func TestSessionStartDoesNotKeepTurnOpen(t *testing.T) {
 	want := checkBounded(t, midTurnStream(wire.HarnessClaudeCode, wire.AISessionStart, ""))
 	if got := labelAt(want, at(80*time.Minute)); got != LabelIdle {
 		t.Fatalf("minute +80 after only session starts is %s, want idle", got)
+	}
+}
+
+// Cursor reports a tool call only when it ends. The same long prompt at −4,
+// −2 and 0 minutes, then a tool call from +8 to +48: when minute +2 becomes
+// final (by +27) Cursor hasn't reported the call, so the third prompt's turn
+// ended at its prompt and +2 is the person's minute with full credit. When
+// the call arrives at +48 it must not extend that turn back through +8 and
+// cut +2 as a loop: agent and server would disagree, and an honest minute
+// would lose its credit after the fact.
+func TestLateCursorToolCallKeepsFinalMinutes(t *testing.T) {
+	m := time.Minute
+	full := Input{Window: Window{From: at(-5 * m), To: at(30 * m)}, DataEnd: at(90 * m)}
+	for x := at(-20 * m); x.Before(at(90 * m)); x = x.Add(5 * time.Second) {
+		full.Activity = append(full.Activity, wire.ActivitySample{Time: x, IdleSeconds: 1, FocusKind: "terminal"})
+	}
+	ev := func(x time.Time, k wire.AIEventKind) wire.AIEvent {
+		return wire.AIEvent{Time: x, Kind: k, Harness: wire.HarnessCursor, SessionID: "s", Project: "app"}
+	}
+	for _, d := range []time.Duration{-4 * m, -2 * m, 0} {
+		p := ev(at(d), wire.AIPromptSubmit)
+		p.PromptChars, p.PromptHash = 80, "same"
+		full.AI = append(full.AI, p)
+	}
+	full.AI = append(full.AI, cursorToolCall(ev, at(8*m), at(48*m))...)
+	full.AI = append(full.AI, ev(at(49*m), wire.AITurnEnd))
+
+	want := checkAgentReplay(t, full)
+	checkBounded(t, full)
+	for _, row := range want.Minutes {
+		if row.Minute.Equal(at(2*m)) && (row.Label != LabelYou || row.Credited != 60 || len(row.Cuts) != 0) {
+			t.Fatalf("minute +2 = %+v, want you with 60 s and no cut", row)
+		}
 	}
 }
 

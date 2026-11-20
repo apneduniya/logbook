@@ -2,7 +2,6 @@ package cursor
 
 import (
 	"encoding/json"
-	"time"
 
 	"github.com/apneduniya/logbook/internal/agent/harness/aievent"
 	"github.com/apneduniya/logbook/internal/agent/harness/cmdline"
@@ -18,9 +17,9 @@ const Name = string(wire.HarnessCursor)
 const hookTimeout = 5
 
 // Events maps the Cursor events Logbook installs, in install order, to AI
-// event kinds. postToolUse and postToolUseFailure also produce a tool_start
-// (see Parse). Cursor has no hook for "waiting for the human to approve", so
-// it never produces permission_ask.
+// event kinds. Cursor has no hook for "waiting for the human to approve", so
+// it never produces permission_ask, and none Logbook can safely install for a
+// tool's start, so it never produces tool_start (see Parse).
 func Events() aievent.Table {
 	return aievent.Table{
 		{Event: "sessionStart", Kind: wire.AISessionStart},
@@ -89,13 +88,13 @@ type payload struct {
 	Cwd            string         `json:"cwd"`
 	ToolName       string         `json:"tool_name"`
 	Prompt         aievent.Prompt `json:"prompt"`
-	// Duration is the tool's run time in milliseconds (postToolUse).
-	Duration float64 `json:"duration"`
 }
 
 // Parse maps a hook payload to AI event fields, or nil if Logbook doesn't
-// record the event. A finished tool call yields two events: tool_start,
-// back-dated by the duration Cursor reports, and tool_end.
+// record the event. Every event is stamped when its hook runs. A finished
+// tool call is one tool_end: a tool_start back-dated by the call's duration
+// would reach the agent only when the call ends, possibly after the minutes
+// it would change were final (docs/STRUGGLE-RULES.md).
 func Parse(event string, in aievent.Input, _ func(string) string) []aievent.Fields {
 	kind, ok := Events().Kind(event)
 	if !ok {
@@ -123,13 +122,6 @@ func Parse(event string, in aievent.Input, _ func(string) string) []aievent.Fiel
 		f.PromptChars, f.PromptDigest = p.Prompt.Len(), p.Prompt.Digest()
 	case wire.AIToolEnd:
 		f.Tool = p.ToolName
-		ago := time.Duration(p.Duration * float64(time.Millisecond))
-		if ago > 0 && ago <= aievent.MaxAgo {
-			start := f
-			start.Kind = wire.AIToolStart
-			start.Ago = ago
-			return []aievent.Fields{start, f}
-		}
 	}
 	return []aievent.Fields{f}
 }
