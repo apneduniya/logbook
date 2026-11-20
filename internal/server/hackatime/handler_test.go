@@ -197,9 +197,109 @@ func TestDoubleLinkConflict(t *testing.T) {
 	if e.tokenFromDB(t, alice) != aliceToken {
 		t.Fatal("alice's link changed")
 	}
-	// The token Hackatime issued for bob's attempt was given back.
-	if revoked := e.fake.revokedTokens(); len(revoked) != 1 || revoked[0] == aliceToken {
-		t.Fatalf("revoked = %v, want bob's token only", revoked)
+	// Hackatime reuses tokens, so bob's attempt was handed alice's token.
+	// Revoking it would break alice's link; it must still work.
+	if revoked := e.fake.revokedTokens(); len(revoked) != 0 {
+		t.Fatalf("revoked %d tokens on a rejected link, want none", len(revoked))
+	}
+	if !e.fake.liveToken(aliceToken) {
+		t.Fatal("alice's token no longer accepted by Hackatime")
+	}
+}
+
+// TestRelinkAfterTransientFailureKeepsToken renews a link while Hackatime's
+// /me has a hiccup. Hackatime returns the same token as the stored one, which
+// must stay usable.
+func TestRelinkAfterTransientFailureKeepsToken(t *testing.T) {
+	e := newEnv(t)
+	alice := e.linkedUser(t, "alice", 42)
+	token := e.tokenFromDB(t, alice)
+
+	e.client = e.fake.client(t, func(c *ClientConfig) { c.MaxRetries = -1 })
+	e.svc.client = e.client
+	e.fake.setMeHook(func(w http.ResponseWriter, _ *http.Request) bool {
+		w.WriteHeader(http.StatusBadGateway)
+		return true
+	})
+	if rec := e.link(t, alice, 42); rec.Code != http.StatusBadGateway {
+		t.Fatalf("relink with /me down = %d %s, want 502", rec.Code, rec.Body)
+	}
+	e.fake.setMeHook(nil)
+	if len(e.fake.revokedTokens()) != 0 || !e.fake.liveToken(token) {
+		t.Fatal("failed relink revoked the stored token")
+	}
+	if got := e.tokenFromDB(t, alice); got != token {
+		t.Fatal("stored token changed on a failed relink")
+	}
+	if me, err := e.client.Me(context.Background(), token); err != nil || me.ID != 42 {
+		t.Fatalf("stored token unusable after failed relink: %+v, %v", me, err)
+	}
+}
+
+// TestSwitchAccountRevokesOldToken relinks to a different Hackatime account:
+// the old account's token is revoked and its import restarted.
+func TestSwitchAccountRevokesOldToken(t *testing.T) {
+	e := newEnv(t)
+	alice := e.linkedUser(t, "alice", 42)
+	oldToken := e.tokenFromDB(t, alice)
+	e.fake.addUser(43, "green")
+	if rec := e.link(t, alice, 43); rec.Code != http.StatusSeeOther {
+		t.Fatalf("switch link = %d %s", rec.Code, rec.Body)
+	}
+	newToken := e.tokenFromDB(t, alice)
+	if newToken == oldToken || !e.fake.liveToken(newToken) {
+		t.Fatal("new account's token not stored")
+	}
+	if r := e.fake.revokedTokens(); len(r) != 1 || r[0] != oldToken || e.fake.liveToken(oldToken) {
+		t.Fatal("old account's token not revoked")
+	}
+	if s := decodeStatus(t, e.do(t, http.MethodGet, "/api/v1/hackatime/link", alice).Body.Bytes()); s.HackatimeUserID != 43 {
+		t.Fatalf("status = %+v, want account 43", s)
+	}
+	assertNoSecret(t, "logs", e.logs.String(), oldToken)
+	assertNoSecret(t, "logs", e.logs.String(), newToken)
+}
+
+// TestBannedLinkSticks proves a red user can't shed the ban by unlinking or
+// by swapping in a clean Hackatime account.
+func TestBannedLinkSticks(t *testing.T) {
+	e := newEnv(t)
+	alice := e.newUser(t, "alice")
+	e.fake.addUser(42, "red")
+	e.fake.addUser(43, "green")
+	ctx := context.Background()
+	if rec := e.link(t, alice, 42); rec.Code != http.StatusSeeOther {
+		t.Fatalf("link = %d %s", rec.Code, rec.Body)
+	}
+	token := e.tokenFromDB(t, alice)
+
+	if rec := e.do(t, http.MethodDelete, "/api/v1/hackatime/link", alice); rec.Code != http.StatusForbidden {
+		t.Fatalf("unlink while banned = %d %s, want 403", rec.Code, rec.Body)
+	}
+	if rec := e.link(t, alice, 43); rec.Code != http.StatusForbidden {
+		t.Fatalf("switch to clean account while banned = %d %s, want 403", rec.Code, rec.Body)
+	}
+	lvl, err := e.svc.TrustLevel(ctx, alice)
+	if err != nil || !lvl.Banned() {
+		t.Fatalf("TrustLevel() = %q, %v; want red", lvl, err)
+	}
+	if s := decodeStatus(t, e.do(t, http.MethodGet, "/api/v1/hackatime/link", alice).Body.Bytes()); s.HackatimeUserID != 42 {
+		t.Fatalf("status = %+v, want still linked to 42", s)
+	}
+	if !e.fake.liveToken(token) || len(e.fake.revokedTokens()) != 0 {
+		t.Fatal("banned link's token was revoked")
+	}
+	// Renewing the same (banned) account is still allowed.
+	if rec := e.link(t, alice, 42); rec.Code != http.StatusSeeOther {
+		t.Fatalf("relink same banned account = %d %s", rec.Code, rec.Body)
+	}
+	// Once Hackatime clears the user, unlinking works again.
+	e.fake.setTrust(42, "green")
+	if rec := e.link(t, alice, 42); rec.Code != http.StatusSeeOther {
+		t.Fatalf("relink = %d", rec.Code)
+	}
+	if rec := e.do(t, http.MethodDelete, "/api/v1/hackatime/link", alice); rec.Code != http.StatusNoContent {
+		t.Fatalf("unlink after clearance = %d %s", rec.Code, rec.Body)
 	}
 }
 

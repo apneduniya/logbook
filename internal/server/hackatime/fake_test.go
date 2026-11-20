@@ -22,9 +22,10 @@ const (
 )
 
 type fakeUser struct {
-	id     int64
-	github string
-	trust  string
+	id       int64
+	username string
+	github   string
+	trust    string
 }
 
 type fakeGrant struct {
@@ -45,6 +46,7 @@ type fakeHackatime struct {
 	revoked    []string
 	heartbeats map[int64][]map[string]any // user id -> rendered rows
 	userAgents []string
+	trustCalls int      // requests to the public trust_factor endpoint
 	hbCalls    []string // "start..end" of each heartbeats call that succeeded
 	// hbHook, when set, may answer a heartbeats request itself (return true).
 	hbHook  func(w http.ResponseWriter, r *http.Request, call int) bool
@@ -81,6 +83,55 @@ func (f *fakeHackatime) addUser(id int64, trust string) {
 	f.users[id] = &fakeUser{id: id, github: "gh" + strconv.FormatInt(id, 10), trust: trust}
 }
 
+// setMeHook installs (or, with nil, removes) a /me override.
+func (f *fakeHackatime) setMeHook(h func(w http.ResponseWriter, r *http.Request) bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.meHook = h
+}
+
+// setHBHook installs (or, with nil, removes) a heartbeats override.
+func (f *fakeHackatime) setHBHook(h func(w http.ResponseWriter, r *http.Request, call int) bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.hbHook = h
+}
+
+// setUsername sets a Hackatime username. Hackatime allows all-digit names.
+func (f *fakeHackatime) setUsername(id int64, username string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.users[id].username = username
+}
+
+// liveToken reports whether Hackatime still accepts token.
+func (f *fakeHackatime) liveToken(token string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	_, ok := f.tokens[token]
+	return ok
+}
+
+func (f *fakeHackatime) trustFactorCalls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.trustCalls
+}
+
+// issue returns the user's live token, or mints one. Like Hackatime's
+// Doorkeeper (reuse_access_token), the same user, app and scopes get the same
+// token back until it is revoked. Callers hold f.mu.
+func (f *fakeHackatime) issue(hackatimeUserID int64) string {
+	for tok, id := range f.tokens {
+		if id == hackatimeUserID {
+			return tok
+		}
+	}
+	tok := "tok_" + randHex(16)
+	f.tokens[tok] = hackatimeUserID
+	return tok
+}
+
 func (f *fakeHackatime) setTrust(id int64, trust string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -111,11 +162,9 @@ func (f *fakeHackatime) authorize(authURL string, hackatimeUserID int64) (code, 
 
 // tokenFor issues a token directly, for tests that skip the OAuth dance.
 func (f *fakeHackatime) tokenFor(hackatimeUserID int64) string {
-	tok := "tok_" + randHex(16)
 	f.mu.Lock()
-	f.tokens[tok] = hackatimeUserID
-	f.mu.Unlock()
-	return tok
+	defer f.mu.Unlock()
+	return f.issue(hackatimeUserID)
 }
 
 func (f *fakeHackatime) revokeAll(hackatimeUserID int64) {
@@ -166,8 +215,7 @@ func (f *fakeHackatime) token(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, map[string]string{"error": "invalid_grant", "error_description": "The provided authorization grant is invalid"})
 		return
 	}
-	tok := "tok_" + randHex(16)
-	f.tokens[tok] = g.userID
+	tok := f.issue(g.userID)
 	writeJSON(w, 200, map[string]any{
 		"access_token": tok, "token_type": "Bearer", "expires_in": 504921600,
 		"scope": "profile read", "created_at": time.Now().Unix(),
@@ -205,7 +253,10 @@ func (f *fakeHackatime) bearer(r *http.Request) (*fakeUser, bool) {
 var fakeTrustValues = map[string]int{"blue": 0, "red": 1, "green": 2, "yellow": 3}
 
 func (f *fakeHackatime) me(w http.ResponseWriter, r *http.Request) {
-	if f.meHook != nil && f.meHook(w, r) {
+	f.mu.Lock()
+	hook := f.meHook
+	f.mu.Unlock()
+	if hook != nil && hook(w, r) {
 		return
 	}
 	u, ok := f.bearer(r)
@@ -223,10 +274,24 @@ func (f *fakeHackatime) me(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// trustFactor mirrors StatsController#trust_factor: the identifier matches a
+// slack id, username or numeric id, and the first row wins with no ordering.
+// The fake resolves the ambiguity the worst way, username first, so a test
+// would catch Logbook relying on it.
 func (f *fakeHackatime) trustFactor(w http.ResponseWriter, r *http.Request) {
-	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	ident := r.PathValue("id")
 	f.mu.Lock()
-	u, ok := f.users[id]
+	f.trustCalls++
+	var u *fakeUser
+	for _, c := range f.users {
+		if c.username == ident {
+			u = c
+		}
+	}
+	if id, err := strconv.ParseInt(ident, 10, 64); u == nil && err == nil {
+		u = f.users[id]
+	}
+	ok := u != nil
 	var trust string
 	if ok {
 		trust = u.trust

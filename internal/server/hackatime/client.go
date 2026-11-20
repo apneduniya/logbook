@@ -28,9 +28,11 @@ const UserAgent = "Logbook (+https://boogles.dev)"
 
 // Response size limits. Hackatime's heartbeat endpoint has no pagination, so
 // a busy day can be large; the importer splits the window when it is too big.
+// 8 MiB is several thousand heartbeats: a normal day fits in one response, and
+// it is far more than a 15-minute window can plausibly need.
 const (
-	maxSmallBody             = 64 << 10 // me, trust factor
-	defaultMaxHeartbeatsBody = 32 << 20
+	maxSmallBody             = 64 << 10 // me
+	defaultMaxHeartbeatsBody = 8 << 20
 )
 
 // Errors callers handle.
@@ -86,7 +88,7 @@ type ClientConfig struct {
 	// MaxRetryWait is the longest the client blocks for a single retry.
 	// A longer Retry-After is returned as *RateLimitedError. Default 30s.
 	MaxRetryWait time.Duration
-	// MaxHeartbeatsBody caps one heartbeats response. Default 32 MiB.
+	// MaxHeartbeatsBody caps one heartbeats response. Default 8 MiB.
 	MaxHeartbeatsBody int64
 }
 

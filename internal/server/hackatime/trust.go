@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 
 	"github.com/apneduniya/logbook/internal/server/secretbox"
 	"github.com/apneduniya/logbook/internal/server/store"
@@ -53,11 +52,16 @@ func (r *TrustRefresher) DueUsers(ctx context.Context) ([]uuid.UUID, error) {
 	return ids, nil
 }
 
-// Refresh re-reads one user's trust level. It prefers the user's own token
-// (GET /authenticated/me), which identifies them unambiguously. If Hackatime
-// rejects the token (the user revoked it), it falls back to the public
-// trust_factor endpoint by numeric id so a revoked token can't freeze a
-// trust level that has since turned red.
+// Refresh re-reads one user's trust level with the user's own token
+// (GET /authenticated/me), which identifies them unambiguously.
+//
+// If Hackatime rejects the token (the user revoked Logbook's access), the
+// level can no longer be verified. A red level is kept, so revoking access
+// can't shed a ban; any other level becomes TrustUnknown until the user links
+// again. Hackatime's public trust_factor endpoint is deliberately not used as
+// a fallback: it matches the id against usernames and Slack ids too, without
+// a defined order, so an alt account named after the user's numeric id could
+// answer for them.
 func (r *TrustRefresher) Refresh(ctx context.Context, userID uuid.UUID) error {
 	link, err := r.st.GetHackatimeLink(ctx, userID)
 	if store.IsNotFound(err) {
@@ -70,9 +74,10 @@ func (r *TrustRefresher) Refresh(ctx context.Context, userID uuid.UUID) error {
 	if err != nil {
 		return err
 	}
-	return pgx.BeginFunc(ctx, r.st.Pool, func(tx pgx.Tx) error {
-		q := db.New(tx)
-		n, err := q.UpdateHackatimeTrust(ctx, db.UpdateHackatimeTrustParams{UserID: userID, TrustLevel: string(level)})
+	return r.st.InTx(ctx, func(q *db.Queries) error {
+		n, err := q.UpdateHackatimeTrust(ctx, db.UpdateHackatimeTrustParams{
+			UserID: userID, TrustLevel: string(level), LinkedAt: link.LinkedAt,
+		})
 		if err != nil {
 			return fmt.Errorf("saving hackatime trust level: %w", err)
 		}
@@ -88,20 +93,28 @@ func (r *TrustRefresher) Refresh(ctx context.Context, userID uuid.UUID) error {
 
 func (r *TrustRefresher) fetch(ctx context.Context, userID uuid.UUID, link db.HackatimeLink) (TrustLevel, error) {
 	token, err := r.box.Open(link.AccessTokenEnc, userID[:])
-	if err == nil {
-		me, err := r.client.Me(ctx, string(token))
-		switch {
-		case err == nil && me.ID == link.HackatimeUserID:
-			return me.Trust, nil
-		case err == nil:
-			return "", fmt.Errorf("refreshing hackatime trust: token now belongs to user %d, not %d", me.ID, link.HackatimeUserID)
-		case !errors.Is(err, ErrUnauthorized):
-			return "", fmt.Errorf("refreshing hackatime trust: %w", err)
-		}
-	}
-	level, err := r.client.TrustFactor(ctx, link.HackatimeUserID)
 	if err != nil {
+		r.log.WarnContext(ctx, "hackatime token unreadable; trust unverifiable", "user_id", userID)
+		return unverifiable(link), nil
+	}
+	me, err := r.client.Me(ctx, string(token))
+	switch {
+	case err == nil && me.ID == link.HackatimeUserID:
+		return me.Trust, nil
+	case err == nil:
+		return "", fmt.Errorf("refreshing hackatime trust: token now belongs to user %d, not %d", me.ID, link.HackatimeUserID)
+	case errors.Is(err, ErrUnauthorized):
+		return unverifiable(link), nil
+	default:
 		return "", fmt.Errorf("refreshing hackatime trust: %w", err)
 	}
-	return level, nil
+}
+
+// unverifiable is the level to record when Hackatime can't be asked about
+// the user any more: a ban sticks, anything else becomes unknown.
+func unverifiable(link db.HackatimeLink) TrustLevel {
+	if TrustLevel(link.TrustLevel).Banned() {
+		return TrustRed
+	}
+	return TrustUnknown
 }

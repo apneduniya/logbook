@@ -13,6 +13,10 @@ import (
 // stateCookie carries the sealed OAuth state between /link and /callback.
 const stateCookie = "logbook_hackatime_link"
 
+// bannedMessage explains why a banned link can't be removed or replaced.
+const bannedMessage = "your linked Hackatime account is banned on Hackatime, so it can't be unlinked or replaced; " +
+	"you can still revoke Logbook's access in your Hackatime settings"
+
 // stateCookiePath scopes the cookie to the two auth endpoints.
 const stateCookiePath = "/auth/hackatime"
 
@@ -104,6 +108,8 @@ func (h *Handler) callback(w http.ResponseWriter, r *http.Request) error {
 		return httpapi.Errorf(http.StatusBadRequest, err, "Hackatime did not accept the authorization; start linking again")
 	case errors.Is(err, ErrAlreadyLinked):
 		return httpapi.Errorf(http.StatusConflict, err, "this Hackatime account is already linked to another Logbook account")
+	case errors.Is(err, ErrBanned):
+		return httpapi.Errorf(http.StatusForbidden, err, bannedMessage)
 	case errors.Is(err, ErrNotConfigured):
 		return httpapi.Errorf(http.StatusServiceUnavailable, err, "Hackatime linking is not configured on this server")
 	case isUpstream(err):
@@ -157,9 +163,12 @@ func (h *Handler) unlink(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	if err := h.svc.Unlink(r.Context(), u.ID); errors.Is(err, ErrNotLinked) {
+	switch err := h.svc.Unlink(r.Context(), u.ID); {
+	case errors.Is(err, ErrNotLinked):
 		return httpapi.Errorf(http.StatusNotFound, err, "no Hackatime account is linked")
-	} else if err != nil {
+	case errors.Is(err, ErrBanned):
+		return httpapi.Errorf(http.StatusForbidden, err, bannedMessage)
+	case err != nil:
 		return err
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -215,6 +224,11 @@ func toImportJSON(imp db.HackatimeImport) *ImportJSON {
 	from, to, next := imp.FromDate.Time, imp.ToDate.Time, imp.NextDate.Time
 	total := int(to.Sub(from).Hours()/24) + 1
 	done := min(max(int(next.Sub(from).Hours()/24), 0), total)
+	if imp.Status == importDone {
+		// A finished import keeps its cursor on the day it was linked, which
+		// hadn't ended yet, so the next link fetches the rest of that day.
+		done = total
+	}
 	return &ImportJSON{
 		Status:             imp.Status,
 		FromDate:           from.Format(time.DateOnly),

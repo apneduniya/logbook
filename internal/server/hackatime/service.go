@@ -20,10 +20,10 @@ import (
 	"github.com/apneduniya/logbook/internal/server/store/db"
 )
 
-// DefaultImportFrom is the earliest day imported. Hackatime's /me doesn't
+// defaultImportFrom is the earliest day imported. Hackatime's /me doesn't
 // expose an account creation date, and Logbook's heartbeat partitions (and
 // Hackatime's current incarnation) start in 2024.
-var DefaultImportFrom = time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+func defaultImportFrom() time.Time { return time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC) }
 
 // Errors the HTTP layer maps to statuses.
 var (
@@ -31,6 +31,10 @@ var (
 	ErrAlreadyLinked = errors.New("hackatime: account already linked to another user")
 	// ErrNotLinked means the user has no Hackatime link.
 	ErrNotLinked = errors.New("hackatime: not linked")
+	// ErrBanned means the linked Hackatime account is convicted (red), so the
+	// link can't be removed or swapped for another account. Otherwise
+	// unlinking, or relinking a clean account, would shed the ban.
+	ErrBanned = errors.New("hackatime: linked account is banned")
 )
 
 // Enqueuer inserts River jobs inside the caller's transaction.
@@ -42,7 +46,7 @@ type Enqueuer interface {
 // ServiceOptions are optional Service settings.
 type ServiceOptions struct {
 	Logger     *slog.Logger
-	ImportFrom time.Time        // default DefaultImportFrom
+	ImportFrom time.Time        // default 2024-01-01
 	Now        func() time.Time // default time.Now
 }
 
@@ -64,7 +68,7 @@ func NewService(st *store.Store, box *secretbox.Box, client *Client, enq Enqueue
 		s.log = slog.Default()
 	}
 	if s.importFrom.IsZero() {
-		s.importFrom = DefaultImportFrom
+		s.importFrom = defaultImportFrom()
 	}
 	if s.now == nil {
 		s.now = time.Now
@@ -92,6 +96,12 @@ func (s *Service) BeginLink(userID uuid.UUID) (authURL, stateCookie string, err 
 // CompleteLink finishes the OAuth flow: it checks state, exchanges the code
 // (with the PKCE verifier), reads the Hackatime profile and trust level,
 // stores the encrypted token and queues the history import.
+//
+// A token is never revoked when linking fails. Hackatime's Doorkeeper reuses
+// access tokens (reuse_access_token), so the token returned here is usually
+// the very token already stored for this Hackatime account, by this user (a
+// renewal) or by another user (the 409 case). Revoking it would silently break
+// that existing link.
 func (s *Service) CompleteLink(ctx context.Context, userID uuid.UUID, stateCookie, state, code string) error {
 	verifier, err := openLinkState(s.box, stateCookie, userID, state, s.now())
 	if err != nil {
@@ -106,22 +116,28 @@ func (s *Service) CompleteLink(ctx context.Context, userID uuid.UUID, stateCooki
 	}
 	me, err := s.client.Me(ctx, token)
 	if err != nil {
-		s.revoke(ctx, token)
 		return err
 	}
-	if err := s.storeLink(ctx, userID, token, me); err != nil {
-		// We hold a token for an account we won't keep; give it back.
-		s.revoke(ctx, token)
+	replaced, err := s.storeLink(ctx, userID, token, me)
+	if err != nil {
 		return err
+	}
+	if replaced != "" {
+		// The user switched Hackatime accounts. Nobody else can hold the old
+		// account's token (one link per Hackatime account), so give it back.
+		s.revoke(ctx, replaced)
 	}
 	s.log.InfoContext(ctx, "hackatime linked", "user_id", userID, "hackatime_user_id", me.ID)
 	return nil
 }
 
-func (s *Service) storeLink(ctx context.Context, userID uuid.UUID, token string, me Me) error {
+// storeLink saves the link and queues the import in one transaction. When it
+// replaces a link to a different Hackatime account, it returns that link's
+// token so the caller can revoke it after commit.
+func (s *Service) storeLink(ctx context.Context, userID uuid.UUID, token string, me Me) (replaced string, err error) {
 	enc, err := s.box.Seal([]byte(token), userID[:])
 	if err != nil {
-		return fmt.Errorf("encrypting hackatime token: %w", err)
+		return "", fmt.Errorf("encrypting hackatime token: %w", err)
 	}
 	err = pgx.BeginFunc(ctx, s.st.Pool, func(tx pgx.Tx) error {
 		q := db.New(tx)
@@ -132,12 +148,18 @@ func (s *Service) storeLink(ctx context.Context, userID uuid.UUID, token string,
 		case err != nil && !store.IsNotFound(err):
 			return fmt.Errorf("checking hackatime link owner: %w", err)
 		}
-		prev, err := q.GetHackatimeLink(ctx, userID)
+		prev, err := q.LockHackatimeLink(ctx, userID)
 		switch {
 		case err == nil && prev.HackatimeUserID != me.ID:
+			if TrustLevel(prev.TrustLevel).Banned() {
+				return ErrBanned
+			}
 			// Switching Hackatime accounts: restart the import from scratch.
 			if err := q.DeleteHackatimeImport(ctx, userID); err != nil {
 				return fmt.Errorf("resetting hackatime import: %w", err)
+			}
+			if old, err := s.box.Open(prev.AccessTokenEnc, userID[:]); err == nil {
+				replaced = string(old)
 			}
 		case err != nil && !store.IsNotFound(err):
 			return fmt.Errorf("reading hackatime link: %w", err)
@@ -168,24 +190,37 @@ func (s *Service) storeLink(ctx context.Context, userID uuid.UUID, token string,
 		}
 		return nil
 	})
-	if isUniqueViolation(err) {
-		return ErrAlreadyLinked // lost a race with another user linking the same account
+	switch {
+	case isUniqueViolation(err):
+		return "", ErrAlreadyLinked // lost a race with another user linking the same account
+	case err != nil:
+		return "", err
+	case replaced == token:
+		return "", nil // never revoke the token we just stored
 	}
-	return err
+	return replaced, nil
 }
 
 // Unlink removes the link and its import state, then revokes the token at
-// Hackatime (best effort). Heartbeats already imported stay.
+// Hackatime (best effort). Heartbeats already imported stay. A banned (red)
+// link can't be removed, so the ban keeps applying to this Logbook account;
+// the user can still revoke Logbook's access on Hackatime.
 func (s *Service) Unlink(ctx context.Context, userID uuid.UUID) error {
 	var link db.HackatimeLink
 	err := pgx.BeginFunc(ctx, s.st.Pool, func(tx pgx.Tx) error {
 		q := db.New(tx)
 		var err error
-		link, err = q.DeleteHackatimeLink(ctx, userID)
+		link, err = q.LockHackatimeLink(ctx, userID)
 		if store.IsNotFound(err) {
 			return ErrNotLinked
 		}
 		if err != nil {
+			return fmt.Errorf("reading hackatime link: %w", err)
+		}
+		if TrustLevel(link.TrustLevel).Banned() {
+			return ErrBanned
+		}
+		if _, err := q.DeleteHackatimeLink(ctx, userID); err != nil {
 			return fmt.Errorf("deleting hackatime link: %w", err)
 		}
 		if err := q.DeleteHackatimeImport(ctx, userID); err != nil {
@@ -240,8 +275,12 @@ func (s *Service) Status(ctx context.Context, userID uuid.UUID) (Status, error) 
 }
 
 // TrustLevel is the user's last known Hackatime trust level, unmasked, for
-// gating (TrustLevel.Banned blocks submissions). It returns ErrNotLinked
-// when the user has no link; the caller decides what that means.
+// gating (TrustLevel.Banned blocks submissions). TrustUnknown means Logbook
+// can't currently verify the user (for example they revoked Logbook's access
+// on Hackatime), and gating should treat it as unverified, not as clean. A
+// red link can't be unlinked or swapped, so a ban can't be shed that way. It
+// returns ErrNotLinked when the user has no link; the caller decides what
+// that means.
 func (s *Service) TrustLevel(ctx context.Context, userID uuid.UUID) (TrustLevel, error) {
 	link, err := s.st.GetHackatimeLink(ctx, userID)
 	if store.IsNotFound(err) {

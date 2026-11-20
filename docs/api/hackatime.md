@@ -33,11 +33,14 @@ Hackatime redirects the browser here after the user consents. The web UI doesn't
 - **Errors:**
   - `400` invalid or expired state, missing or foreign cookie, or Hackatime rejected the code (expired, reused or PKCE mismatch). The UI should offer "start linking again".
   - `401` not signed in.
-  - `409` this Hackatime account is already linked to another Logbook account. One Hackatime account can be linked to only one Logbook user. The token issued for the rejected attempt is revoked.
+  - `403` the user's current link is to a Hackatime account that is banned (red), and they tried to link a *different* account. A banned link can't be swapped out, or the ban would go with it.
+  - `409` this Hackatime account is already linked to another Logbook account. One Hackatime account can be linked to only one Logbook user.
   - `502` Hackatime unavailable or returned an invalid response.
   - `503` not configured.
 
-Linking the same Hackatime account again (for example, to renew access) is allowed. It replaces the token and extends the import to today. Days that were already imported aren't fetched again. Linking a *different* Hackatime account restarts the import from the beginning.
+A failed link never revokes the token Hackatime handed out. Hackatime reuses access tokens, so that token is usually the one already stored for an existing link, and revoking it would break that link.
+
+Linking the same Hackatime account again (for example, to renew access) is allowed, even when it is banned. It replaces the token and extends the import to today. Days that were already fully imported aren't fetched again. The day of the previous link is fetched again, because it hadn't ended when it was imported. Linking a *different* Hackatime account restarts the import from the beginning and revokes the old account's token at Hackatime.
 
 ## `GET /api/v1/hackatime/link`
 
@@ -75,10 +78,10 @@ Link status and import progress for the signed-in user only.
   ```
 
   - `hackatime_username`: Hackatime's OAuth profile doesn't expose a Hackatime username, so this is the GitHub username on the Hackatime account. It may be omitted when there isn't one.
-  - `trust_level`: one of `blue` (unscored), `green` (trusted), `red` (banned) or `unknown`. As on Hackatime itself, "suspected" is shown to the user as `blue`. The raw level is used only for server-side gating.
+  - `trust_level`: one of `blue` (unscored), `green` (trusted), `red` (banned) or `unknown`. As on Hackatime itself, "suspected" is shown to the user as `blue`. The raw level is used only for server-side gating. `unknown` after linking means Logbook can no longer verify the account, usually because the user revoked Logbook's access on Hackatime. The UI should offer "link again".
   - `import.status`: one of `pending`, `running`, `done` or `failed`.
-    - Progress in percent is `days_done / days_total`.
-    - `last_error` is a user-safe sentence, or `""`. When `failed`, the user can link again to resume.
+    - Progress in percent is `days_done / days_total`. A `done` import always reports `days_done == days_total`.
+    - `last_error` is a user-safe sentence, or `""`. When `failed`, the user can link again to resume. A `done` import may carry a note that some very busy days were capped (at most 50,000 heartbeats per day are imported).
   - `import`: omitted if no import exists.
 - **Errors:** `401` not signed in.
 - No token or ciphertext is ever returned.
@@ -96,15 +99,16 @@ Unlinks the account.
 - **Response:** `204 No Content`.
 - **Errors:**
   - `401` not signed in.
-  - `403` CSRF failure (from the middleware).
+  - `403` CSRF failure (from the middleware), or the linked Hackatime account is banned (red). A banned link can't be removed, so the ban keeps applying to this Logbook account. The user can still revoke Logbook's access in their Hackatime settings.
   - `404` no Hackatime account is linked.
 
 ## Background jobs (River, queue `hackatime`)
 
 | Kind | When | What |
 |---|---|---|
-| `hackatime_import` | Queued on link (unique per user while active). | Fetches `GET /api/v1/my/heartbeats` one UTC day at a time from `next_date` to `to_date`. It splits busy days into smaller windows, sends heartbeats to ingest in chunks of 1,000 with source `import`, and saves progress after each day. It yields every ~4 minutes and resumes. It snoozes on Hackatime rate limits. After 12 failed attempts, or if the token is revoked, it is marked `failed`. |
+| `hackatime_import` | Queued on link (unique per user while active). | Fetches `GET /api/v1/my/heartbeats` one UTC day at a time from `next_date` to `to_date`. It splits busy days into smaller windows (responses are capped at 8 MiB) and sends each window to ingest as soon as it arrives, in chunks of 1,000 with source `import`. At most 50,000 heartbeats are kept per day. It saves progress after each day that had fully ended when it was fetched, so the day of linking is fetched again on the next link. It yields every ~4 minutes and resumes. It snoozes on Hackatime rate limits. After 12 failed attempts, or if the token is revoked, it is marked `failed`. Every write is tied to the link the run started with, so a run overtaken by an unlink or relink stops without touching the new import. |
+| `hackatime_import_sweep` | Every hour (periodic, leader only). | Queues `hackatime_import` for unfinished imports that haven't moved in 15 minutes (up to 500 per sweep). This recovers a relink that landed just as the previous job was finishing. |
 | `hackatime_trust_sweep` | Every hour (periodic, leader only). | Queues `hackatime_trust_refresh` for links whose trust level is older than 24 hours (up to 500 per sweep). |
-| `hackatime_trust_refresh` | Queued by the sweep. | Re-reads the trust level with the user's token, falling back to the public `GET /api/v1/users/:id/trust_factor` if the token was revoked. Changes are audited (`hackatime.trust_changed`). |
+| `hackatime_trust_refresh` | Queued by the sweep. | Re-reads the trust level with the user's token. If Hackatime rejects the token (access revoked), a `red` level is kept and any other level becomes `unknown`. The public `trust_factor` endpoint is never used: it matches usernames as well as ids, so an alt account could answer for the user. Changes are audited (`hackatime.trust_changed`). |
 
 All Hackatime calls from one server process are spaced at least 500 ms apart. Hackatime allows 10,000 API requests per hour per IP, and every Logbook user shares the server's IP.

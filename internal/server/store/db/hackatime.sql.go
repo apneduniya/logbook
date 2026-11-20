@@ -13,28 +13,48 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const advanceHackatimeImport = `-- name: AdvanceHackatimeImport :execrows
-UPDATE hackatime_imports
-SET next_date = $2,
-    heartbeats_imported = heartbeats_imported + $3,
-    status = 'running',
-    last_error = '',
-    updated_at = now()
-WHERE user_id = $1
+const advanceHackatimeImport = `-- name: AdvanceHackatimeImport :one
+
+UPDATE hackatime_imports i
+SET next_date           = $1,
+    heartbeats_imported = i.heartbeats_imported + $2,
+    status              = 'running',
+    last_error          = $3,
+    updated_at          = now()
+FROM hackatime_links l
+WHERE i.user_id = $4
+  AND l.user_id = i.user_id
+  AND l.linked_at = $5
+  AND i.next_date = $6
+RETURNING i.to_date
 `
 
 type AdvanceHackatimeImportParams struct {
-	UserID             uuid.UUID
 	NextDate           pgtype.Date
 	HeartbeatsImported int64
+	LastError          string
+	UserID             uuid.UUID
+	LinkedAt           time.Time
+	PrevNextDate       pgtype.Date
 }
 
-func (q *Queries) AdvanceHackatimeImport(ctx context.Context, arg AdvanceHackatimeImportParams) (int64, error) {
-	result, err := q.db.Exec(ctx, advanceHackatimeImport, arg.UserID, arg.NextDate, arg.HeartbeatsImported)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
+// The importer's writes below apply only while the link the run started with
+// is still current: linked_at changes on every (re)link, so a run that was
+// overtaken by an unlink or relink can't move the new import's cursor or
+// mark it done or failed.
+// Saves one imported day. prev_next_date guards against a second writer.
+func (q *Queries) AdvanceHackatimeImport(ctx context.Context, arg AdvanceHackatimeImportParams) (pgtype.Date, error) {
+	row := q.db.QueryRow(ctx, advanceHackatimeImport,
+		arg.NextDate,
+		arg.HeartbeatsImported,
+		arg.LastError,
+		arg.UserID,
+		arg.LinkedAt,
+		arg.PrevNextDate,
+	)
+	var to_date pgtype.Date
+	err := row.Scan(&to_date)
+	return to_date, err
 }
 
 const deleteHackatimeImport = `-- name: DeleteHackatimeImport :exec
@@ -63,6 +83,37 @@ func (q *Queries) DeleteHackatimeLink(ctx context.Context, userID uuid.UUID) (Ha
 		&i.LinkedAt,
 	)
 	return i, err
+}
+
+const finishHackatimeImport = `-- name: FinishHackatimeImport :execrows
+UPDATE hackatime_imports i
+SET status = 'done', last_error = $1, updated_at = now()
+FROM hackatime_links l
+WHERE i.user_id = $2
+  AND l.user_id = i.user_id
+  AND l.linked_at = $3
+  AND i.to_date = $4
+`
+
+type FinishHackatimeImportParams struct {
+	LastError string
+	UserID    uuid.UUID
+	LinkedAt  time.Time
+	ToDate    pgtype.Date
+}
+
+// Marks the import done, unless a relink extended to_date in the meantime.
+func (q *Queries) FinishHackatimeImport(ctx context.Context, arg FinishHackatimeImportParams) (int64, error) {
+	result, err := q.db.Exec(ctx, finishHackatimeImport,
+		arg.LastError,
+		arg.UserID,
+		arg.LinkedAt,
+		arg.ToDate,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const getHackatimeImport = `-- name: GetHackatimeImport :one
@@ -151,21 +202,88 @@ func (q *Queries) ListHackatimeLinksDueForTrustCheck(ctx context.Context, arg Li
 	return items, nil
 }
 
-const setHackatimeImportStatus = `-- name: SetHackatimeImportStatus :exec
-UPDATE hackatime_imports
-SET status = $2, last_error = $3, updated_at = now()
-WHERE user_id = $1
+const listStalledHackatimeImports = `-- name: ListStalledHackatimeImports :many
+SELECT i.user_id FROM hackatime_imports i
+JOIN hackatime_links l ON l.user_id = i.user_id
+WHERE i.status IN ('pending', 'running') AND i.updated_at < $1
+ORDER BY i.updated_at, i.user_id
+LIMIT $2
+`
+
+type ListStalledHackatimeImportsParams struct {
+	UpdatedBefore time.Time
+	Lim           int32
+}
+
+// System sweep: unfinished imports that haven't moved recently.
+func (q *Queries) ListStalledHackatimeImports(ctx context.Context, arg ListStalledHackatimeImportsParams) ([]uuid.UUID, error) {
+	rows, err := q.db.Query(ctx, listStalledHackatimeImports, arg.UpdatedBefore, arg.Lim)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []uuid.UUID{}
+	for rows.Next() {
+		var user_id uuid.UUID
+		if err := rows.Scan(&user_id); err != nil {
+			return nil, err
+		}
+		items = append(items, user_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const lockHackatimeLink = `-- name: LockHackatimeLink :one
+SELECT user_id, hackatime_user_id, hackatime_username, access_token_enc, trust_level, trust_checked_at, linked_at FROM hackatime_links WHERE user_id = $1 FOR UPDATE
+`
+
+// Reads the link and holds it until the transaction ends, so a concurrent
+// trust refresh can't change it between a check and a write.
+func (q *Queries) LockHackatimeLink(ctx context.Context, userID uuid.UUID) (HackatimeLink, error) {
+	row := q.db.QueryRow(ctx, lockHackatimeLink, userID)
+	var i HackatimeLink
+	err := row.Scan(
+		&i.UserID,
+		&i.HackatimeUserID,
+		&i.HackatimeUsername,
+		&i.AccessTokenEnc,
+		&i.TrustLevel,
+		&i.TrustCheckedAt,
+		&i.LinkedAt,
+	)
+	return i, err
+}
+
+const setHackatimeImportStatus = `-- name: SetHackatimeImportStatus :execrows
+UPDATE hackatime_imports i
+SET status = $1, last_error = $2, updated_at = now()
+FROM hackatime_links l
+WHERE i.user_id = $3
+  AND l.user_id = i.user_id
+  AND l.linked_at = $4
 `
 
 type SetHackatimeImportStatusParams struct {
-	UserID    uuid.UUID
 	Status    string
 	LastError string
+	UserID    uuid.UUID
+	LinkedAt  time.Time
 }
 
-func (q *Queries) SetHackatimeImportStatus(ctx context.Context, arg SetHackatimeImportStatusParams) error {
-	_, err := q.db.Exec(ctx, setHackatimeImportStatus, arg.UserID, arg.Status, arg.LastError)
-	return err
+func (q *Queries) SetHackatimeImportStatus(ctx context.Context, arg SetHackatimeImportStatusParams) (int64, error) {
+	result, err := q.db.Exec(ctx, setHackatimeImportStatus,
+		arg.Status,
+		arg.LastError,
+		arg.UserID,
+		arg.LinkedAt,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const startHackatimeImport = `-- name: StartHackatimeImport :one
@@ -204,16 +322,20 @@ func (q *Queries) StartHackatimeImport(ctx context.Context, arg StartHackatimeIm
 }
 
 const updateHackatimeTrust = `-- name: UpdateHackatimeTrust :execrows
-UPDATE hackatime_links SET trust_level = $2, trust_checked_at = now() WHERE user_id = $1
+UPDATE hackatime_links SET trust_level = $2, trust_checked_at = now()
+WHERE user_id = $1 AND linked_at = $3
 `
 
 type UpdateHackatimeTrustParams struct {
 	UserID     uuid.UUID
 	TrustLevel string
+	LinkedAt   time.Time
 }
 
+// Applies only to the link the level was read for; a relink in the meantime
+// already stored a fresh level.
 func (q *Queries) UpdateHackatimeTrust(ctx context.Context, arg UpdateHackatimeTrustParams) (int64, error) {
-	result, err := q.db.Exec(ctx, updateHackatimeTrust, arg.UserID, arg.TrustLevel)
+	result, err := q.db.Exec(ctx, updateHackatimeTrust, arg.UserID, arg.TrustLevel, arg.LinkedAt)
 	if err != nil {
 		return 0, err
 	}

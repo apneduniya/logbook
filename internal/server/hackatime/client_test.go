@@ -51,13 +51,10 @@ func TestMeAndTrust(t *testing.T) {
 		t.Fatalf("Me(bad token) err = %v, want ErrUnauthorized", err)
 	}
 
+	// The token owner sees their own raw level, including "suspected".
 	f.setTrust(42, "yellow")
-	lvl, err := c.TrustFactor(context.Background(), 42)
-	if err != nil || lvl != TrustBlue {
-		t.Fatalf("TrustFactor() = %q, %v; want masked blue", lvl, err)
-	}
-	if _, err := c.TrustFactor(context.Background(), 7); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("TrustFactor(unknown) err = %v, want ErrNotFound", err)
+	if me, err := c.Me(context.Background(), tok); err != nil || me.Trust != TrustYellow {
+		t.Fatalf("Me() trust = %q, %v; want yellow", me.Trust, err)
 	}
 	for _, ua := range f.userAgents {
 		if ua != UserAgent {

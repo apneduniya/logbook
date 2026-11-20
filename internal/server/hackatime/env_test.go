@@ -216,6 +216,17 @@ func (e *testEnv) link(t *testing.T, user uuid.UUID, hid int64) *httptest.Respon
 	return e.do(t, http.MethodGet, "/auth/hackatime/callback?code="+code+"&state="+state, user, cookie)
 }
 
+// linkDirect runs the link flow through the Service without the HTTP layer or
+// *testing.T, so it can run inside a fake Hackatime hook.
+func (e *testEnv) linkDirect(ctx context.Context, user uuid.UUID, hid int64) error {
+	authURL, cookie, err := e.svc.BeginLink(user)
+	if err != nil {
+		return err
+	}
+	code, state := e.fake.authorize(authURL, hid)
+	return e.svc.CompleteLink(ctx, user, cookie, state, code)
+}
+
 // tokenFromDB decrypts the stored token, failing if it isn't bound to user.
 func (e *testEnv) tokenFromDB(t *testing.T, user uuid.UUID) string {
 	t.Helper()

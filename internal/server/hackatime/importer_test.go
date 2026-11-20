@@ -67,7 +67,7 @@ func TestImportAcrossDays(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if imp.Status != importDone || imp.HeartbeatsImported != 4 || imp.NextDate.Time.Format(time.DateOnly) != "2025-03-04" {
+	if imp.Status != importDone || imp.HeartbeatsImported != 4 || imp.NextDate.Time.Format(time.DateOnly) != "2025-03-03" {
 		t.Fatalf("import = %+v", imp)
 	}
 	// Done imports are not re-run.

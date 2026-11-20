@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"math"
 	"net/url"
-	"strconv"
 	"time"
 )
 
@@ -85,24 +84,6 @@ func (c *Client) Me(ctx context.Context, token string) (Me, error) {
 		me.GitHubUsername = *r.GitHubUsername
 	}
 	return me, nil
-}
-
-// TrustFactor reads a user's public trust level by numeric Hackatime id, from
-// GET /api/v1/users/:id/trust_factor. It needs no token. Hackatime masks
-// "yellow" as "blue" here.
-func (c *Client) TrustFactor(ctx context.Context, hackatimeUserID int64) (TrustLevel, error) {
-	if hackatimeUserID <= 0 {
-		return "", fmt.Errorf("fetching hackatime trust factor: invalid user id %d", hackatimeUserID)
-	}
-	var r trustFactor
-	path := "/api/v1/users/" + strconv.FormatInt(hackatimeUserID, 10) + "/trust_factor"
-	if err := c.getJSON(ctx, path, nil, "", maxSmallBody, &r); err != nil {
-		return "", fmt.Errorf("fetching hackatime trust factor: %w", err)
-	}
-	if err := r.validate(); err != nil {
-		return "", fmt.Errorf("fetching hackatime trust factor: %w", err)
-	}
-	return r.TrustLevel, nil
 }
 
 // RemoteHeartbeat is one heartbeat as Hackatime renders it (an ActiveRecord

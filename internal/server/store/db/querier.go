@@ -8,12 +8,20 @@ import (
 	"context"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 type Querier interface {
-	AdvanceHackatimeImport(ctx context.Context, arg AdvanceHackatimeImportParams) (int64, error)
+	// The importer's writes below apply only while the link the run started with
+	// is still current: linked_at changes on every (re)link, so a run that was
+	// overtaken by an unlink or relink can't move the new import's cursor or
+	// mark it done or failed.
+	// Saves one imported day. prev_next_date guards against a second writer.
+	AdvanceHackatimeImport(ctx context.Context, arg AdvanceHackatimeImportParams) (pgtype.Date, error)
 	DeleteHackatimeImport(ctx context.Context, userID uuid.UUID) error
 	DeleteHackatimeLink(ctx context.Context, userID uuid.UUID) (HackatimeLink, error)
+	// Marks the import done, unless a relink extended to_date in the meantime.
+	FinishHackatimeImport(ctx context.Context, arg FinishHackatimeImportParams) (int64, error)
 	GetHackatimeImport(ctx context.Context, userID uuid.UUID) (HackatimeImport, error)
 	// Hackatime account links and history imports (ADR 0004).
 	// Every query is keyed by the Logbook user id, except the trust sweep, which
@@ -25,10 +33,17 @@ type Querier interface {
 	GetUserByUsername(ctx context.Context, username string) (User, error)
 	InsertAuditLog(ctx context.Context, arg InsertAuditLogParams) error
 	ListHackatimeLinksDueForTrustCheck(ctx context.Context, arg ListHackatimeLinksDueForTrustCheckParams) ([]uuid.UUID, error)
-	SetHackatimeImportStatus(ctx context.Context, arg SetHackatimeImportStatusParams) error
+	// System sweep: unfinished imports that haven't moved recently.
+	ListStalledHackatimeImports(ctx context.Context, arg ListStalledHackatimeImportsParams) ([]uuid.UUID, error)
+	// Reads the link and holds it until the transaction ends, so a concurrent
+	// trust refresh can't change it between a check and a write.
+	LockHackatimeLink(ctx context.Context, userID uuid.UUID) (HackatimeLink, error)
+	SetHackatimeImportStatus(ctx context.Context, arg SetHackatimeImportStatusParams) (int64, error)
 	// Creates the import, or extends an existing one to a new end date and makes
 	// it runnable again. next_date is kept so finished days aren't refetched.
 	StartHackatimeImport(ctx context.Context, arg StartHackatimeImportParams) (HackatimeImport, error)
+	// Applies only to the link the level was read for; a relink in the meantime
+	// already stored a fresh level.
 	UpdateHackatimeTrust(ctx context.Context, arg UpdateHackatimeTrustParams) (int64, error)
 	UpsertHackatimeLink(ctx context.Context, arg UpsertHackatimeLinkParams) (HackatimeLink, error)
 }
