@@ -90,10 +90,10 @@ func (d *DB) RecentDirs(ctx context.Context, since time.Time, limit int) ([]DirS
 }
 
 // PruneResult counts rows removed by Prune.
-type PruneResult struct{ AIEvents, ActivitySamples, GitEvents, HeartbeatLog int64 }
+type PruneResult struct{ AIEvents, ActivitySamples, GitEvents, HeartbeatLog, ActiveTime int64 }
 
-// Prune deletes raw events older than the retention period and heartbeat
-// log entries older than two days.
+// Prune deletes raw events and Claude Code active time older than the
+// retention period, and heartbeat log entries older than two days.
 func (d *DB) Prune(ctx context.Context) (PruneResult, error) {
 	now := d.now()
 	cut := now.Add(-d.retention).UnixMilli()
@@ -107,6 +107,7 @@ func (d *DB) Prune(ctx context.Context) (PruneResult, error) {
 		}{
 			{qAIPrune, cut, &r.AIEvents}, {qActivityPrune, cut, &r.ActivitySamples},
 			{qGitPrune, cut, &r.GitEvents}, {qLogPrune, logCut, &r.HeartbeatLog},
+			{qActivePrune, cut, &r.ActiveTime},
 		} {
 			res, err := tx.ExecContext(ctx, p.query, p.cut)
 			if err != nil {

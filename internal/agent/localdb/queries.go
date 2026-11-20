@@ -42,7 +42,7 @@ const (
 
 const (
 	qAIInsert = `INSERT INTO ai_events (time, harness, kind, session_id, project, cwd, model, tool,
-		prompt_chars, decision) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+		prompt_chars, decision, prompt_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	qActivityInsert = `INSERT INTO activity_samples (time, idle_seconds, focus_app, focus_kind)
 		VALUES (?, ?, ?, ?)`
 	qGitInsert = `INSERT OR IGNORE INTO git_events (time, project, kind, commit_hash, files_changed,
@@ -60,6 +60,28 @@ const (
 	qActivityTrim = `DELETE FROM activity_samples WHERE id <= (SELECT MAX(id) FROM activity_samples) - ?`
 	qGitTrim      = `DELETE FROM git_events WHERE id <= (SELECT MAX(id) FROM git_events) - ?`
 	qLogTrim      = `DELETE FROM heartbeat_log WHERE id <= (SELECT MAX(id) FROM heartbeat_log) - ?`
+)
+
+// Claude Code active time (migration 0003).
+const (
+	qActiveInsert = `INSERT OR IGNORE INTO active_time (from_ms, to_ms, session_id, type, secs, repository,
+		series_start, cumulative) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+	// qActiveLastCumulative is a cumulative series' latest stored point.
+	qActiveLastCumulative = `SELECT to_ms, cumulative FROM active_time
+		WHERE session_id = ? AND type = ? AND series_start = ? AND cumulative IS NOT NULL
+		ORDER BY to_ms DESC LIMIT 1`
+	// qActiveRange lists points overlapping [from, to) (a zero-length point
+	// counts when it lies inside), each with the latest working directory
+	// Claude Code's hooks reported for the session by the point's end.
+	qActiveRange = `SELECT a.from_ms, a.to_ms, a.session_id, a.type, a.secs,
+		COALESCE((SELECT e.cwd FROM ai_events e
+			WHERE e.session_id = a.session_id AND e.harness = 'claude-code' AND e.cwd <> '' AND e.time <= a.to_ms
+			ORDER BY e.time DESC LIMIT 1), '') AS cwd
+		FROM active_time a
+		WHERE (a.to_ms > ? OR (a.to_ms = a.from_ms AND a.to_ms >= ?)) AND a.from_ms < ?
+		ORDER BY a.from_ms, a.to_ms, a.session_id, a.type`
+	qActivePrune = `DELETE FROM active_time WHERE to_ms < ?`
+	qActiveTrim  = `DELETE FROM active_time WHERE id <= (SELECT MAX(id) FROM active_time) - ?`
 )
 
 const (
