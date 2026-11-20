@@ -281,3 +281,67 @@ func TestSessionStartDoesNotKeepTurnOpen(t *testing.T) {
 		t.Fatalf("minute +80 after only session starts is %s, want idle", got)
 	}
 }
+
+// replyMinute is the single minute t0 with the person at the machine
+// (idle 1 s) in focus kind focus, no heartbeats and no prompts, and the given
+// AI events of one OpenCode session.
+func replyMinute(focus string, ai ...wire.AIEvent) Input {
+	in := Input{Window: Window{From: t0, To: at(time.Minute)}, AI: ai, DataEnd: at(Lookahead)}
+	for x := at(-30 * time.Minute); x.Before(at(5 * time.Minute)); x = x.Add(5 * time.Second) {
+		in.Activity = append(in.Activity, wire.ActivitySample{Time: x, IdleSeconds: 1, FocusKind: focus})
+	}
+	return in
+}
+
+func openCodeEvent(d time.Duration, kind wire.AIEventKind, decision string) wire.AIEvent {
+	return wire.AIEvent{Time: at(d), Kind: kind, Harness: wire.HarnessOpenCode, SessionID: "s", Project: "app", Decision: decision}
+}
+
+// OpenCode reports the person's reply to a permission ask as a
+// permission_ask with a Decision. That reply is the person's own signal
+// whether or not the engine remembers the ask it answers: the ask may be
+// before the caller's data, or its turn may have timed out. With fresh input
+// and browser or unknown focus, the reply makes the session active, so the
+// minute is the person's.
+func TestExplicitReplyIsHumanSignal(t *testing.T) {
+	m := time.Minute
+	reply := openCodeEvent(0, wire.AIPermissionAsk, "allow")
+	tests := []struct {
+		name  string
+		focus string
+		ai    []wire.AIEvent
+	}{
+		{"no ask seen, browser", "browser", []wire.AIEvent{openCodeEvent(-2*m, wire.AIToolStart, ""), reply}},
+		{"no ask seen, unknown focus", "unknown", []wire.AIEvent{openCodeEvent(-2*m, wire.AIToolStart, ""), reply}},
+		{"reply alone", "browser", []wire.AIEvent{reply}},
+		{"earlier ask timed out", "browser", []wire.AIEvent{openCodeEvent(-20*m, wire.AIPermissionAsk, ""), reply}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			res := checkBounded(t, replyMinute(tc.focus, tc.ai...))
+			if len(res.Minutes) != 1 {
+				t.Fatalf("rows %+v, want one", res.Minutes)
+			}
+			if got := res.Minutes[0]; got.Label != LabelYou || got.Credited != 60 || got.Project != "app" {
+				t.Fatalf("minute of an explicit reply = %+v, want you, 60 s, app", got)
+			}
+		})
+	}
+}
+
+// A reply that ends a live wait is one signal, not two: with one human
+// heartbeat in another project in the same minute, the minute splits evenly.
+func TestExplicitReplyCountsOnce(t *testing.T) {
+	in := replyMinute("browser",
+		openCodeEvent(-time.Minute, wire.AIPermissionAsk, ""),
+		openCodeEvent(0, wire.AIPermissionAsk, "allow"))
+	in.Heartbeats = []Heartbeat{{Time: at(30 * time.Second), Project: "lib", Entity: "/w/lib/a.go", IsWrite: true}}
+	res := checkBounded(t, in)
+	got := map[string]int{}
+	for _, row := range res.Minutes {
+		got[row.Project] = row.Credited
+	}
+	if got["app"] != 30 || got["lib"] != 30 {
+		t.Fatalf("split %v, want app 30 s and lib 30 s", got)
+	}
+}
