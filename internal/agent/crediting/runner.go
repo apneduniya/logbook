@@ -283,16 +283,24 @@ func (r *Runner) repoMap(ctx context.Context, now time.Time) ([]localdb.RepoMapp
 	return r.opt.Store.RepoMap(ctx)
 }
 
-// computeByMapping runs the engine over the window, once per run of minutes
-// that share a repo mapping (ReposAt), and joins the results. Each minute
-// is thus computed with the mapping that stood when it became final, never
-// with one recorded after.
+// computeByMapping runs the engine once per run of minutes that share a repo
+// mapping (ReposAt) and joins the results: each minute comes from the run
+// computed with the mapping that stood when it became final, never with one
+// recorded after.
+//
+// Only the mapping differs between those runs. Each one is over the whole
+// span, with the same events, active time and time zone, and with DataEnd at
+// the span's end: the engine reads the window's bounds as well as which
+// minutes to emit (a turn quiet for 10 minutes before the end of the data
+// has ended; long_day and otel_mismatch total the window), so cutting the
+// window per group would change a group's minutes even when the mapping
+// moves no event to another project.
 func (r *Runner) computeByMapping(s span, ev localdb.Events, active []struggle.ActiveTime, mapping []localdb.RepoMapping) struggle.Result {
 	var out struggle.Result
 	for _, g := range repoGroups(mapping, s.from, s.to) {
-		part := s
-		part.from, part.to = g.from, g.to
-		res := r.opt.Compute(engineInput(part, ev, active, g.repos, r.opt.TZ))
+		in := engineInput(s, ev, active, g.repos, r.opt.TZ)
+		in.DataEnd = s.to
+		res := r.opt.Compute(in)
 		out.RulesVersion = res.RulesVersion
 		for _, m := range res.Minutes {
 			if at := m.Minute.UTC().Truncate(time.Minute); !at.Before(g.from) && at.Before(g.to) {

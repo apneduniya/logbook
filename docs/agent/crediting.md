@@ -24,7 +24,7 @@ How the agent runs the struggle engine and keeps the evidence chain (ADR 0010, A
 ## Each minute
 
 1. Read new local events since the last run (by row id) into an in-memory window of the last 90 minutes.
-2. Record the active repos in the repo mapping journal (`repo_map`), then run `struggle.Compute` for `[now−60 min, now)`, with optional Claude Code active time and, for each minute, the repo mapping recorded before that minute became final (`ReposAt`; one engine call per group of minutes sharing a mapping).
+2. Record the active repos in the repo mapping journal (`repo_map`), then run `struggle.Compute` for `[now−60 min, now)`, with optional Claude Code active time and, for each minute, the repo mapping recorded before that minute became final (`ReposAt`; one engine call over the whole window per group of minutes sharing a mapping, with `DataEnd` at the window's end, keeping that group's minutes).
 3. Store the result: open minutes (< 30 min old) are rewritten when they change; a final minute is frozen whole and only filled in if it has no rows at all.
 4. If signed in: register the device if needed, upload minutes the server doesn't have (batches of 1000, at most 20 a run), then seal and upload ended days whose minutes the server has all answered for.
 
