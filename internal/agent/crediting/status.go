@@ -113,11 +113,11 @@ func LoadStatus(ctx context.Context, r StateReader) (Status, error) {
 	if err != nil {
 		return Status{}, err
 	}
-	// Chain progress belongs to one device; after re-registration it starts over.
+	// The chain belongs to one device; after re-registration it starts over.
 	if ev[keyEvidenceDevice] == s.Device.ID {
-		s.Evidence = EvidenceStatus{LastDay: ev[keyEvidenceDay], ChainHash: ev[keyEvidenceHash]}
+		s.Evidence = EvidenceStatus{LastDay: ev[keyEvidenceDay], ChainHash: ev[keyEvidenceHash],
+			State: ev[keyEvidenceState], Error: ev[keyEvidenceError]}
 	}
-	s.Evidence.State, s.Evidence.Error = ev[keyEvidenceState], ev[keyEvidenceError]
 	return s, nil
 }
 

@@ -277,6 +277,10 @@ func (r *Runner) upload(ctx context.Context, now time.Time) {
 			r.opt.Logger.ErrorContext(ctx, "retiring minutes of the previous device", "err", err)
 			return
 		}
+		// Its evidence chain starts over too.
+		r.persist(ctx, localdb.KV{Key: keyEvidenceDevice, Value: dev.ID}, localdb.KV{Key: keyEvidenceDay, Value: ""},
+			localdb.KV{Key: keyEvidenceHash, Value: ""}, localdb.KV{Key: keyEvidenceState, Value: ""},
+			localdb.KV{Key: keyEvidenceError, Value: ""})
 	}
 	if err := r.uploadMinutes(ctx, t.Target, dev, now); err != nil {
 		r.fail(ctx, t, err)

@@ -173,5 +173,6 @@ func (r *Runner) uploadDay(ctx context.Context, t serverapi.Target, e localdb.Ev
 	msg := fmt.Sprintf("the server refused evidence for %s (%v); the evidence chain is stopped", e.Day, err)
 	r.opt.Logger.ErrorContext(ctx, "evidence day refused; not advancing the chain", "day", e.Day, "state", state, "err", err)
 	return r.opt.Store.SetEvidenceState(ctx, e.DeviceID, e.Day, state, err.Error(),
+		localdb.KV{Key: keyEvidenceDevice, Value: e.DeviceID},
 		localdb.KV{Key: keyEvidenceState, Value: state}, localdb.KV{Key: keyEvidenceError, Value: msg})
 }
