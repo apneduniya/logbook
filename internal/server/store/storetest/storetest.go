@@ -7,6 +7,7 @@ package storetest
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"fmt"
@@ -22,8 +23,6 @@ import (
 
 	"github.com/apneduniya/logbook/internal/server/store"
 )
-
-const templateDB = "logbook_test_template"
 
 // New returns a Store backed by a new database that is dropped when the test ends.
 func New(t testing.TB) *store.Store {
@@ -45,7 +44,8 @@ func New(t testing.TB) *store.Store {
 	if _, err := admin.Exec(ctx, "SELECT pg_advisory_lock(727001)"); err != nil {
 		t.Fatalf("locking: %v", err)
 	}
-	ensureTemplate(ctx, t, base)
+	templateDB := templateName(t)
+	ensureTemplate(ctx, t, base, templateDB)
 	var b [6]byte
 	_, _ = rand.Read(b[:])
 	name := "logbook_test_" + hex.EncodeToString(b[:])
@@ -78,7 +78,7 @@ func New(t testing.TB) *store.Store {
 
 // ensureTemplate creates the template database if needed and migrates it to
 // the latest version. The caller must hold the template advisory lock.
-func ensureTemplate(ctx context.Context, t testing.TB, base string) {
+func ensureTemplate(ctx context.Context, t testing.TB, base, templateDB string) {
 	t.Helper()
 	admin, err := pgx.Connect(ctx, base)
 	if err != nil {
@@ -112,6 +112,26 @@ func ensureTemplate(ctx context.Context, t testing.TB, base string) {
 	if err := sqlDB.Close(); err != nil {
 		t.Fatalf("closing template: %v", err)
 	}
+}
+
+// templateName is unique per set of migration files, so worktrees or branches
+// with different migrations never share (and corrupt) a template.
+func templateName(t testing.TB) string {
+	t.Helper()
+	files, err := filepath.Glob(filepath.Join(migrationsDir(t), "*.sql"))
+	if err != nil || len(files) == 0 {
+		t.Fatalf("listing migrations: %v", err)
+	}
+	h := sha256.New()
+	for _, f := range files { // Glob returns sorted names
+		b, err := os.ReadFile(f) //nolint:gosec // test helper reading repo files
+		if err != nil {
+			t.Fatalf("reading %s: %v", f, err)
+		}
+		h.Write([]byte(filepath.Base(f)))
+		h.Write(b)
+	}
+	return "logbook_tpl_" + hex.EncodeToString(h.Sum(nil))[:16]
 }
 
 func withDB(t testing.TB, base, name string) string {
