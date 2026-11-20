@@ -129,6 +129,50 @@ func TestParseTruncated(t *testing.T) {
 	}
 }
 
+func TestHasInlineHooks(t *testing.T) {
+	tests := map[string]bool{
+		"": false,
+		"model = \"gpt-5.5\"\n[profiles.fast]\nx=1": false,
+		"[hooks]\n": true,
+		"  [[hooks.PreToolUse]]\nmatcher = \"^Bash$\"\n[[hooks.PreToolUse.hooks]]\ncommand = \"x\"": true,
+		"[hooks.Stop] # mine":       true,
+		"hooks.Stop = []\n":         true,
+		"hooks = { }\n":             true,
+		"[profiles.x]\nhooks = 1\n": false, // a key inside another table
+		"[hookshot]\n":              false,
+		"hooks_dir = \"x\"\n":       false,
+	}
+	for in, want := range tests {
+		if got := HasInlineHooks([]byte(in)); got != want {
+			t.Errorf("HasInlineHooks(%q) = %v, want %v", in, got, want)
+		}
+	}
+}
+
+func TestNotesWarnAboutInlineHooks(t *testing.T) {
+	env, _ := harnesstest.Env(t)
+	in := NewInstaller(env)
+	if n := in.Notes(); len(n) != 0 {
+		t.Fatalf("Notes with no config.toml = %v", n)
+	}
+	path, err := ConfigPath(env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	harnesstest.WriteFile(t, path, "model = \"gpt-5.5\"\n")
+	if n := in.Notes(); len(n) != 0 {
+		t.Fatalf("Notes without inline hooks = %v", n)
+	}
+	harnesstest.WriteFile(t, path, "[[hooks.Stop]]\n[[hooks.Stop.hooks]]\ncommand = \"./x.sh\"\n")
+	if n := in.Notes(); len(n) != 1 {
+		t.Fatalf("Notes with inline hooks = %v, want one note", n)
+	}
+	// config.toml is only read, never written.
+	if got := string(harnesstest.ReadFile(t, path)); got != "[[hooks.Stop]]\n[[hooks.Stop.hooks]]\ncommand = \"./x.sh\"\n" {
+		t.Fatalf("config.toml changed: %q", got)
+	}
+}
+
 func TestResponseEmpty(t *testing.T) {
 	for _, e := range Events() {
 		if r := Response(e.Event); r != nil {

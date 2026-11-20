@@ -22,6 +22,14 @@ type Installer interface {
 	Installed() (bool, error)
 }
 
+// Noter is implemented by installers that may have something to tell the
+// user after installing (Codex: inline hooks in config.toml make it warn at
+// startup). The install command can check for it with a type assertion and
+// print each note; an empty result means nothing to say.
+type Noter interface {
+	Notes() []string
+}
+
 // All returns an installer for every supported harness on this machine, in
 // a stable order.
 func All() []Installer { return AllFor(hostenv.FromOS()) }

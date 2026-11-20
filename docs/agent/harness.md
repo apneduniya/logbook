@@ -96,6 +96,7 @@ Every Codex payload carries `model`. Ignored: `prompt`, `tool_input` (including 
 
 Limitations:
 - **Trust step.** Codex skips new or changed non-managed hooks until the user reviews and trusts them once in `/hooks` (CLI) or Settings > Hooks (app). Trust is pinned to the hook's hash, so the definitions stay stable across Logbook updates as long as the binary path doesn't change. `logbook install` should tell the user to do this.
+- **Inline hooks in `config.toml`.** Codex docs: "When a layer declares hooks in both `hooks.json` and `config.toml`, Codex loads both and warns at startup." If the user already has `[hooks]`/`[[hooks.<Event>]]` tables in `$CODEX_HOME/config.toml`, Logbook's `hooks.json` makes Codex print that warning on every launch (both sets still run). Logbook never edits `config.toml`; it reads it (a line scan for `[hooks…]` tables or a top-level `hooks` key) and the Codex installer's `Notes()` (the `harness.Noter` interface) returns a message for `logbook install` to print, suggesting the user move their inline hooks into `hooks.json`.
 - Subagent hooks report the parent's `session_id`. `PreModelRequest`/`PostModelRequest`, compaction and subagent events aren't installed.
 - Hosted tools (web search) don't run tool hooks. Codex Cloud doesn't run local hooks.
 - With `fish` as `$SHELL`, a binary path containing a single quote would be mis-quoted (fish escapes differently). Install paths don't contain quotes in practice.

@@ -36,6 +36,9 @@ type Spec struct {
 	Detect func() bool
 	// BackupDir returns where backups go.
 	BackupDir func() (string, error)
+	// Notes, if set, returns things the user should know about this
+	// machine's setup (for example a config the harness will warn about).
+	Notes func() []string
 }
 
 // Field is one top-level key and its raw JSON value.
@@ -61,6 +64,15 @@ func (in *Installer) Name() string { return in.spec.Harness }
 
 // Detect reports whether the harness looks installed on this machine.
 func (in *Installer) Detect() bool { return in.spec.Detect() }
+
+// Notes returns messages for the user about this harness's setup, for the
+// install command to print. It is empty when there is nothing to say.
+func (in *Installer) Notes() []string {
+	if in.spec.Notes == nil {
+		return nil
+	}
+	return in.spec.Notes()
+}
 
 // ConfigPath returns the config file Logbook edits.
 func (in *Installer) ConfigPath() (string, error) { return in.spec.Path() }

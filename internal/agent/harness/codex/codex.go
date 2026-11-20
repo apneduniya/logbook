@@ -2,7 +2,9 @@ package codex
 
 import (
 	"encoding/json"
+	"fmt"
 	"path/filepath"
+	"strings"
 
 	"github.com/apneduniya/logbook/internal/agent/harness/aievent"
 	"github.com/apneduniya/logbook/internal/agent/harness/cmdline"
@@ -47,6 +49,53 @@ func HooksPath(env hostenv.Env) (string, error) {
 	return filepath.Join(dir, "hooks.json"), nil
 }
 
+// ConfigPath returns the user config.toml, which Logbook only reads.
+func ConfigPath(env hostenv.Env) (string, error) {
+	dir, err := env.DirFromEnv("CODEX_HOME", ".codex")
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "config.toml"), nil
+}
+
+// HasInlineHooks reports whether a config.toml declares hooks inline: a
+// [hooks] or [hooks.*] table, a [[hooks.*]] array of tables, or a top-level
+// hooks key. It scans lines rather than parsing TOML, so a multi-line string
+// that happens to contain such a line gives a false positive, which only
+// costs an unneeded note.
+func HasInlineHooks(toml []byte) bool {
+	topLevel := true
+	for _, line := range strings.Split(string(toml), "\n") {
+		line = strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(line, "["):
+			name := strings.TrimSpace(strings.Trim(strings.SplitN(line, "#", 2)[0], "[] \t"))
+			if name == "hooks" || strings.HasPrefix(name, "hooks.") {
+				return true
+			}
+			topLevel = false
+		case topLevel && (strings.HasPrefix(line, "hooks ") || strings.HasPrefix(line, "hooks=") || strings.HasPrefix(line, "hooks.")):
+			return true
+		}
+	}
+	return false
+}
+
+// notes warns when config.toml already has inline hooks: with Logbook's
+// hooks.json next to it, Codex loads both and warns at every startup.
+func notes(env hostenv.Env) []string {
+	path, err := ConfigPath(env)
+	if err != nil {
+		return nil
+	}
+	data, existed, _, err := hookfile.ReadFile(path)
+	if err != nil || !existed || !HasInlineHooks(data) {
+		return nil
+	}
+	return []string{fmt.Sprintf("%s declares hooks inline and Logbook's are in hooks.json next to it; "+
+		"Codex runs both but prints a warning at startup. Moving your [hooks] into hooks.json silences it.", path)}
+}
+
 // NewInstaller returns the Codex installer.
 func NewInstaller(env hostenv.Env) *hookfile.Installer {
 	sh := cmdline.POSIX // Codex runs hooks with `$SHELL -lc`
@@ -64,6 +113,7 @@ func NewInstaller(env hostenv.Env) *hookfile.Installer {
 			return (err == nil && hostenv.Exists(dir)) || env.OnPath("codex")
 		},
 		BackupDir: env.BackupDir,
+		Notes:     func() []string { return notes(env) },
 	})
 }
 
