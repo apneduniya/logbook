@@ -19,7 +19,9 @@ import (
 	"github.com/apneduniya/logbook/internal/agent/serverapi"
 	"github.com/apneduniya/logbook/internal/server/credited"
 	"github.com/apneduniya/logbook/internal/server/httpapi/httpapitest"
+	"github.com/apneduniya/logbook/internal/server/ledger"
 	"github.com/apneduniya/logbook/internal/server/store"
+	"github.com/apneduniya/logbook/internal/server/store/db"
 	"github.com/apneduniya/logbook/internal/server/store/seedtest"
 	"github.com/apneduniya/logbook/internal/server/store/storetest"
 	"github.com/apneduniya/logbook/pkg/struggle"
@@ -27,8 +29,9 @@ import (
 )
 
 // rig is the agent's real crediting pipeline (local database, real engine,
-// HTTP client) talking to the server's real minutes endpoint, service and
-// Postgres store, on one shared clock.
+// HTTP client, device key) talking to the server's real minutes and
+// evidence-day endpoints, services and Postgres store. The server's clock is
+// the agent's plus serverOffset.
 type rig struct {
 	t      *testing.T
 	st     *store.Store
@@ -38,6 +41,14 @@ type rig struct {
 
 	mu  sync.Mutex
 	now time.Time
+	// serverOffset is how far the server's clock is from the agent's.
+	serverOffset time.Duration
+	// date, between the agent and the server, rewrites every response's
+	// Date header: "strip" removes it, "future" sets it a week ahead of the
+	// server's clock, "" leaves it alone.
+	date string
+	// down makes the server unreachable (every request answers 503).
+	down bool
 	// computed is the engine's last output per minute, for comparison.
 	computed map[time.Time][]struggle.Minute
 }
@@ -58,25 +69,48 @@ func newRig(t *testing.T, start time.Time) *rig {
 	r.st = storetest.New(t)
 	user := seedtest.User(t, r.st, "alice", "UTC", true)
 	registered := start.UTC().Truncate(24 * time.Hour)
-	r.device = seedtest.DeviceAt(t, r.st, user, "laptop", registered)
+	key, err := devicekey.Create(filepath.Join(t.TempDir(), "device.key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.device, err = r.st.SeedTestDevice(context.Background(), db.SeedTestDeviceParams{
+		UserID: user, Name: "laptop", PublicKey: key.Public(), CreatedAt: registered,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	mux := http.NewServeMux()
-	credited.NewHandler(credited.NewService(r.st, nil, credited.WithClock(r.clock)), httpapitest.StubSession).Register(mux)
+	credited.NewHandler(credited.NewService(r.st, nil, credited.WithClock(r.serverClock)), httpapitest.StubSession).Register(mux)
+	ledger.NewHandler(ledger.NewService(r.st, ledger.WithClock(r.serverClock)), httpapitest.StubSession).Register(mux)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		r.mu.Lock()
+		date, down, server := r.date, r.down, r.now.Add(r.serverOffset)
+		r.mu.Unlock()
+		switch date {
+		case "strip":
+			w.Header()["Date"] = nil // net/http then sends none
+		case "future":
+			w.Header().Set("Date", server.Add(7*24*time.Hour).UTC().Format(http.TimeFormat))
+		}
+		if down {
+			http.Error(w, `{"error": "unavailable"}`, http.StatusServiceUnavailable)
+			return
+		}
 		req.Header.Set(httpapitest.UserHeader, user.String())
 		mux.ServeHTTP(w, req)
 	}))
 	t.Cleanup(srv.Close)
 
-	db, err := localdb.Open(context.Background(), filepath.Join(t.TempDir(), "agent.db"), localdb.WithClock(r.clock))
+	ldb, err := localdb.Open(context.Background(), filepath.Join(t.TempDir(), "agent.db"), localdb.WithClock(r.clock))
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = db.Close() })
-	r.db = db
+	t.Cleanup(func() { _ = ldb.Close() })
+	r.db = ldb
 	r.runner = crediting.New(crediting.Options{
-		Store: db, Server: serverapi.New(srv.Client(), "logbook-agent/e2e"),
-		Identity: identity{devicekey.Device{ID: r.device.String(), RegisteredAt: registered}},
+		Store: ldb, Server: serverapi.New(srv.Client(), "logbook-agent/e2e"),
+		Identity: identity{devicekey.Device{ID: r.device.String(), RegisteredAt: registered, Key: key}},
 		Target: func() crediting.Target {
 			return crediting.Target{Target: serverapi.Target{BaseURL: srv.URL, APIKey: "key"}}
 		},
@@ -90,6 +124,20 @@ func (r *rig) clock() time.Time {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.now
+}
+
+// serverClock is the server's clock.
+func (r *rig) serverClock() time.Time {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.now.Add(r.serverOffset)
+}
+
+// with changes the rig's settings under its lock.
+func (r *rig) with(fn func(r *rig)) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	fn(r)
 }
 
 func (r *rig) set(now time.Time) {

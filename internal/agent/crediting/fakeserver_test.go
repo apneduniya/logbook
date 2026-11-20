@@ -46,9 +46,13 @@ type fakeServer struct {
 	// offset is how far the server's clock is from the agent's (the
 	// agent's clock is the wrong one).
 	offset time.Duration
+	// serverTime, when set, replaces server_time in minutes responses
+	// ("-" leaves it out).
+	serverTime string
 }
 
-// serverNow is the server's clock, sent in every response's Date header.
+// serverNow is the server's clock, sent as server_time in minutes responses
+// (and in every response's Date header, which the agent must ignore).
 func (f *fakeServer) serverNow() time.Time { return f.now().Add(f.offset) }
 
 type serverMinute struct {
@@ -236,7 +240,16 @@ func (f *fakeServer) handleMinutes(w http.ResponseWriter, r *http.Request, id st
 			accepted++
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"accepted": accepted, "rejected": rejected})
+	res := map[string]any{"accepted": accepted, "rejected": rejected,
+		"server_time": f.serverNow().UTC().Format(time.RFC3339Nano)}
+	switch f.serverTime {
+	case "":
+	case "-":
+		delete(res, "server_time")
+	default:
+		res["server_time"] = f.serverTime
+	}
+	writeJSON(w, http.StatusOK, res)
 }
 
 // errSealedText is the server's rejection of a minute in a day the device

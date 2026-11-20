@@ -158,3 +158,69 @@ func TestClockJumpAheadSealsNothing(t *testing.T) {
 		t.Fatalf("server days = %+v, want the 20th", days)
 	}
 }
+
+// A day is sealed (or skipped as empty) only when the minutes response
+// carries the server's time and it is within MaxClockSkew of the system
+// clock. Otherwise nothing moves, status says why, minutes still go up,
+// and the days are sealed once the server's time is usable again. The Date
+// header plays no part: here it always holds the right time.
+func TestSealingNeedsServerTime(t *testing.T) {
+	tests := []struct {
+		name       string
+		serverTime string
+		offset     time.Duration
+		seal       bool
+	}{
+		{"missing", "-", 0, false},
+		{"malformed", "yesterday", 0, false},
+		{"days ahead", "2026-11-28T01:10:05Z", 0, false},
+		{"far behind", "2026-11-19T01:10:05Z", 0, false},
+		{"just behind", "", -(MaxClockSkew + time.Second), false},
+		{"just ahead", "", MaxClockSkew + time.Second, false},
+		{"agrees", "", 0, true},
+		{"within tolerance behind", "", -MaxClockSkew + time.Second, true},
+		{"within tolerance ahead", "", MaxClockSkew - time.Second, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			e := newEnv(t, time.Date(2026, 11, 20, 10, 0, 5, 0, time.UTC))
+			addDay(t, e.db, "2026-11-20")
+			addDay(t, e.db, "2026-11-22")
+			e.credit(time.Date(2026, 11, 20, 9, 59, 0, 0, time.UTC), "app", 60)
+			e.run()
+			id := e.deviceID()
+
+			e.srv.set(func(f *fakeServer) { f.serverTime, f.offset = tt.serverTime, tt.offset })
+			e.set(time.Date(2026, 11, 23, 1, 10, 5, 0, time.UTC))
+			e.credit(time.Date(2026, 11, 23, 0, 39, 0, 0, time.UTC), "app", 60)
+			e.run()
+			days := e.srv.storedDays(id)
+			if !tt.seal {
+				if len(days) != 0 {
+					t.Fatalf("days sealed: %+v", days)
+				}
+				for _, key := range []string{keySealedThrough, keyEvidenceCursor} {
+					if v, err := e.db.Get(t.Context(), key); err != nil || v != "" {
+						t.Fatalf("%s = %q (%v), want unset", key, v, err)
+					}
+				}
+				if s := e.status(); s.Minutes.Clock == "" || s.Minutes.Waiting != 0 {
+					t.Fatalf("minutes status = %+v, want the clock problem shown and minutes uploaded", s.Minutes)
+				}
+				e.wantServerMinute(time.Date(2026, 11, 23, 0, 39, 0, 0, time.UTC), "app", 60)
+
+				// The server's time is usable again: the days are sealed in order.
+				e.srv.set(func(f *fakeServer) { f.serverTime, f.offset = "", 0 })
+				e.advance(time.Minute)
+				e.run()
+				days = e.srv.storedDays(id)
+			}
+			if len(days) != 2 || days[0].Day != "2026-11-20" || days[1].Day != "2026-11-22" {
+				t.Fatalf("server days = %+v, want the 20th and the 22nd", days)
+			}
+			if s := e.status(); s.Minutes.Clock != "" {
+				t.Fatalf("status clock = %q once the clocks agree", s.Minutes.Clock)
+			}
+		})
+	}
+}

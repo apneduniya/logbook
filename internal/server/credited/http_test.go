@@ -84,7 +84,8 @@ type response struct {
 		Index int    `json:"index"`
 		Error string `json:"error"`
 	} `json:"rejected"`
-	Err string `json:"error"`
+	ServerTime string `json:"server_time"`
+	Err        string `json:"error"`
 }
 
 func (e *env) upload(user, device uuid.UUID, items ...item) (int, response) {
@@ -488,7 +489,7 @@ func TestUploadRemovalsKeepBounds(t *testing.T) {
 }
 
 // An empty batch is accepted and changes nothing: the agent sends one to
-// read the server's clock from the Date header before sealing a day.
+// read the server's clock from the body before sealing a day.
 func TestUploadEmptyBatch(t *testing.T) {
 	e := newEnv(t)
 	u := seedtest.User(t, e.st, "alice", "UTC", true)
@@ -496,6 +497,9 @@ func TestUploadEmptyBatch(t *testing.T) {
 	code, res := e.upload(u, d)
 	if code != http.StatusOK || res.Accepted != 0 || len(res.Rejected) != 0 {
 		t.Fatalf("status %d, %+v", code, res)
+	}
+	if res.ServerTime != "2026-11-20T12:00:30Z" {
+		t.Fatalf("server_time = %q, want the server's clock as RFC 3339 UTC", res.ServerTime)
 	}
 	if len(e.rows(d)) != 0 || len(e.pub.calls) != 0 {
 		t.Fatal("an empty batch changed something")

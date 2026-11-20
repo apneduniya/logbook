@@ -50,13 +50,16 @@ Auth: API key. Uploads labelled minutes from `pkg/struggle`.
 }
 ```
 
-Whole-request errors (`400`): invalid JSON, more than 1000 minutes, or a `rules_version` the server doesn't know (currently only `v1`). An empty `minutes` array is valid and changes nothing; the agent sends one to read the server's clock from the response's `Date` header before it seals a day.
+Whole-request errors (`400`): invalid JSON, more than 1000 minutes, or a `rules_version` the server doesn't know (currently only `v1`). An empty `minutes` array is valid and changes nothing; the agent sends one to read the server's clock (`server_time`) before it seals a day.
 
 Each item is then accepted or rejected on its own. `200`:
 
 ```json
-{ "accepted": 999, "rejected": [{ "index": 3, "error": "minute is in the future" }] }
+{ "accepted": 999, "rejected": [{ "index": 3, "error": "minute is in the future" }],
+  "server_time": "2026-11-20T10:31:05.123Z" }
 ```
+
+`server_time` is the server's clock when it checked the batch, RFC 3339 in UTC (fractional seconds optional). The agent seals an evidence day only when this is within 5 minutes of its own clock, and reads it from the body rather than the `Date` header, which a proxy may drop or rewrite. An agent that gets no `server_time`, or one it can't parse, keeps uploading minutes but seals nothing.
 
 `rejected` is sorted by index and is `[]` when empty. Rejected items should be dropped, not retried. The rules:
 
