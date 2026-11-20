@@ -26,12 +26,16 @@ laptop                                     server (Go + Postgres)
 | `pkg/wire` | Wire types shared by server and agent (heartbeats, minute batches, evidence) |
 | `pkg/struggle` | Pure rules engine: events in, labelled minutes and cuts out |
 | `pkg/evidence` | Canonical encoding, hash chain, ed25519 signing and verification |
+| `pkg/projectname` | Project name normalisation shared by heartbeat ingest and credited minutes |
 | `internal/server/config` | Typed env config |
 | `internal/server/store` | sqlc-generated queries and transaction helpers |
 | `internal/server/auth` | HCA sign-in, sessions, API keys, CSRF |
 | `internal/server/hackatime` | Hackatime client: OAuth, trust level, history import |
 | `internal/server/ingest` | Heartbeat validation, dedup, rollups |
 | `internal/server/stats` | Dashboard and program-API aggregates |
+| `internal/server/devices` | Agent device keys: register, list, revoke |
+| `internal/server/credited` | Credited-minute uploads from the agent |
+| `internal/server/ledger` | Signed daily evidence chain per device |
 | `internal/server/live` | SSE fan-out |
 | `internal/server/httpapi` | HTTP handlers and middleware; thin, calls services |
 | `internal/server/jobs` | River workers |

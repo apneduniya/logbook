@@ -1,8 +1,11 @@
 package auth
 
 import (
+	"fmt"
 	"net/url"
 	"strings"
+
+	"github.com/apneduniya/logbook/internal/server/config"
 )
 
 const maxNextLen = 512
@@ -34,4 +37,28 @@ func safeNext(next string) string {
 		return "/"
 	}
 	return s
+}
+
+// originOf turns the configured web URL into an origin with
+// config.ParseOrigin, the function CORS uses too, so the two always agree.
+// Empty stays empty (the UI shares the API's origin). ParseOrigin rejects
+// anything after the host, so the origin can be joined with a safeNext path
+// without surprises.
+func originOf(webURL string) (string, error) {
+	if webURL == "" {
+		return "", nil
+	}
+	origin, err := config.ParseOrigin(webURL)
+	if err != nil {
+		return "", fmt.Errorf("auth: web URL: %w", err)
+	}
+	return origin, nil
+}
+
+// webLocation is where to send the browser for path, which must be a
+// safeNext result or a fixed path of ours: the web origin plus path, or path
+// alone when the UI shares the API's origin. safeNext guarantees path starts
+// with exactly one "/", so the result can never name another host.
+func (s *Service) webLocation(path string) string {
+	return s.webOrigin + path
 }

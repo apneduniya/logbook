@@ -15,6 +15,23 @@ Owned by `internal/server/auth`. Covers sign-in with Hack Club Auth (HCA), brows
 
   Over a limit the response is `429` with a `Retry-After` header (seconds).
 
+## Web origin and CORS
+
+The web UI and the API live on different origins (ADR 0011): the UI at `LOGBOOK_WEB_URL` (for example `https://logbook.boogles.dev`), the API at `LOGBOOK_BASE_URL` (for example `https://api.logbook.boogles.dev`). OAuth callbacks are on the API origin.
+
+- `LOGBOOK_WEB_URL` must be an origin: `https://` plus a host and optional port, with no path, query or fragment. A default port written out (`:443`, or `:80` for `http`) is refused, because browsers leave it out of `Origin` and CORS would never match. CORS and sign-in redirects build the origin with the same function (`config.ParseOrigin`). Plain `http` is accepted only for `localhost`, `127.0.0.1` or `::1` with `LOGBOOK_DEV_INSECURE_COOKIE=true`, and it then defaults to `http://localhost:5173`. Otherwise it is required.
+- After sign-in, the API redirects the browser to `LOGBOOK_WEB_URL` plus the saved `next` path. Only that origin is ever used, so `next` can't send anyone elsewhere.
+
+### CORS
+
+For paths under `/api/` the API answers CORS for exactly the web origin:
+
+- Preflight (`OPTIONS` with `Access-Control-Request-Method`): `204` with `Access-Control-Allow-Origin: <web origin>`, `Access-Control-Allow-Credentials: true`, `Access-Control-Allow-Methods: GET, POST, PATCH, DELETE`, `Access-Control-Allow-Headers: Content-Type, X-CSRF-Token` and `Access-Control-Max-Age: 600`. Any other origin, method or header gets `403`.
+- Actual requests from the web origin get `Access-Control-Allow-Origin`, `Access-Control-Allow-Credentials: true` and `Access-Control-Expose-Headers: Retry-After, X-Request-Id`. Requests from other origins are served without CORS headers, so the browser hides the response from the page.
+- Every `/api/` response carries `Vary: Origin`.
+- There is no CORS on `/auth/*`, `/healthz`, heartbeat ingest (`/api/v1/users/current/heartbeats*`, `/api/v1/users/current/statusbar/*`, `/api/hackatime/*`) or the agent's device endpoints (`/api/v1/devices*`). Browsers never call them cross-origin.
+- CSRF protection is unchanged: state-changing session requests still need `X-CSRF-Token`, which a page on another origin can't send without passing CORS.
+
 ## Browser sign-in (HCA)
 
 ### `GET /auth/login`
@@ -36,8 +53,8 @@ HCA redirects here. Not for direct use.
 |---|---|
 | Auth | the `logbook_oauth` cookie from `/auth/login` |
 | Query | `code`, `state` (or `error` from HCA) |
-| Success | Creates the user on first sign-in, refreshes name and email on later ones, replaces any existing session on this browser with a new one, writes `auth.login` to the audit log, sets `logbook_session`, and responds `302` to the saved `next` path (default `/`). |
-| Failure | `302` to `/?auth_error=<code>`, with no session: |
+| Success | Creates the user on first sign-in, refreshes name and email on later ones, replaces any existing session on this browser with a new one, writes `auth.login` to the audit log, sets `logbook_session`, and responds `302` to `LOGBOOK_WEB_URL` plus the saved `next` path (default `/`). |
+| Failure | `302` to `LOGBOOK_WEB_URL` + `/?auth_error=<code>`, with no session: |
 
 | `auth_error` | Meaning |
 |---|---|
@@ -65,9 +82,9 @@ This route exists only when `LOGBOOK_DEV_LOGIN=true` **and** `LOGBOOK_BASE_URL` 
 | | |
 |---|---|
 | Auth | none |
-| Request | `Content-Type: application/json` (required, which blocks cross-site form posts). Body: `{"username": "orpheus"}`. The username is lowercased and must match `[a-z0-9_-]{2,32}`. |
-| Response | `200`, the same body as `GET /api/v1/session`, plus the `logbook_session` cookie. The user is created on first use with `hca_id = "dev:<username>"`. |
-| Errors | `404` disabled or not from loopback, `415` wrong content type, `400` invalid username or JSON, `429` rate-limited. |
+| Request | Either JSON or a form. **JSON** (`Content-Type: application/json`, for scripts): `{"username": "orpheus"}`. A cross-site page can't send it without a CORS preflight, and `/auth/*` answers none. **Form** (`application/x-www-form-urlencoded`, for the web UI on its own origin): `username` and an optional `next` path. Forms can be posted from any site, so the request's `Origin` header must be exactly the web origin. The username is lowercased and must match `[a-z0-9_-]{2,32}`. |
+| Response | JSON: `200`, the same body as `GET /api/v1/session`, plus the `logbook_session` cookie. Form: `303` to `LOGBOOK_WEB_URL` plus the safe `next` path (default `/`), plus the cookie. The user is created on first use with `hca_id = "dev:<username>"`. |
+| Errors | `404` disabled or not from loopback, `403` form from any origin other than the web origin, `415` other content types, `400` invalid username, JSON or form, `429` rate-limited. |
 
 ## Session
 

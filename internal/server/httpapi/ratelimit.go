@@ -184,6 +184,16 @@ func LimitKey(ip string) string {
 	return parsed.Mask(mask).String() + "/" + strconv.Itoa(ipv6LimitPrefix)
 }
 
+// UserKey is a key function for Middleware that limits per authenticated
+// user. Put it after the auth middleware; a request with no user on its
+// context is not limited here (auth has already answered it).
+func UserKey(r *http.Request) string {
+	if u, ok := UserFrom(r.Context()); ok {
+		return "user:" + u.ID.String()
+	}
+	return ""
+}
+
 // IPKey returns a key function for Middleware that limits per client (see
 // LimitKey for how IPv6 clients are grouped).
 func IPKey(trustProxy bool) func(*http.Request) string {

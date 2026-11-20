@@ -5,10 +5,10 @@ import (
 	"math"
 	"strings"
 	"time"
-	"unicode"
 	"unicode/utf8"
 
 	"github.com/apneduniya/logbook/internal/server/ingest/useragent"
+	"github.com/apneduniya/logbook/pkg/projectname"
 	"github.com/apneduniya/logbook/pkg/wire"
 )
 
@@ -68,13 +68,9 @@ func normalize(h wire.Heartbeat, c Client) wire.Heartbeat {
 		}
 		h.Dependencies = deps
 	}
-	h.Project = strings.TrimSpace(strings.Map(func(r rune) rune {
-		if unicode.IsControl(r) {
-			return -1
-		}
-		return r
-	}, h.Project))
-	for _, p := range []*string{&h.Project, &h.Language, &h.Branch} {
+	// The same rule as credited minutes, so raw and credited names match.
+	h.Project = projectname.Normalize(h.Project)
+	for _, p := range []*string{&h.Language, &h.Branch} {
 		if placeholders[*p] {
 			*p = ""
 		}

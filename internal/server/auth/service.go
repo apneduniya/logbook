@@ -36,9 +36,14 @@ type HCAConfig struct {
 
 // Options configures a Service. Zero durations take the defaults below.
 type Options struct {
-	// BaseURL is Logbook's public origin, e.g. https://logbook.hackclub.com.
+	// BaseURL is the API's public origin, e.g. https://api.logbook.boogles.dev.
 	BaseURL string
-	HCA     HCAConfig
+	// WebURL is the web UI's origin, e.g. https://logbook.boogles.dev (ADR
+	// 0011). After sign-in the browser is sent to WebURL plus a safe "next"
+	// path. Empty means the UI shares the API's origin, so redirects are
+	// plain paths.
+	WebURL string
+	HCA    HCAConfig
 	// SecretKey is the 32-byte server encryption key. Auth derives its own
 	// keys from it with HKDF and never uses it directly.
 	SecretKey []byte
@@ -73,6 +78,7 @@ const (
 type Service struct {
 	st         Store
 	baseURL    *url.URL
+	webOrigin  string // "" when the UI shares the API's origin
 	hca        *hcaClient
 	stateKey   []byte
 	sessionTTL time.Duration
@@ -137,10 +143,15 @@ func New(st Store, opts Options) (*Service, error) {
 	if client == nil {
 		client = &http.Client{Timeout: outboundTimeout}
 	}
+	webOrigin, err := originOf(opts.WebURL)
+	if err != nil {
+		return nil, err
+	}
 	hca := newHCAClient(opts.HCA, base.String()+"/auth/callback", client)
 	s := &Service{
 		st:         st,
 		baseURL:    base,
+		webOrigin:  webOrigin,
 		hca:        hca,
 		stateKey:   stateKey,
 		sessionTTL: ttl,

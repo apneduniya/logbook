@@ -117,14 +117,14 @@ func (h *Handler) callback(w http.ResponseWriter, r *http.Request) error {
 	if _, err := h.startSession(w, r, signInFromHCA(id), methodHCA); err != nil {
 		return err
 	}
-	http.Redirect(w, r, st.Next, http.StatusFound)
+	http.Redirect(w, r, s.webLocation(safeNext(st.Next)), http.StatusFound)
 	return nil
 }
 
 // failSignIn sends the browser back to the UI with an error code.
 func (h *Handler) failSignIn(w http.ResponseWriter, r *http.Request, code, reason string) {
 	slog.InfoContext(r.Context(), "sign-in rejected", "code", code, "reason", reason)
-	http.Redirect(w, r, "/?auth_error="+url.QueryEscape(code), http.StatusFound)
+	http.Redirect(w, r, h.s.webLocation("/?auth_error="+url.QueryEscape(code)), http.StatusFound)
 }
 
 // startSession signs the browser in through Service.signIn, passing the hash
@@ -173,19 +173,26 @@ func (h *Handler) devLogin(w http.ResponseWriter, r *http.Request) error {
 	if !s.devLogin || !isLoopbackPeer(r.RemoteAddr) {
 		return httpapi.Errorf(http.StatusNotFound, nil, "not found")
 	}
-	// Requiring JSON blocks cross-site form posts (login CSRF).
-	if mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type")); err != nil || mt != "application/json" {
-		return httpapi.Errorf(http.StatusUnsupportedMediaType, nil, "Content-Type must be application/json")
+	mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	switch {
+	case err == nil && mt == "application/json":
+		return h.devLoginJSON(w, r)
+	case err == nil && mt == "application/x-www-form-urlencoded":
+		return h.devLoginForm(w, r)
 	}
+	return httpapi.Errorf(http.StatusUnsupportedMediaType, nil,
+		"Content-Type must be application/json or application/x-www-form-urlencoded")
+}
+
+// devLoginJSON signs in from a script and answers like GET /api/v1/session.
+// A cross-site page can't send a JSON body without a CORS preflight, and
+// /auth/* answers none, which blocks login CSRF.
+func (h *Handler) devLoginJSON(w http.ResponseWriter, r *http.Request) error {
 	var req devLoginRequest
 	if err := httpapi.DecodeJSON(w, r, &req); err != nil {
 		return err
 	}
-	name := strings.ToLower(strings.TrimSpace(req.Username))
-	if !devUsernameRe.MatchString(name) {
-		return httpapi.Errorf(http.StatusBadRequest, nil, "username must match [a-z0-9_-]{2,32}")
-	}
-	out, err := h.startSession(w, r, signInIdentity{hcaID: devHCAPrefix + name, username: name, displayName: name}, methodDev)
+	out, err := h.devSignIn(w, r, req.Username)
 	if err != nil {
 		return err
 	}
@@ -193,6 +200,41 @@ func (h *Handler) devLogin(w http.ResponseWriter, r *http.Request) error {
 		User: toUserJSON(out.user), CSRFToken: out.sess.csrfToken, ExpiresAt: out.sess.expiresAt,
 	})
 	return nil
+}
+
+// maxDevFormBody bounds the dev sign-in form (a username and a next path).
+const maxDevFormBody = 4 << 10
+
+// devLoginForm signs in from a form on the web UI, which lives on another
+// origin (ADR 0011), and sends the browser back to it with 303. Forms can be
+// posted cross-site, so the request's Origin must be the web origin; a form
+// on any other page gets 403 (login CSRF).
+func (h *Handler) devLoginForm(w http.ResponseWriter, r *http.Request) error {
+	s := h.s
+	if s.webOrigin == "" || r.Header.Get("Origin") != s.webOrigin {
+		return httpapi.Errorf(http.StatusForbidden, nil, "form sign-in is only accepted from the web UI")
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxDevFormBody)
+	if err := r.ParseForm(); err != nil {
+		return httpapi.Errorf(http.StatusBadRequest, err, "invalid form body")
+	}
+	if _, err := h.devSignIn(w, r, r.PostForm.Get("username")); err != nil {
+		return err
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	// webLocation joins the configured web origin with a safeNext path, which
+	// always starts with exactly one "/", so the host can't be changed.
+	http.Redirect(w, r, s.webLocation(safeNext(r.PostForm.Get("next"))), http.StatusSeeOther) //nolint:gosec // see above
+	return nil
+}
+
+// devSignIn validates username and signs the browser in as that dev user.
+func (h *Handler) devSignIn(w http.ResponseWriter, r *http.Request, username string) (signedIn, error) {
+	name := strings.ToLower(strings.TrimSpace(username))
+	if !devUsernameRe.MatchString(name) {
+		return signedIn{}, httpapi.Errorf(http.StatusBadRequest, nil, "username must match [a-z0-9_-]{2,32}")
+	}
+	return h.startSession(w, r, signInIdentity{hcaID: devHCAPrefix + name, username: name, displayName: name}, methodDev)
 }
 
 // userJSON is the signed-in user's own view of their account.

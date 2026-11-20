@@ -17,3 +17,14 @@ SELECT action, subject_type, subject_id, data::text AS data
 FROM audit_log
 WHERE actor_user_id = $1
 ORDER BY id;
+
+-- name: SeedTestDevice :one
+INSERT INTO devices (user_id, name, os, public_key, revoked_at, created_at)
+VALUES (sqlc.arg(user_id), sqlc.arg(name), 'linux', sqlc.arg(public_key), sqlc.narg(revoked_at),
+        sqlc.arg(created_at)::timestamptz)
+RETURNING id;
+
+-- name: SeedTestCreditedMinute :exec
+INSERT INTO credited_minutes (device_id, user_id, minute, project, label, credited, flags, rules_version)
+VALUES (sqlc.arg(device_id), sqlc.arg(user_id), sqlc.arg(minute), sqlc.arg(project), sqlc.arg(label),
+        sqlc.arg(credited), sqlc.arg(flags), 'v1');

@@ -84,7 +84,7 @@ func TestDevLoginValidation(t *testing.T) {
 		name, body, contentType string
 		want                    int
 	}{
-		{"form post", "username=x", "application/x-www-form-urlencoded", http.StatusUnsupportedMediaType},
+		{"form post without a web origin", "username=orpheus", "application/x-www-form-urlencoded", http.StatusForbidden},
 		{"text plain", `{"username":"orpheus"}`, "text/plain", http.StatusUnsupportedMediaType},
 		{"too short", `{"username":"o"}`, "application/json", http.StatusBadRequest},
 		{"bad chars", `{"username":"or pheus"}`, "application/json", http.StatusBadRequest},

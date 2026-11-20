@@ -33,6 +33,8 @@ type Querier interface {
 	ProfileGetByUsername(ctx context.Context, username string) (db.ProfileGetByUsernameRow, error)
 	ProfileTimezoneKnown(ctx context.Context, name string) (bool, error)
 	ProfilePublicTotals(ctx context.Context, arg db.ProfilePublicTotalsParams) ([]db.ProfilePublicTotalsRow, error)
+	ProfilePublicCredited(ctx context.Context, arg db.ProfilePublicCreditedParams) ([]db.ProfilePublicCreditedRow, error)
+	StatsUserHasDevices(ctx context.Context, userID uuid.UUID) (bool, error)
 }
 
 // Store is what the service needs: reads plus transactions for updates.
@@ -77,18 +79,24 @@ type Item struct {
 	Seconds int64  `json:"seconds"`
 }
 
-// Totals are credited seconds over all time and the last 7 days.
+// Totals are seconds over all time and the last 7 days: raw (heartbeat)
+// time, and the agent's credited time (ADR 0014). The credited fields are
+// null when the user has never registered a device.
 type Totals struct {
-	AllTimeSeconds   int64 `json:"all_time_seconds"`
-	Last7DaysSeconds int64 `json:"last_7_days_seconds"`
+	AllTimeSeconds           int64  `json:"all_time_seconds"`
+	Last7DaysSeconds         int64  `json:"last_7_days_seconds"`
+	CreditedAllTimeSeconds   *int64 `json:"credited_all_time_seconds"`
+	CreditedLast7DaysSeconds *int64 `json:"credited_last_7_days_seconds"`
 }
 
 // PublicProject is a non-hidden project as shown on a public profile.
 type PublicProject struct {
-	Name             string `json:"name"`
-	RepoURL          string `json:"repo_url"`
-	TotalSeconds     int64  `json:"total_seconds"`
-	Last7DaysSeconds int64  `json:"last_7_days_seconds"`
+	Name                     string `json:"name"`
+	RepoURL                  string `json:"repo_url"`
+	TotalSeconds             int64  `json:"total_seconds"`
+	Last7DaysSeconds         int64  `json:"last_7_days_seconds"`
+	CreditedSeconds          *int64 `json:"credited_seconds"`
+	CreditedLast7DaysSeconds *int64 `json:"credited_last_7_days_seconds"`
 }
 
 // Public is a public profile. Hidden projects contribute nothing to it.
@@ -186,24 +194,37 @@ func (s *Service) ProjectSettingsChanged(userID uuid.UUID) {
 
 func (s *Service) aggregates(ctx context.Context, userID uuid.UUID, freshAfter time.Time) (aggregates, error) {
 	return s.cache.get(ctx, userID, freshAfter, func(ctx context.Context) (aggregates, error) {
-		rows, err := s.st.ProfilePublicTotals(ctx, db.ProfilePublicTotalsParams{
-			UserID: userID, Since: s.now().Add(-recentWindow).UTC(),
-		})
+		since := s.now().Add(-recentWindow).UTC()
+		rows, err := s.st.ProfilePublicTotals(ctx, db.ProfilePublicTotalsParams{UserID: userID, Since: since})
 		if err != nil {
 			return aggregates{}, fmt.Errorf("querying public totals: %w", err)
 		}
-		v, err := versionOf(rows)
+		has, err := s.st.StatsUserHasDevices(ctx, userID)
+		if err != nil {
+			return aggregates{}, fmt.Errorf("checking devices: %w", err)
+		}
+		var credited []db.ProfilePublicCreditedRow
+		if has {
+			credited, err = s.st.ProfilePublicCredited(ctx, db.ProfilePublicCreditedParams{UserID: userID, Since: since})
+			if err != nil {
+				return aggregates{}, fmt.Errorf("querying public credited totals: %w", err)
+			}
+			if credited == nil {
+				credited = []db.ProfilePublicCreditedRow{} // has devices: zeros, not null
+			}
+		}
+		v, err := versionOf(rows, credited)
 		if err != nil {
 			return aggregates{}, err
 		}
-		return aggregates{public: buildPublic(rows), version: v}, nil
+		return aggregates{public: buildPublic(rows, credited), version: v}, nil
 	})
 }
 
-// versionOf hashes the all-time rows. The last-7-days figures are left out:
-// they shift as time passes, and a version that moved without new visible
-// activity would hint at hidden activity.
-func versionOf(rows []db.ProfilePublicTotalsRow) (string, error) {
+// versionOf hashes the all-time rows, raw and credited. The last-7-days
+// figures are left out: they shift as time passes, and a version that moved
+// without new visible activity would hint at hidden activity.
+func versionOf(rows []db.ProfilePublicTotalsRow, credited []db.ProfilePublicCreditedRow) (string, error) {
 	type key struct {
 		Project, Language, RepoURL string
 		Seconds                    int64
@@ -215,7 +236,22 @@ func versionOf(rows []db.ProfilePublicTotalsRow) (string, error) {
 	slices.SortFunc(keys, func(a, b key) int {
 		return cmp.Or(cmp.Compare(a.Project, b.Project), cmp.Compare(a.Language, b.Language))
 	})
-	b, err := json.Marshal(keys)
+	type creditedKey struct {
+		Project string
+		Seconds int64
+	}
+	ckeys := make([]creditedKey, len(credited))
+	for i, c := range credited {
+		ckeys[i] = creditedKey{c.Project, c.Seconds}
+	}
+	slices.SortFunc(ckeys, func(a, b creditedKey) int { return cmp.Compare(a.Project, b.Project) })
+	var b []byte
+	var err error
+	if credited == nil {
+		b, err = json.Marshal(keys) // unchanged for users without a device
+	} else {
+		b, err = json.Marshal(map[string]any{"raw": keys, "credited": ckeys})
+	}
 	if err != nil {
 		return "", fmt.Errorf("encoding version: %w", err)
 	}
@@ -223,33 +259,57 @@ func versionOf(rows []db.ProfilePublicTotalsRow) (string, error) {
 	return hex.EncodeToString(sum[:16]), nil
 }
 
-// buildPublic folds per (project, language) rows into totals, the top
-// projects and the language breakdown.
-func buildPublic(rows []db.ProfilePublicTotalsRow) Public {
+// buildPublic folds per (project, language) rows and per-project credited
+// rows into totals, the top projects and the language breakdown. A nil
+// credited means the user has no device, so the credited fields stay null.
+func buildPublic(rows []db.ProfilePublicTotalsRow, credited []db.ProfilePublicCreditedRow) Public {
 	byProject := map[string]*PublicProject{}
 	byLang := map[string]int64{}
 	var p Public
-	for _, r := range rows {
-		pp, ok := byProject[r.Project]
+	project := func(name, repoURL string) *PublicProject {
+		pp, ok := byProject[name]
 		if !ok {
-			pp = &PublicProject{Name: r.Project, RepoURL: r.RepoUrl}
-			byProject[r.Project] = pp
+			pp = &PublicProject{Name: name, RepoURL: repoURL}
+			byProject[name] = pp
 		}
+		return pp
+	}
+	for _, r := range rows {
+		pp := project(r.Project, r.RepoUrl)
 		pp.TotalSeconds += r.Seconds
 		pp.Last7DaysSeconds += r.RecentSeconds
 		byLang[r.Language] += r.Seconds
 		p.Totals.AllTimeSeconds += r.Seconds
 		p.Totals.Last7DaysSeconds += r.RecentSeconds
 	}
+	if credited != nil {
+		var all, recent int64
+		for _, c := range credited {
+			pp := project(c.Project, c.RepoUrl)
+			sec, rec := c.Seconds, c.RecentSeconds
+			pp.CreditedSeconds, pp.CreditedLast7DaysSeconds = &sec, &rec
+			all += c.Seconds
+			recent += c.RecentSeconds
+		}
+		p.Totals.CreditedAllTimeSeconds, p.Totals.CreditedLast7DaysSeconds = &all, &recent
+		for _, pp := range byProject {
+			if pp.CreditedSeconds == nil {
+				pp.CreditedSeconds, pp.CreditedLast7DaysSeconds = new(int64), new(int64)
+			}
+		}
+	}
 	p.Projects = make([]PublicProject, 0, len(byProject))
 	for _, pp := range byProject {
 		p.Projects = append(p.Projects, *pp)
 	}
-	slices.SortFunc(p.Projects, func(a, b PublicProject) int {
-		if c := cmp.Compare(b.TotalSeconds, a.TotalSeconds); c != 0 {
-			return c
+	credit := func(pp PublicProject) int64 {
+		if pp.CreditedSeconds == nil {
+			return 0
 		}
-		return cmp.Compare(a.Name, b.Name)
+		return *pp.CreditedSeconds
+	}
+	slices.SortFunc(p.Projects, func(a, b PublicProject) int {
+		return cmp.Or(cmp.Compare(b.TotalSeconds, a.TotalSeconds), cmp.Compare(credit(b), credit(a)), cmp.Compare(a.Name, b.Name))
 	})
 	if len(p.Projects) > TopProjects {
 		p.Projects = p.Projects[:TopProjects]
