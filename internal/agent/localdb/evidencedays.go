@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/apneduniya/logbook/pkg/evidence"
 )
 
 // Evidence day states.
@@ -33,12 +35,18 @@ type EvidenceDay struct {
 	Signature     []byte
 	RulesVersion  string
 	EventCounts   map[string]int
-	// HighWater pins exactly which local rows the content hash covers.
+	// HighWater pins exactly which rows of the raw event tables (heartbeats,
+	// AI events, activity samples, git events) the content hash covers.
 	HighWater HighWater
-	State     string
-	Error     string
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	// ActiveTime is exactly the active-time records the content hash
+	// covers, kept because active time can't be pinned by row ids. nil
+	// means they are not kept: the day was sealed before they were, or its
+	// raw events have been pruned. Sealing stores a non-nil slice.
+	ActiveTime []evidence.ActiveTime
+	State      string
+	Error      string
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
 }
 
 // InsertEvidenceDay stores a newly sealed day. It fails if the device
@@ -48,10 +56,18 @@ func (d *DB) InsertEvidenceDay(ctx context.Context, e EvidenceDay) error {
 	if err != nil {
 		return fmt.Errorf("encoding event counts: %w", err)
 	}
+	active := e.ActiveTime
+	if active == nil {
+		active = []evidence.ActiveTime{}
+	}
+	at, err := json.Marshal(active)
+	if err != nil {
+		return fmt.Errorf("encoding active time: %w", err)
+	}
 	now := d.now().UnixMilli()
 	_, err = d.sql.ExecContext(ctx, qEvidenceInsert, e.DeviceID, e.Day, e.PrevChainHash, e.ContentHash,
 		e.ChainHash, e.Signature, e.RulesVersion, string(counts), e.HighWater.Heartbeats, e.HighWater.AI,
-		e.HighWater.Activity, e.HighWater.Git, e.State, e.Error, now, now)
+		e.HighWater.Activity, e.HighWater.Git, string(at), e.State, e.Error, now, now)
 	if err != nil {
 		return fmt.Errorf("storing evidence day %s: %w", e.Day, err)
 	}
@@ -61,14 +77,25 @@ func (d *DB) InsertEvidenceDay(ctx context.Context, e EvidenceDay) error {
 // LastEvidenceDay returns the device's latest evidence day in any state.
 // ok is false when the device has none.
 func (d *DB) LastEvidenceDay(ctx context.Context, deviceID string) (e EvidenceDay, ok bool, err error) {
+	return d.evidenceDay(ctx, qEvidenceLast, deviceID)
+}
+
+// EvidenceDayOf returns the device's evidence day for day (YYYY-MM-DD).
+// ok is false when there is none.
+func (d *DB) EvidenceDayOf(ctx context.Context, deviceID, day string) (e EvidenceDay, ok bool, err error) {
+	return d.evidenceDay(ctx, qEvidenceDay, deviceID, day)
+}
+
+func (d *DB) evidenceDay(ctx context.Context, q string, args ...any) (e EvidenceDay, ok bool, err error) {
 	var (
 		counts           string
+		active           sql.NullString
 		created, updated int64
 		hw               HighWater
 	)
-	err = d.sql.QueryRowContext(ctx, qEvidenceLast, deviceID).Scan(&e.DeviceID, &e.Day, &e.PrevChainHash,
+	err = d.sql.QueryRowContext(ctx, q, args...).Scan(&e.DeviceID, &e.Day, &e.PrevChainHash,
 		&e.ContentHash, &e.ChainHash, &e.Signature, &e.RulesVersion, &counts, &hw.Heartbeats, &hw.AI,
-		&hw.Activity, &hw.Git, &e.State, &e.Error, &created, &updated)
+		&hw.Activity, &hw.Git, &active, &e.State, &e.Error, &created, &updated)
 	if errors.Is(err, sql.ErrNoRows) {
 		return EvidenceDay{}, false, nil
 	}
@@ -77,6 +104,12 @@ func (d *DB) LastEvidenceDay(ctx context.Context, deviceID string) (e EvidenceDa
 	}
 	if err := json.Unmarshal([]byte(counts), &e.EventCounts); err != nil {
 		return EvidenceDay{}, false, fmt.Errorf("decoding event counts: %w", err)
+	}
+	if active.Valid {
+		e.ActiveTime = []evidence.ActiveTime{}
+		if err := json.Unmarshal([]byte(active.String), &e.ActiveTime); err != nil {
+			return EvidenceDay{}, false, fmt.Errorf("decoding active time of %s: %w", e.Day, err)
+		}
 	}
 	e.HighWater = hw
 	e.CreatedAt, e.UpdatedAt = time.UnixMilli(created).UTC(), time.UnixMilli(updated).UTC()

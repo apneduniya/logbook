@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/apneduniya/logbook/pkg/evidence"
 	"github.com/apneduniya/logbook/pkg/wire"
 )
 
@@ -155,6 +156,38 @@ func TestSaveMinutesOpenAndFinal(t *testing.T) {
 	}
 }
 
+// A final minute is frozen whole: a recompute can't add another project to
+// it (that would credit the minute twice), only fill a minute that has no
+// rows at all (offline catch-up).
+func TestFinalMinuteTakesNoNewProject(t *testing.T) {
+	ctx := context.Background()
+	d, _ := openTest(t)
+	upd := func(ms ...CreditedMinute) SaveResult {
+		t.Helper()
+		r, err := d.SaveMinutes(ctx, MinuteUpdate{From: minute(-60), To: minute(0), OpenFrom: minute(-30),
+			Minutes: ms, Superseded: superseded})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	upd(cm(-40, "old", 60))
+	if r := upd(cm(-40, "new", 60), cm(-45, "x", 30), cm(-45, "y", 30)); r.Inserted != 2 {
+		t.Fatalf("recompute = %+v, want only the empty minute -45 filled", r)
+	}
+	unsent, err := d.UnsentMinutes(ctx, minute(-30), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, m := range unsent {
+		got = append(got, fmt.Sprintf("%d/%s", int(m.Minute.Sub(testNow).Minutes()), m.Project))
+	}
+	if strings.Join(got, " ") != "-45/x -45/y -40/old" {
+		t.Fatalf("rows = %v", got)
+	}
+}
+
 func TestUnsentMinutesSettlesFinal(t *testing.T) {
 	ctx := context.Background()
 	d, _ := openTest(t)
@@ -295,6 +328,48 @@ func TestEvidenceDays(t *testing.T) {
 	}
 	if err := d.SetEvidenceState(ctx, dev, "2026-01-01", EvidenceAccepted, ""); err == nil {
 		t.Fatal("updating a missing day succeeded")
+	}
+}
+
+func TestEvidenceDayKeepsActiveTime(t *testing.T) {
+	ctx := context.Background()
+	clock := testNow
+	d, _ := openTest(t, WithClock(func() time.Time { return clock }))
+	const dev = "0b7c2f1e-3a4d-4e5f-8a9b-0c1d2e3f4a5b"
+	from := time.Date(2026, 11, 18, 10, 0, 0, 123_000_000, time.UTC)
+	rec := evidence.ActiveTime{From: from, To: from.Add(time.Minute), SessionID: "s", UserSecs: 12.345,
+		Harness: wire.HarnessClaudeCode, ProjectCwd: `C:\src\app`}
+	e := EvidenceDay{DeviceID: dev, Day: "2026-11-18", Signature: []byte{1}, EventCounts: map[string]int{"active_time": 1},
+		ActiveTime: []evidence.ActiveTime{rec}, State: EvidencePending}
+	if err := d.InsertEvidenceDay(ctx, e); err != nil {
+		t.Fatal(err)
+	}
+	empty := e
+	empty.Day, empty.ActiveTime = "2026-11-19", nil
+	if err := d.InsertEvidenceDay(ctx, empty); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := d.EvidenceDayOf(ctx, dev, "2026-11-18")
+	if err != nil || !ok || len(got.ActiveTime) != 1 || got.ActiveTime[0] != rec {
+		t.Fatalf("EvidenceDayOf = %+v, %v, %v", got.ActiveTime, ok, err)
+	}
+	// Sealing with no active time keeps an empty list: "none", not "unknown".
+	if got, _, _ := d.EvidenceDayOf(ctx, dev, "2026-11-19"); got.ActiveTime == nil {
+		t.Fatal("empty active time read back as not kept")
+	}
+	if _, ok, err := d.EvidenceDayOf(ctx, dev, "2026-11-17"); ok || err != nil {
+		t.Fatalf("missing day: %v, %v", ok, err)
+	}
+	// Once the day's raw events are pruned, its records go too.
+	clock = time.Date(2026, 11, 19, 12, 0, 0, 0, time.UTC).Add(DefaultRetention)
+	if _, err := d.PruneCrediting(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got, _, _ := d.EvidenceDayOf(ctx, dev, "2026-11-18"); got.ActiveTime != nil {
+		t.Fatalf("active time kept after pruning: %+v", got.ActiveTime)
+	}
+	if got, _, _ := d.EvidenceDayOf(ctx, dev, "2026-11-19"); got.ActiveTime == nil {
+		t.Fatal("active time of a partly pruned day dropped")
 	}
 }
 

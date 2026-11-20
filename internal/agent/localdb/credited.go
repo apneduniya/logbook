@@ -44,9 +44,12 @@ type minuteKey struct {
 type minuteState struct{ digest, sentDigest string }
 
 // SaveMinutes applies one engine recompute in a transaction: open minutes are
-// inserted or rewritten when their digest changed, final minutes are only
-// inserted when missing, and open rows missing from the new result are
-// superseded (if the server saw them) or deleted.
+// inserted or rewritten when their digest changed, and open rows missing
+// from the new result are superseded (if the server saw them) or deleted.
+// A final minute is frozen whole: its rows are never rewritten and it takes
+// no new project. Only a final minute with no rows at all is filled in
+// (offline catch-up), so a minute is never credited twice under two
+// projects.
 func (d *DB) SaveMinutes(ctx context.Context, u MinuteUpdate) (SaveResult, error) {
 	var res SaveResult
 	open := u.OpenFrom.Unix()
@@ -55,12 +58,18 @@ func (d *DB) SaveMinutes(ctx context.Context, u MinuteUpdate) (SaveResult, error
 		if err != nil {
 			return err
 		}
+		stored := make(map[int64]bool, len(have)) // minutes with any row
+		for k := range have {
+			stored[k.minute] = true
+		}
 		seen := make(map[minuteKey]bool, len(u.Minutes))
 		for _, m := range u.Minutes {
 			k := minuteKey{m.Minute.Unix(), m.Project}
 			seen[k] = true
 			old, exists := have[k]
 			switch {
+			case k.minute < open && stored[k.minute] && !exists:
+				// A final minute that already has rows: frozen.
 			case !exists:
 				if err := writeMinute(ctx, tx, qMinuteInsert, m); err != nil {
 					return err
@@ -251,12 +260,24 @@ func (d *DB) UnsentMinuteCount(ctx context.Context) (int64, error) {
 	return n, nil
 }
 
+// UnsentMinutesBefore counts rows before t waiting to be sent. Zero means
+// the server has answered for every stored minute before t.
+func (d *DB) UnsentMinutesBefore(ctx context.Context, t time.Time) (int64, error) {
+	var n int64
+	if err := d.sql.QueryRowContext(ctx, qMinutesUnsentBefore, t.Unix()).Scan(&n); err != nil {
+		return 0, fmt.Errorf("counting unsent minutes: %w", err)
+	}
+	return n, nil
+}
+
 // CreditPruneResult counts rows removed by PruneCrediting.
 type CreditPruneResult struct{ Heartbeats, CreditedMinutes int64 }
 
 // PruneCrediting deletes full heartbeats and credited minutes older than the
-// retention period (90 days by default). Evidence days are kept: one small
-// row per day.
+// retention period (90 days by default). Evidence days are kept (one small
+// row per day), without the active-time records of days wholly before the
+// cut. Repo mapping rows go once a newer row for the same path is older
+// than the cut.
 func (d *DB) PruneCrediting(ctx context.Context) (CreditPruneResult, error) {
 	cut := d.now().Add(-d.retention)
 	var r CreditPruneResult
@@ -274,6 +295,14 @@ func (d *DB) PruneCrediting(ctx context.Context) (CreditPruneResult, error) {
 		}
 		if r.CreditedMinutes, err = res.RowsAffected(); err != nil {
 			return fmt.Errorf("pruning credited minutes: %w", err)
+		}
+		// A day whose raw events are gone can't be rebuilt; its kept active
+		// time goes with them.
+		if _, err := tx.ExecContext(ctx, qEvidenceForget, cut.UTC().Format(time.DateOnly)); err != nil {
+			return fmt.Errorf("pruning evidence active time: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, qRepoPrune, cut.UnixMilli()); err != nil {
+			return fmt.Errorf("pruning repo mapping: %w", err)
 		}
 		return nil
 	})

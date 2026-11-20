@@ -43,6 +43,9 @@ type Store interface {
 	MarkMinutesSent(ctx context.Context, ms []localdb.CreditedMinute, finalBefore time.Time) error
 	RetireMinutesBefore(ctx context.Context, t time.Time) error
 	UnsentMinuteCount(ctx context.Context) (int64, error)
+	UnsentMinutesBefore(ctx context.Context, t time.Time) (int64, error)
+	RecordRepos(ctx context.Context, at time.Time, repos []struggle.Repo) error
+	RepoMap(ctx context.Context) ([]localdb.RepoMapping, error)
 	PruneCrediting(ctx context.Context) (localdb.CreditPruneResult, error)
 	InsertEvidenceDay(ctx context.Context, e localdb.EvidenceDay) error
 	LastEvidenceDay(ctx context.Context, deviceID string) (localdb.EvidenceDay, bool, error)
@@ -75,7 +78,9 @@ type ActiveTimeSource interface {
 	ActiveTimes(ctx context.Context, from, to time.Time) ([]struggle.ActiveTime, error)
 }
 
-// RepoSource lists recently active repositories. It is optional.
+// RepoSource lists recently active repositories. It is optional. Its answers
+// are recorded in the local repo mapping journal, which is what the engine
+// reads (ReposAt).
 type RepoSource interface {
 	ActiveRepos(ctx context.Context) ([]struggle.Repo, error)
 }
@@ -246,14 +251,11 @@ func (r *Runner) compute(ctx context.Context, now time.Time) error {
 			active = nil
 		}
 	}
-	var repos []struggle.Repo
-	if r.opt.Repos != nil {
-		if repos, err = r.opt.Repos.ActiveRepos(ctx); err != nil {
-			r.opt.Logger.WarnContext(ctx, "listing active repos; crediting without them", "err", err)
-			repos = nil
-		}
+	mapping, err := r.repoMap(ctx, now)
+	if err != nil {
+		return err
 	}
-	res := r.opt.Compute(engineInput(s, ev, active, repos, r.opt.TZ))
+	res := r.computeByMapping(s, ev, active, mapping)
 	saved, err := r.opt.Store.SaveMinutes(ctx, localdb.MinuteUpdate{
 		From: s.from, To: s.to, OpenFrom: s.finalBefore, Minutes: minuteRows(s, res), Superseded: superseded,
 	})
@@ -264,6 +266,41 @@ func (r *Runner) compute(ctx context.Context, now time.Time) error {
 		"updated", saved.Updated, "deleted", saved.Deleted)
 	r.persist(ctx, localdb.KV{Key: keyLastComputed, Value: formatTime(now)})
 	return nil
+}
+
+// repoMap records the active repos in the mapping journal and returns the
+// whole journal. If the source fails, the journal still holds the last
+// known mapping.
+func (r *Runner) repoMap(ctx context.Context, now time.Time) ([]localdb.RepoMapping, error) {
+	if r.opt.Repos != nil {
+		repos, err := r.opt.Repos.ActiveRepos(ctx)
+		if err != nil {
+			r.opt.Logger.WarnContext(ctx, "listing active repos; using the last known mapping", "err", err)
+		} else if err := r.opt.Store.RecordRepos(ctx, now, repos); err != nil {
+			return nil, err
+		}
+	}
+	return r.opt.Store.RepoMap(ctx)
+}
+
+// computeByMapping runs the engine over the window, once per run of minutes
+// that share a repo mapping (ReposAt), and joins the results. Each minute
+// is thus computed with the mapping that stood when it became final, never
+// with one recorded after.
+func (r *Runner) computeByMapping(s span, ev localdb.Events, active []struggle.ActiveTime, mapping []localdb.RepoMapping) struggle.Result {
+	var out struggle.Result
+	for _, g := range repoGroups(mapping, s.from, s.to) {
+		part := s
+		part.from, part.to = g.from, g.to
+		res := r.opt.Compute(engineInput(part, ev, active, g.repos, r.opt.TZ))
+		out.RulesVersion = res.RulesVersion
+		for _, m := range res.Minutes {
+			if at := m.Minute.UTC().Truncate(time.Minute); !at.Before(g.from) && at.Before(g.to) {
+				out.Minutes = append(out.Minutes, m)
+			}
+		}
+	}
+	return out
 }
 
 // upload registers the device if needed, then sends minutes and evidence.
@@ -293,10 +330,14 @@ func (r *Runner) upload(ctx context.Context, now time.Time) {
 			localdb.KV{Key: keyEvidenceHash, Value: ""}, localdb.KV{Key: keyEvidenceState, Value: ""},
 			localdb.KV{Key: keyEvidenceError, Value: ""})
 	}
+	// Sealing a day closes it to minutes on the server, so new days are
+	// sealed only on a run whose minute uploads went through; the per-day
+	// check in sealAndUploadDays then waits for that day's whole backlog.
+	mayseal := false
 	if now.Before(r.holdMinutes) {
 		r.opt.Logger.DebugContext(ctx, "minute uploads on hold after a refused batch", "until", r.holdMinutes)
 	} else {
-		err := r.uploadMinutes(ctx, t.Target, dev, now)
+		drained, err := r.uploadMinutes(ctx, t.Target, dev, now)
 		var refused *refusedError
 		switch {
 		case errors.As(err, &refused):
@@ -310,10 +351,15 @@ func (r *Runner) upload(ctx context.Context, now time.Time) {
 			r.fail(ctx, t, err)
 			return
 		default:
+			mayseal = true
+			if !drained {
+				r.opt.Logger.InfoContext(ctx, "minute upload budget used up; the rest goes next run",
+					"batches", maxBatchesPerRun)
+			}
 			r.show(ctx, keyRefused, "")
 		}
 	}
-	err = r.sealAndUploadDays(ctx, t.Target, dev, now)
+	err = r.sealAndUploadDays(ctx, t.Target, dev, now, mayseal)
 	if isServerError(err) {
 		r.fail(ctx, t, err)
 		return

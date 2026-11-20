@@ -153,18 +153,38 @@ const (
 		WHERE minute = ? AND project = ? AND digest = ?`
 	qMinutesRetire      = `UPDATE credited_minutes SET sent_final = 1 WHERE sent_final = 0 AND minute < ?`
 	qMinutesUnsentCount = `SELECT COUNT(*) FROM credited_minutes WHERE sent_final = 0 AND digest <> sent_digest`
-	qMinutesPrune       = `DELETE FROM credited_minutes WHERE minute < ?`
+	// qMinutesUnsentBefore counts rows before a minute the server hasn't
+	// answered for yet.
+	qMinutesUnsentBefore = `SELECT COUNT(*) FROM credited_minutes
+		WHERE sent_final = 0 AND digest <> sent_digest AND minute < ?`
+	qMinutesPrune = `DELETE FROM credited_minutes WHERE minute < ?`
 )
 
-// Evidence days (migration 0002).
+// Repo mapping journal (migration 0005).
+const (
+	qRepoLatest = `SELECT project FROM repo_map WHERE path = ? ORDER BY id DESC LIMIT 1`
+	qRepoInsert = `INSERT INTO repo_map (since, path, project) VALUES (?, ?, ?)`
+	qRepoAll    = `SELECT since, path, project FROM repo_map ORDER BY id`
+	// qRepoPrune drops rows replaced by a newer row for the same path before
+	// a time: they apply only to minutes older than that.
+	qRepoPrune = `DELETE FROM repo_map WHERE EXISTS (SELECT 1 FROM repo_map n
+		WHERE n.path = repo_map.path AND n.id > repo_map.id AND n.since < ?)`
+)
+
+// Evidence days (migrations 0002 and 0004).
 const (
 	qEvidenceInsert = `INSERT INTO evidence_days (device_id, day, prev_chain_hash, content_hash, chain_hash,
-		signature, rules_version, event_counts, hw_heartbeats, hw_ai, hw_activity, hw_git, state, error,
-		created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-	qEvidenceLast = `SELECT device_id, day, prev_chain_hash, content_hash, chain_hash, signature,
-		rules_version, event_counts, hw_heartbeats, hw_ai, hw_activity, hw_git, state, error, created_at, updated_at
-		FROM evidence_days WHERE device_id = ? ORDER BY day DESC LIMIT 1`
+		signature, rules_version, event_counts, hw_heartbeats, hw_ai, hw_activity, hw_git, active_time, state, error,
+		created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	qEvidenceColumns = `SELECT device_id, day, prev_chain_hash, content_hash, chain_hash, signature,
+		rules_version, event_counts, hw_heartbeats, hw_ai, hw_activity, hw_git, active_time, state, error,
+		created_at, updated_at FROM evidence_days`
+	qEvidenceLast     = qEvidenceColumns + ` WHERE device_id = ? ORDER BY day DESC LIMIT 1`
+	qEvidenceDay      = qEvidenceColumns + ` WHERE device_id = ? AND day = ?`
 	qEvidenceSetState = `UPDATE evidence_days SET state = ?, error = ?, updated_at = ? WHERE device_id = ? AND day = ?`
+	// qEvidenceForget drops the kept active-time records of days before a
+	// day (YYYY-MM-DD), once their raw events are pruned too.
+	qEvidenceForget = `UPDATE evidence_days SET active_time = NULL WHERE day < ? AND active_time IS NOT NULL`
 )
 
 // The same event reads for new rows only: "+time" stops SQLite from using

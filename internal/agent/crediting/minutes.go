@@ -2,6 +2,8 @@ package crediting
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/apneduniya/logbook/internal/agent/devicekey"
@@ -19,16 +21,19 @@ const maxLoggedRejections = 5
 // (unless the minute changes). A batch refused for its size is split, down
 // to single minutes, which are then rejected; a batch refused as a whole
 // for any other reason returns a *refusedError and nothing is marked sent.
-func (r *Runner) uploadMinutes(ctx context.Context, t serverapi.Target, dev devicekey.Device, now time.Time) error {
+//
+// drained is true when nothing is left to send, and false when the run's
+// budget (maxBatchesPerRun) ran out first; the rest goes on the next run.
+func (r *Runner) uploadMinutes(ctx context.Context, t serverapi.Target, dev devicekey.Device, now time.Time) (drained bool, err error) {
 	final := finalBefore(now)
 	for range maxBatchesPerRun {
 		size := r.batchSize()
 		rows, err := r.opt.Store.UnsentMinutes(ctx, final, size)
 		if err != nil {
-			return err
+			return false, err
 		}
 		if len(rows) == 0 {
-			return nil
+			return true, nil
 		}
 		rows = sameRules(rows)
 		res, err := r.opt.Server.UploadMinutes(ctx, t, dev.ID, minutesRequest(rows))
@@ -41,17 +46,17 @@ func (r *Runner) uploadMinutes(ctx context.Context, t serverapi.Target, dev devi
 			// Even a single minute is too large: it can never be sent.
 			res, err = rejectAll(len(rows), err), nil
 		case serverapi.KindOf(err) == serverapi.KindInvalid:
-			return &refusedError{err: err}
+			return false, &refusedError{err: err}
 		}
 		if err != nil {
-			return err
+			return false, err
 		}
 		if err := r.opt.Store.MarkMinutesSent(ctx, rows, final); err != nil {
-			return err
+			return false, err
 		}
 		r.countRejections(ctx, rows, res.Rejected)
 	}
-	return nil
+	return false, nil
 }
 
 // rejectAll is a result rejecting all n minutes with err.
@@ -96,17 +101,49 @@ func (r *Runner) countRejections(ctx context.Context, rows []localdb.CreditedMin
 	if len(rejected) == 0 {
 		return
 	}
+	var sealed []localdb.CreditedMinute
 	for i, e := range rejected {
-		if i == maxLoggedRejections {
-			break
+		if e.Index < 0 || e.Index >= len(rows) {
+			continue // a server bug; the count below still includes it
 		}
 		m := rows[e.Index]
-		r.opt.Logger.WarnContext(ctx, "server rejected a credited minute; not retrying",
-			"minute", m.Minute.Format(time.RFC3339), "credited", m.Credited, "err", e.Error)
+		if isSealedRejection(e.Error) {
+			sealed = append(sealed, m)
+		}
+		if i < maxLoggedRejections {
+			r.opt.Logger.WarnContext(ctx, "server rejected a credited minute; not retrying",
+				"minute", m.Minute.Format(time.RFC3339), "credited", m.Credited, "err", e.Error)
+		}
 	}
 	if err := r.opt.Store.Add(ctx, keyRejected, int64(len(rejected))); err != nil {
 		r.opt.Logger.WarnContext(ctx, "counting rejected minutes", "err", err)
 	}
+	if len(sealed) > 0 {
+		r.reportSealed(ctx, sealed)
+	}
+}
+
+// sealedRejection is how the server says a minute's UTC day is already
+// sealed by an evidence record (internal/server/credited). The agent only
+// seals a day once all its minutes are accepted, so this should never
+// happen; if it does, the minute's credit is lost and the user must see it.
+const sealedRejection = "already sealed"
+
+func isSealedRejection(msg string) bool { return strings.Contains(msg, sealedRejection) }
+
+// reportSealed shows minutes the server refused because their day was
+// already sealed: they can never be sent, so they are counted (with the
+// other rejections) and shown in status as an error, not dropped silently.
+func (r *Runner) reportSealed(ctx context.Context, ms []localdb.CreditedMinute) {
+	last := ms[len(ms)-1].Minute
+	r.opt.Logger.ErrorContext(ctx, "server refused credited minutes because their day was already sealed; their credit is lost",
+		"minutes", len(ms), "last", last.Format(time.RFC3339))
+	if err := r.opt.Store.Add(ctx, keySealedRejected, int64(len(ms))); err != nil {
+		r.opt.Logger.WarnContext(ctx, "counting minutes refused for a sealed day", "err", err)
+	}
+	r.persist(ctx, localdb.KV{Key: keySealedError, Value: fmt.Sprintf(
+		"the server refused credited minutes up to %s because their day was already sealed; that credit is lost. Please report this.",
+		last.Format(time.RFC3339))})
 }
 
 func (r *Runner) batchSize() int {
