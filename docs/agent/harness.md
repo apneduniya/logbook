@@ -11,7 +11,7 @@ Code: `internal/agent/harness/` (one package per harness, plus shared packages) 
 3. The hook command:
    - reads stdin, keeping at most 1 MiB and discarding the rest (up to 64 MiB, so the tool's write doesn't fail). It waits at most 1 s for stdin to close; on timeout, or when the payload is over 1 MiB, it still uses the top-level scalar fields from the part it read (ids come first in every payload). A prompt cut off by the cap (a giant paste) still reports `PromptChars`: the runes read before the cut, a lower bound of roughly 0.25 to 1 million characters;
    - prints the response the tool's hook protocol requires (see each harness), and nothing else to stdout or stderr;
-   - maps the payload to zero, one or two `wire.AIEvent`s (`Time` = now, `SessionID`, `Cwd`, `Project`, `Model`, `Tool` name, `PromptChars`, `Decision`);
+   - maps the payload to zero, one or two `wire.AIEvent`s (`Time` = now, `SessionID`, `Cwd`, `Project`, `Model`, `Tool` name, `PromptChars`, `PromptHash`, `Decision`);
    - POSTs them as a JSON array of `wire.LocalEvent` to `http://<local_addr>/local/v1/events` with `X-Logbook-Token`, with a 300 ms timeout and no proxy. `local_addr` must be a loopback IP or `localhost` (sent to 127.0.0.1 directly); any other address is never contacted, so the token and events can't leave the machine in cleartext, and the events are spooled;
    - if that fails for any reason (daemon down or slow, wrong token, no config yet), appends them as JSON lines to `<data dir>/spool/events.jsonl` (dir 0700, file 0600, one `O_APPEND` write per hook so concurrent hooks never interleave lines). The spool is capped at 10 MiB: when full, new events are refused and a warning goes to `agent.log`;
    - always exits 0. A panic is recovered and logged. Problems go to `agent.log` only, because tools read the hook's stdout and stderr (Gemini CLI even parses stderr when stdout is empty).
@@ -21,7 +21,7 @@ Code: `internal/agent/harness/` (one package per harness, plus shared packages) 
 
 ### What is never recorded
 
-The parsers decode only the fields they need into typed structs. Prompt text is decoded only as a rune count (`aievent.TextLen`); it is never stored in a Go string field that leaves the parser. These are never read into the event, and tests plant a sentinel in each of them and search every marshalled event and the spool for it:
+The parsers decode only the fields they need into typed structs. Prompt text is decoded only into `aievent.Prompt`, which keeps the rune count and the SHA-256 of the normalised text and drops the text inside its JSON decoder; it is never stored in a Go string field that leaves the parser (see Prompt hashes). These are never read into the event, and tests plant a sentinel in each of them and search every marshalled event and the spool for it:
 
 - prompt text, pasted content, attachments, `initialPrompt`;
 - tool input/arguments and tool output/results, including shell commands and file paths in them;
@@ -29,6 +29,23 @@ The parsers decode only the fields they need into typed structs. Prompt text is 
 - transcript paths, scratchpad paths, session titles, user emails, scheduled-task prompts.
 
 `Cwd` is kept on the device only (the daemon uses it to map events to projects and repos). Text fields are stripped of control characters and cut to the wire limits; a `cwd` longer than 1024 bytes is dropped, not cut.
+
+### Prompt hashes
+
+Every harness that sees prompt text (Claude Code, Codex, Gemini CLI, Cursor, Copilot, OpenCode) records a keyed hash on `prompt_submit`, so the struggle engine's `loop` rule can spot the same prompt sent again without the prompt being kept ([ADR 0015](../adr/0015-prompt-hashes-and-claude-code-telemetry.md)):
+
+```
+PromptHash = hex(HMAC-SHA256(prompt_key, SHA-256(normalise(prompt))))
+prompt_key = HKDF-SHA256(secret = local_token, salt = none, info = "logbook prompt hash v1")   (32 bytes)
+normalise  = drop invalid UTF-8; trim; collapse each run of Unicode white space to one " "; lowercase rune by rune
+```
+
+- `local_token` is the one in `config.json`. The hook reads the config once (it needs it for the local address too), and only when it has a prompt to hash.
+- No Unicode NFC normalisation (it would add `golang.org/x/text` tables to every hook process; the rule compares prompts within one session of one tool).
+- The same prompt with different spacing or capitalisation gets the same hash. Different devices (different tokens) get different hashes, so hashes can't be compared across devices or checked against guessed prompts without the device's key.
+- No config yet (not installed): the event is recorded without a hash. A prompt cut off by the 1 MiB stdin cap keeps its length but has no hash.
+- OpenCode: the plugin computes `SHA-256(normalise(prompt))` in JavaScript and sends only that (`prompt_sha256`); the hook keys it. A Node test checks the plugin's digests equal Go's.
+- Code: `aievent/prompt.go`, `internal/agent/localkey`, `hookrun` (`Runner.PromptKey`).
 
 ## Install rules (all harnesses)
 
@@ -69,7 +86,29 @@ Notes and limitations:
 - The model is only known from `SessionStart`; later `/model` switches aren't recorded (`PostModelSwitch` could add this later).
 - User hooks wait for the workspace-trust dialog in a new folder, and `--bare`, `disableAllHooks` and managed `allowManagedHooksOnly` turn them off.
 - **Cursor also runs `~/.claude/settings.json` hooks.** To avoid double counting, the claude-code parser drops payloads carrying `cursor_version`, and those run with `CURSOR_VERSION` set unless `CLAUDE_CODE_CHILD_SESSION=1` is also set (Claude Code 2.1.172+ sets it on hooks it runs itself, so a real `claude` session started from a shell that inherited Cursor's environment is still recorded). Cursor's docs list `cursor_version` in its own hook payloads but don't say whether its Claude-format payloads keep it, so the env check stays as a fallback. Logbook's own Cursor hooks record those events.
-- Future work: Claude Code's OpenTelemetry metrics (`claude_code.active_time.total` with `type="user"` vs `"cli"`, token and cost counters, `prompt.id` correlation) would give a better human/agent split than hooks. That needs a local OTLP receiver in the daemon and setting `CLAUDE_CODE_ENABLE_TELEMETRY` and the exporter env vars, which is out of scope for step 2.
+
+### Claude Code telemetry (active time)
+
+Claude Code measures human and agent time itself in the OpenTelemetry metric `claude_code.active_time.total` (`type` = `user` for typing and reading responses, `cli` for tool execution and AI responses). The struggle engine uses it for the `otel_mismatch` flag. `logbook install` adds these entries to the `env` object of the same `settings.json` (variable names checked in Claude Code's monitoring docs, 2026-11-20):
+
+| Key | Value | Why |
+|---|---|---|
+| `CLAUDE_CODE_ENABLE_TELEMETRY` | `1` | turns telemetry on |
+| `OTEL_METRICS_EXPORTER` | `otlp` | metrics only; `OTEL_LOGS_EXPORTER` and `OTEL_TRACES_EXPORTER` are never set, so events and traces stay off |
+| `OTEL_EXPORTER_OTLP_METRICS_PROTOCOL` | `http/json` | the agent reads JSON only (Claude Code's default is protobuf) |
+| `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` | `http://127.0.0.1:<port>/v1/metrics` | the daemon; metrics-specific, so a generic endpoint is never set |
+| `OTEL_EXPORTER_OTLP_METRICS_HEADERS` | `X-Logbook-Token=<otlp token>` | authenticates the exporter. The OTLP token is `hex(HKDF-SHA256(local_token, info "logbook otlp token v1"))`, never the local token itself, because `settings.json` often ends up in public dotfiles |
+| `OTEL_METRIC_EXPORT_INTERVAL` | `60000` | one export a minute (Claude Code's default, written down so it's explicit) |
+
+`OTEL_METRICS_INCLUDE_REPOSITORY` is not set: it would widen what Claude Code collects for every exporter, and the session id already links active time to the hook events, which know the directory.
+
+**The user's own telemetry always wins.** Logbook adds nothing, removes what it added earlier, and `logbook install` prints a note when:
+- `settings.json` has an `otelHeadersHelper`, any other `OTEL_*` entry in `env`, or one of the keys above with a value Logbook didn't write;
+- the environment `logbook install` runs in sets `CLAUDE_CODE_ENABLE_TELEMETRY` or an OTLP variable (`OTEL_EXPORTER_OTLP_ENDPOINT`, `..._HEADERS`, `..._PROTOCOL`, the metrics-specific ones, `OTEL_METRICS_EXPORTER`, `OTEL_LOGS_EXPORTER`, `OTEL_TRACES_EXPORTER`). Generic OTLP headers from the shell would otherwise be merged into Logbook's exporter and sent to the agent.
+
+Which entries Logbook added is recorded in `<data dir>/backups/claude-code.telemetry.json`. Re-installing with the same config changes nothing; a new local address or token updates Logbook's own entries. Uninstall removes exactly the recorded entries that still hold the value Logbook wrote (an entry the user edited stays), and the `env` object too if Logbook created it and it's empty. Without the record, uninstall leaves `env` alone.
+
+Limitations: sessions started before install export nothing until Claude Code restarts. On machines whose managed settings set OTLP credentials, Claude Code drops developer-set endpoints, so Logbook's exporter is silently off; hooks still work. What the daemon keeps from the export is in [core.md](core.md#claude-code-active-time).
 
 ## Codex (CLI, IDE extension, app)
 
@@ -196,7 +235,7 @@ OpenCode has no command-hook config, only JavaScript/TypeScript plugins, so Logb
 | stdout | nothing (the plugin ignores it) |
 | Version | OpenCode V2 docs (`/docs/build/plugins/server`, `/docs/build/plugins/migrate-v1`) and anomalyco/opencode `packages/schema` on `dev`, read 2026-11-20. V1 via the object form's `server()`, supported from 1.18.29. |
 
-The plugin (`internal/agent/harness/opencode/plugin.go`) default-exports `{id: "logbook", setup, server}`: V2 calls `setup(ctx)`, V1 calls `server()`. For each event it spawns `<logbook> hook opencode <event>` in the background (`stdio` ignored, killed after 5 s, never awaited) and writes a metadata-only JSON object to its stdin: `session_id`, `cwd` (V2: the session's `location.directory` from `session.created`; V1: the plugin instance's directory), `model` (tracked per session from `session.created`/`session.model.selected` or V1 `chat.message`), `tool`, `prompt_chars` (counted in the plugin as Unicode code points) and `decision`. Prompt text, tool arguments and output never leave the plugin.
+The plugin (`internal/agent/harness/opencode/plugin.go`) default-exports `{id: "logbook", setup, server}`: V2 calls `setup(ctx)`, V1 calls `server()`. For each event it spawns `<logbook> hook opencode <event>` in the background (`stdio` ignored, killed after 5 s, never awaited) and writes a metadata-only JSON object to its stdin: `session_id`, `cwd` (V2: the session's `location.directory` from `session.created`; V1: the plugin instance's directory), `model` (tracked per session from `session.created`/`session.model.selected` or V1 `chat.message`), `tool`, `prompt_chars` (counted in the plugin as Unicode code points), `prompt_sha256` (the SHA-256 of the normalised prompt; V1 joins the message's text parts with a space) and `decision`. Prompt text, tool arguments and output never leave the plugin.
 
 | OpenCode source (V2 / V1) | Plugin event | AIEventKind |
 |---|---|---|
@@ -222,6 +261,7 @@ Limitations:
 
 - Golden install tests per harness (`testdata/install_*.golden`): missing config, existing config with other hooks and unknown keys, re-install (no change, no new backup), new binary path, uninstall (semantically equal to the original, or file removed if Logbook created it). Regenerate with `LOGBOOK_UPDATE_GOLDEN=1 go test ./internal/agent/harness/...`.
 - Parser tests use payload fixtures built from each tool's documented examples, with `SENTINEL-PRIVATE` planted in every private field; the marshalled events must not contain it.
+- Prompt hash tests (`hookrun/prompthash_test.go`) run every harness's prompt event: the same prompt gives the same hash, spacing and case variants too, a different prompt or token a different hash, and the pinned value matches an independent HMAC computation. Claude Code telemetry has golden `settings.json` files for a fresh file, existing `env`, the user's own OTel setup, `otelHeadersHelper`, a different exporter and a lone `CLAUDE_CODE_ENABLE_TELEMETRY`, plus tests for re-install, stale entries, conflicts that appear later and uninstall exactness.
 - `hookrun` tests run every harness's hook with the daemon down (spool written, exact stdout, < 1 s) and with stdin over 1 MiB. `cmd/logbook` tests run the real command with `LOGBOOK_HOME` set.
 - `TestPluginInNode` runs the OpenCode plugin under Node (skipped when `node` is missing) and checks the calls a fake `logbook` receives.
 - No AI tool was run live on the dev VPS; payload shapes come from the vendors' docs and, for Codex and Gemini CLI, their source. Windows and macOS behaviour (PowerShell/cmd quoting, exec form) is covered by unit tests on Linux and still needs a pass on real machines in CI.

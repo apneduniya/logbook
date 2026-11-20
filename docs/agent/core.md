@@ -6,6 +6,8 @@ The long-running part of the agent (ADR 0009): `logbook run`, the local database
 |---|---|
 | `internal/agent/localdb` | SQLite database: upload queues, raw events, heartbeat log, key-value state |
 | `internal/agent/localapi` | Loopback HTTP server |
+| `internal/agent/otlp` | Receives Claude Code's OpenTelemetry active time (mounted in the loopback server) |
+| `internal/agent/localkey` | Derives the prompt-hash key and the OTLP token from the local token |
 | `internal/agent/upload` | Logbook uploader and Hackatime mirror |
 | `internal/agent/daemon` | Wires everything, supervises sensors, drains the hook spool, finds active repos |
 | `internal/agent/spoolfile` | Opens the hook spool for appending so the drainer can rename it on every OS |
@@ -38,7 +40,8 @@ All in the data directory (`config.Dir()`: `os.UserConfigDir()/logbook`, or `$LO
 | `heartbeat_queue` | heartbeats waiting for Logbook (JSON) | 200 000 rows; oldest dropped, counted in `kv` `dropped.heartbeat_queue` and logged |
 | `mirror_queue` | heartbeats waiting for Hackatime | same, `dropped.mirror_queue` |
 | `heartbeat_log` | time, project and **directory** of each accepted heartbeat (never the file name) | 48 hours |
-| `ai_events`, `activity_samples`, `git_events` | raw local evidence, never uploaded in step 2 | 90 days and 3 000 000 rows each |
+| `ai_events`, `activity_samples`, `git_events` | raw local evidence, never uploaded in step 2. `ai_events.prompt_hash` holds the keyed prompt hash ([harness.md](harness.md#prompt-hashes)) | 90 days and 3 000 000 rows each |
+| `active_time` | Claude Code's active time as deltas (see below) | 90 days and 3 000 000 rows |
 | `kv` | uploader state, drop counters, spool progress | small |
 
 Commits are unique per `(project, commit_hash)`, so the git sensor can report a commit repeatedly. Pruning runs at start and every 6 hours.
@@ -58,10 +61,23 @@ Otherwise it gets `403 {"error": ...}`.
 | `POST /api/v1/users/current/heartbeats(.bulk)`, same under `/api/hackatime/v1` | the Logbook API key, as wakatime-cli sends it (`Basic base64(key)`, also `Bearer`, `api_key=`) | Same request and response shapes as the server (`docs/api/ingest.md`): single → `201` (`/api/v1`) or `202` (`/api/hackatime/v1`); bulk → `201` with one `[body, status]` per item, `400` for invalid items. Valid heartbeats are queued and answered immediately; nothing waits on the network. `X-Machine-Name` and the `User-Agent` are folded into the heartbeat body (the server's attribution rule) so they survive the upload. If the database write fails the answer is `500`, so wakatime-cli keeps the heartbeats in its own offline queue. |
 | `GET .../users/current/statusbar/today` | API key | Proxied to `<server>/api/v1/users/current/statusbar/today` with a 3 s timeout and a 30 s cache (failures are cached too, so a dropped network doesn't slow every poll). Only one upstream request is in flight; other polls meanwhile get the last answer or the local estimate at once. If the server can't be reached, rejects the key or answers badly, the agent answers `200` with a WakaTime-shaped body computed from today's local heartbeat log (gaps up to 2 minutes, like the server) and the text suffixed with `(offline)` or `(re-login needed)`. |
 | `POST /local/v1/events` | `X-Logbook-Token` = `cfg.LocalToken`, constant-time compare | JSON array of `wire.LocalEvent`, ≤ 1 MiB and ≤ 500 events. Invalid events are counted and skipped; valid ones are stored in one transaction. Answer: `200 {"accepted": n, "rejected": m}`. |
+| `POST /v1/metrics` | `X-Logbook-Token` = the OTLP token (derived from the local token, see [harness.md](harness.md#claude-code-telemetry-active-time)) | OTLP/HTTP JSON metrics from Claude Code. Keeps `claude_code.active_time.total` only (see below). `200` with `{}` or an OTLP `partialSuccess` naming rejected datapoints; `415` for protobuf (logged once) or an encoding other than gzip; `413` over 1 MiB (also after gunzip); `503` if storing fails, which the exporter retries. |
+| `POST /v1/logs` | same | Accepted and discarded (`200 {}`). The installer never sends logs here. |
 | `GET /` | none | Status page: server-rendered HTML, inline CSS, no scripts, `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'`. |
 | `GET /local/v1/status` | none | `status.Snapshot` as JSON. |
 
 The status page and JSON never contain the Logbook key, the Hackatime key or the local token.
+
+### Claude Code active time
+
+From each `/v1/metrics` request the receiver keeps only `claude_code.active_time.total` sum datapoints, and of those only `session.id`, `type` (`user` or `cli`), `vcs.repository.name` (present only if the user enabled it), the start and end times and the value. Attributes are read from the datapoint, falling back to the resource. Every other attribute (`user.email`, `user.account_uuid`, `user.account_id`, `user.id`, `organization.id`, `terminal.type`, `host.*`, `app.*` and anything custom) is skipped by the decoder without being read; a test plants a sentinel in all of them and searches the database files and the log.
+
+- Delta datapoints (Claude Code's default) are stored as they are; zero increments are skipped.
+- Cumulative datapoints are turned into increments per (`session.id`, `type`, start time) series, from the series' last stored point: the first point counts from the series start; a resent or older point is skipped; a lower total with the same start is a counter reset and counts in full; a new start time is a new series. The running total is stored with each point, so a restarted agent continues the series without double counting.
+- Datapoints without a session or a known type, in the future (over 2 min), older than 90 days, or with more seconds than their interval allows (plus 1 min) are rejected and reported as a partial success.
+- A retried export is stored once (unique on session, type and interval).
+
+`localdb.ActiveTimes(ctx, from, to)` returns the points overlapping the window (zero-second points left out) as `struggle.ActiveTime`, sorted, with `ProjectCwd` set to the latest working directory Claude Code's hooks reported for that session (same `session.id`), or empty. Active time is never uploaded.
 
 ## Uploads
 
@@ -138,5 +154,7 @@ The core has no OS-specific code paths and builds with `CGO_ENABLED=0` for windo
 - **Linux:** `config.Dir()` is `$XDG_CONFIG_HOME/logbook` (default `~/.config/logbook`).
 
 ## Performance
+
+`ActiveTimes` over a 2-hour window with three parallel sessions (720 points) and 20 000 hook events takes about 6 ms on the dev VPS under load (`BenchmarkActiveTimes2h`); decoding and storing one export about 1 ms (`BenchmarkExport`).
 
 Idle, the daemon holds one listener, two 10 s timers, a 1-minute spool timer and a 6-hour prune timer. Measured on linux/amd64 with no sensors: about 14 MB RSS and no measurable CPU. Heartbeat writes are batched per request; spool drains 500 events per transaction.
