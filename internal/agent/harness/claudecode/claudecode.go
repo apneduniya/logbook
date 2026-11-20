@@ -2,6 +2,7 @@ package claudecode
 
 import (
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 
 	"github.com/apneduniya/logbook/internal/agent/harness/aievent"
@@ -47,9 +48,16 @@ func SettingsPath(env hostenv.Env) (string, error) {
 	return filepath.Join(dir, "settings.json"), nil
 }
 
+// Installer installs Logbook's hooks into Claude Code's settings.json and
+// points its OpenTelemetry metrics exporter at the agent (telemetry.go).
+type Installer struct {
+	*hookfile.Installer
+	env hostenv.Env
+}
+
 // NewInstaller returns the Claude Code installer.
-func NewInstaller(env hostenv.Env) *hookfile.Installer {
-	return hookfile.New(hookfile.Spec{
+func NewInstaller(env hostenv.Env) *Installer {
+	return &Installer{env: env, Installer: hookfile.New(hookfile.Spec{
 		Harness: Name,
 		Path:    func() (string, error) { return SettingsPath(env) },
 		Layout:  hookfile.Nested,
@@ -60,8 +68,32 @@ func NewInstaller(env hostenv.Env) *hookfile.Installer {
 			return (err == nil && hostenv.Exists(dir)) || env.OnPath("claude")
 		},
 		BackupDir: env.BackupDir,
-	})
+	})}
 }
+
+// Install adds the hooks, then the telemetry env entries unless the user
+// has their own OpenTelemetry setup.
+func (in *Installer) Install(binPath string) error {
+	if err := in.Installer.Install(binPath); err != nil {
+		return err
+	}
+	if err := installTelemetry(in.env); err != nil {
+		return fmt.Errorf("%s: telemetry: %w", Name, err)
+	}
+	return nil
+}
+
+// Uninstall removes the telemetry entries Logbook added, then the hooks
+// (which deletes settings.json if Logbook created it and nothing is left).
+func (in *Installer) Uninstall() error {
+	if err := uninstallTelemetry(in.env); err != nil {
+		return fmt.Errorf("%s: telemetry: %w", Name, err)
+	}
+	return in.Installer.Uninstall()
+}
+
+// Notes says when telemetry was left alone, and why.
+func (in *Installer) Notes() []string { return telemetryNotes(in.env) }
 
 // handler is a command hook in exec form: Claude Code (v2.1.139+) spawns
 // the binary directly with args, so no shell quoting is involved on any OS.

@@ -144,5 +144,13 @@
         ]
       }
     ]
+  },
+  "env": {
+    "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
+    "OTEL_METRICS_EXPORTER": "otlp",
+    "OTEL_EXPORTER_OTLP_METRICS_PROTOCOL": "http/json",
+    "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT": "http://127.0.0.1:47231/v1/metrics",
+    "OTEL_EXPORTER_OTLP_METRICS_HEADERS": "X-Logbook-Token=59cd87cdb5c577d2173d433b577a1d803cfe94ca7b299b96492b7ff1c3a477c1",
+    "OTEL_METRIC_EXPORT_INTERVAL": "60000"
   }
 }

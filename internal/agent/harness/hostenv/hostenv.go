@@ -24,7 +24,22 @@ type Env struct {
 	LookPath func(string) (string, error)
 	// BackupDir returns the directory for config backups, creating it.
 	BackupDir func() (string, error)
+	// Agent returns the local agent's address and token from the agent
+	// config, for installers that point a harness at the daemon (Claude
+	// Code's telemetry exporter).
+	Agent func() (Agent, error)
 }
+
+// Agent is what an installer needs to know about the local daemon.
+type Agent struct {
+	// LocalAddr is the daemon's loopback address (config.Config.LocalAddr).
+	LocalAddr string
+	// LocalToken is the agent's local secret (config.Config.LocalToken).
+	LocalToken string
+}
+
+// TestAgent is the agent ForTest reports.
+var TestAgent = Agent{LocalAddr: "127.0.0.1:47231", LocalToken: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}
 
 // ErrNoHome means the home directory is unknown, so no harness config can be
 // found.
@@ -48,11 +63,22 @@ func FromOS() Env {
 			}
 			return ensureDir(filepath.Join(dir, "backups"))
 		},
+		Agent: func() (Agent, error) {
+			dir, err := config.Dir()
+			if err != nil {
+				return Agent{}, err
+			}
+			cfg, err := config.Load(dir)
+			if err != nil {
+				return Agent{}, fmt.Errorf("reading agent config: %w", err)
+			}
+			return Agent{LocalAddr: cfg.LocalAddr, LocalToken: cfg.LocalToken}, nil
+		},
 	}
 }
 
 // ForTest returns an Env rooted at home, with an empty environment, nothing
-// on PATH and backups under backupDir.
+// on PATH, backups under backupDir and TestAgent as the agent.
 func ForTest(home, goos, backupDir string) Env {
 	return Env{
 		Home:      home,
@@ -60,6 +86,7 @@ func ForTest(home, goos, backupDir string) Env {
 		Getenv:    func(string) string { return "" },
 		LookPath:  func(string) (string, error) { return "", exec.ErrNotFound },
 		BackupDir: func() (string, error) { return ensureDir(backupDir) },
+		Agent:     func() (Agent, error) { return TestAgent, nil },
 	}
 }
 

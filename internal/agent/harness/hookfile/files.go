@@ -20,10 +20,10 @@ const maxConfigSize = 8 << 20
 // ErrTooLarge means the config file is bigger than maxConfigSize.
 var ErrTooLarge = errors.New("config file is too large to edit safely")
 
-// resolve follows symlinks so writes land on the real file (dotfile managers
+// Resolve follows symlinks so writes land on the real file (dotfile managers
 // often symlink harness settings into a repo). A missing file resolves to
 // itself.
-func resolve(path string) (string, error) {
+func Resolve(path string) (string, error) {
 	target, err := filepath.EvalSymlinks(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		// The link target (or the file) doesn't exist yet. If path itself is a
@@ -120,10 +120,10 @@ func backupNames(dir, harness, path string) (orig, absent string) {
 	return filepath.Join(dir, base+".orig"), filepath.Join(dir, base+".absent")
 }
 
-// backupOnce saves the state of path before Logbook's first change to it: a
+// BackupOnce saves the state of path before Logbook's first change to it: a
 // copy of the file if it existed, or an empty marker if it didn't. Later
 // installs keep that first backup.
-func backupOnce(dir, harness, path string, original []byte, existed bool) error {
+func BackupOnce(dir, harness, path string, original []byte, existed bool) error {
 	orig, absent := backupNames(dir, harness, path)
 	if fileExists(orig) || fileExists(absent) {
 		return nil

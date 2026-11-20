@@ -1,0 +1,154 @@
+{
+  "env": {
+    "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
+    "OTEL_METRICS_EXPORTER": "otlp",
+    "OTEL_EXPORTER_OTLP_ENDPOINT": "https://otel.example.com:4318",
+    "OTEL_EXPORTER_OTLP_HEADERS": "Authorization=Bearer user-secret"
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/opt/logbook/bin/logbook",
+            "args": [
+              "hook",
+              "claude-code",
+              "SessionStart"
+            ],
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/opt/logbook/bin/logbook",
+            "args": [
+              "hook",
+              "claude-code",
+              "UserPromptSubmit"
+            ],
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/opt/logbook/bin/logbook",
+            "args": [
+              "hook",
+              "claude-code",
+              "PreToolUse"
+            ],
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/opt/logbook/bin/logbook",
+            "args": [
+              "hook",
+              "claude-code",
+              "PostToolUse"
+            ],
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/opt/logbook/bin/logbook",
+            "args": [
+              "hook",
+              "claude-code",
+              "PostToolUseFailure"
+            ],
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/opt/logbook/bin/logbook",
+            "args": [
+              "hook",
+              "claude-code",
+              "PermissionRequest"
+            ],
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/opt/logbook/bin/logbook",
+            "args": [
+              "hook",
+              "claude-code",
+              "Stop"
+            ],
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "StopFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/opt/logbook/bin/logbook",
+            "args": [
+              "hook",
+              "claude-code",
+              "StopFailure"
+            ],
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/opt/logbook/bin/logbook",
+            "args": [
+              "hook",
+              "claude-code",
+              "SessionEnd"
+            ],
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
