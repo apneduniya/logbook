@@ -186,13 +186,13 @@ Limitations:
 |---|---|---|
 | `sessionStart` | `session_start` | `conversation_id` (or `session_id`), `model_id` (or `model`), `workspace_roots[0]` as cwd |
 | `beforeSubmitPrompt` | `prompt_submit` | + rune count of `prompt` |
-| `postToolUse`, `postToolUseFailure` | `tool_start` at now − `duration`, then `tool_end` | + `tool_name`, `cwd` if present, `duration` (ms) |
+| `postToolUse`, `postToolUseFailure` | `tool_end` | + `tool_name`, `cwd` if present |
 | `stop` | `turn_end` | |
 | `sessionEnd` | `session_end` | |
 
-Ignored: `prompt` text, `attachments`, `tool_input`, `tool_output`, `text` (responses and thoughts), `user_email`, `transcript_path`, `generation_id`, `model_params`.
+Ignored: `prompt` text, `attachments`, `tool_input`, `tool_output`, `duration`, `text` (responses and thoughts), `user_email`, `transcript_path`, `generation_id`, `model_params`.
 
-Why no `preToolUse`: Cursor calls `preToolUse`, `beforeShellExecution`, `beforeMCPExecution`, `beforeReadFile`, `beforeTabFileRead` and `subagentStart` "permission hooks". Invalid or schema-mismatched output from them **blocks** the action, and returning `"permission": "allow"` could skip the user's own approval prompts. Logbook installs none of them. Tool start times are instead back-dated from the `duration` that `postToolUse` reports (capped at 6 h), so a tool call yields a `tool_start`/`tool_end` pair. The only events whose `Time` isn't "now" are these back-dated starts.
+Why no `preToolUse`: Cursor calls `preToolUse`, `beforeShellExecution`, `beforeMCPExecution`, `beforeReadFile`, `beforeTabFileRead` and `subagentStart` "permission hooks". Invalid or schema-mismatched output from them **blocks** the action, and returning `"permission": "allow"` could skip the user's own approval prompts. Logbook installs none of them, so it learns of a tool call only when it ends, and records one `tool_end` then. Every Cursor event is stamped when its hook runs. A `tool_start` back-dated by the `duration` that `postToolUse` reports would reach the agent only when the call ends, up to hours later. By then the minutes it would make agent-busy, or bring under a `loop` or `rubber_stamp` cut, may already be final, and the agent's and the server's results would disagree (`docs/STRUGGLE-RULES.md`, "Turns and agent busy"). So when a call runs for more than 10 minutes without other events, its quiet minutes aren't agent time; only the minute it ends in is.
 
 Limitations:
 - Cursor has no hook for "waiting for the human to approve", so it never produces `permission_ask`.

@@ -3,7 +3,6 @@ package cursor
 import (
 	"encoding/json"
 	"testing"
-	"time"
 
 	"github.com/apneduniya/logbook/internal/agent/harness/aievent"
 	"github.com/apneduniya/logbook/internal/agent/harness/cmdline"
@@ -78,18 +77,8 @@ func TestParse(t *testing.T) {
 		{"beforeSubmitPrompt", []wire.AIEvent{with(func(e *wire.AIEvent) {
 			e.Kind, e.PromptChars = wire.AIPromptSubmit, aievent.Runes("Refactor the header ✏️ "+harnesstest.Sentinel)
 		})}},
-		{"postToolUse", []wire.AIEvent{
-			with(func(e *wire.AIEvent) {
-				e.Kind, e.Tool, e.Time = wire.AIToolStart, "Shell", harnesstest.Now().Add(-5432*time.Millisecond)
-			}),
-			with(func(e *wire.AIEvent) { e.Kind, e.Tool = wire.AIToolEnd, "Shell" }),
-		}},
-		{"postToolUseFailure", []wire.AIEvent{
-			with(func(e *wire.AIEvent) {
-				e.Kind, e.Tool, e.Time = wire.AIToolStart, "Read", harnesstest.Now().Add(-12*time.Millisecond)
-			}),
-			with(func(e *wire.AIEvent) { e.Kind, e.Tool = wire.AIToolEnd, "Read" }),
-		}},
+		{"postToolUse", []wire.AIEvent{with(func(e *wire.AIEvent) { e.Kind, e.Tool = wire.AIToolEnd, "Shell" })}},
+		{"postToolUseFailure", []wire.AIEvent{with(func(e *wire.AIEvent) { e.Kind, e.Tool = wire.AIToolEnd, "Read" })}},
 		{"stop", []wire.AIEvent{with(func(e *wire.AIEvent) { e.Kind = wire.AITurnEnd })}},
 		{"sessionEnd", []wire.AIEvent{with(func(e *wire.AIEvent) { e.Kind = wire.AISessionEnd })}},
 	}
@@ -105,6 +94,26 @@ func TestParse(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// Every event is stamped when its hook runs, even when Cursor reports how
+// long a tool call took. A tool_start back-dated by that duration would
+// reach the agent only when the call ends; for a long call, the minutes it
+// would make agent-busy, or bring under a loop or rubber_stamp cut, were
+// already final by then (docs/STRUGGLE-RULES.md).
+func TestEventsAreStampedOnDelivery(t *testing.T) {
+	for _, e := range Events() {
+		data := `{"conversation_id":"c","workspace_roots":["/w/app"],"tool_name":"Shell","duration":2400000}`
+		got := harnesstest.Build(t, wire.HarnessCursor, Parse(e.Event, aievent.Input{Data: []byte(data)}, nil))
+		for _, ev := range got {
+			if !ev.Time.Equal(harnesstest.Now()) {
+				t.Fatalf("%s: %s stamped %v, want the hook's time %v", e.Event, ev.Kind, ev.Time, harnesstest.Now())
+			}
+			if ev.Kind == wire.AIToolStart {
+				t.Fatalf("%s: produced a tool_start; Cursor reports tool calls only when they end", e.Event)
+			}
+		}
 	}
 }
 

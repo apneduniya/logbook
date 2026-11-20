@@ -41,7 +41,8 @@ type turn struct {
 	// busy then, the person is needed.
 	waits []span
 	// answers are the person's replies to permission asks: the session's
-	// first event after an ask, with that event's project.
+	// first event after an ask, and every permission_ask carrying a
+	// Decision, with that event's project.
 	answers []projectEvent
 	// events are the turn's AI events that name a project, by time. They
 	// name the project of the turn's agent minutes.
@@ -140,11 +141,12 @@ func buildTurns(events []aiEvent, horizon time.Time) []turn {
 			st.close(st.last)
 		}
 		newAsk := e.kind == wire.AIPermissionAsk && !e.decided
+		answered := false
 		if st.waiting && !newAsk {
 			// The person answered: the session moved on, or a reply arrived.
 			st.open.waits = append(st.open.waits, span{st.waitFrom, e.t})
 			st.open.answers = append(st.open.answers, projectEvent{e.t, e.project})
-			st.waiting = false
+			st.waiting, answered = false, true
 		}
 		switch {
 		case e.kind == wire.AIPromptSubmit:
@@ -165,6 +167,14 @@ func buildTurns(events []aiEvent, horizon time.Time) []turn {
 			}
 		case newAsk && !st.waiting:
 			st.waitFrom, st.waiting = e.t, true
+		}
+		if e.decided && !answered {
+			// An explicit reply (OpenCode's decided ask) is the person's
+			// signal whatever this replay remembers: the ask it answers may be
+			// before the caller's data, or its turn may have timed out. A
+			// reply that ended a live wait was recorded above, once. A decided
+			// ask is mid-turn, so a turn is open here.
+			st.open.answers = append(st.open.answers, projectEvent{e.t, e.project})
 		}
 		if st.open != nil && e.project != "" {
 			st.open.events = append(st.open.events, projectEvent{e.t, e.project})
