@@ -82,6 +82,17 @@ const (
 		WHERE session_id = ? AND harness = 'claude-code' AND cwd <> '' AND time < ?
 		ORDER BY time DESC LIMIT 1`
 	qActivePrune = `DELETE FROM active_time WHERE to_ms < ?`
+	// qSessionSpan is the first and last Claude Code hook event of a session
+	// in [from, to) (NULLs when there is none).
+	qSessionSpan = `SELECT MIN(time), MAX(time) FROM ai_events
+		WHERE session_id = ? AND harness = 'claude-code' AND time >= ? AND time < ?`
+	// qUptimeMark records that the receiver run started at from_ms was up
+	// at to_ms.
+	qUptimeMark = `INSERT INTO otlp_uptime (from_ms, to_ms) VALUES (?, ?)
+		ON CONFLICT (from_ms) DO UPDATE SET to_ms = MAX(otlp_uptime.to_ms, excluded.to_ms)`
+	// qUptimeRange lists receiver runs overlapping [from, to].
+	qUptimeRange = `SELECT from_ms, to_ms FROM otlp_uptime WHERE to_ms >= ? AND from_ms <= ? ORDER BY from_ms, to_ms`
+	qUptimePrune = `DELETE FROM otlp_uptime WHERE to_ms < ?`
 	qActiveTrim  = `DELETE FROM active_time WHERE id <= (SELECT MAX(id) FROM active_time) - ?`
 )
 

@@ -42,10 +42,29 @@ func BenchmarkActiveTimes2h(b *testing.B) {
 	if err := d.InsertActiveTime(ctx, pts); err != nil {
 		b.Fatal(err)
 	}
-	for b.Loop() {
-		got, err := d.ActiveTimes(ctx, at(-120), at(0))
-		if err != nil || len(got) != 120*6 {
-			b.Fatalf("ActiveTimes = %d, %v", len(got), err)
+	// The agent restarted 45 minutes ago (a gap its margins cover).
+	if err := d.MarkReceiverUp(ctx, at(-24*60), at(-46)); err != nil {
+		b.Fatal(err)
+	}
+	if err := d.MarkReceiverUp(ctx, at(-45), at(0)); err != nil {
+		b.Fatal(err)
+	}
+	bench := func(b *testing.B, want int) {
+		for b.Loop() {
+			got, err := d.ActiveTimes(ctx, at(-120), at(0))
+			if err != nil || len(got) != want {
+				b.Fatalf("ActiveTimes = %d, %v", len(got), err)
+			}
 		}
 	}
+	b.Run("covered", func(b *testing.B) { bench(b, 120*6) })
+	// The agent was stopped for 10 minutes: every session's span is checked
+	// against its hook events, and all three are left out.
+	if err := d.MarkReceiverUp(ctx, at(-30), at(0)); err != nil {
+		b.Fatal(err)
+	}
+	if _, err := d.sql.ExecContext(ctx, "DELETE FROM otlp_uptime WHERE from_ms = ?", at(-45).UnixMilli()); err != nil {
+		b.Fatal(err)
+	}
+	b.Run("agent_stopped", func(b *testing.B) { bench(b, 0) })
 }

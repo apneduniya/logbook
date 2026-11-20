@@ -31,3 +31,14 @@ CREATE INDEX active_time_to ON active_time (to_ms);
 -- A retried export carries the same intervals; it is stored once.
 CREATE UNIQUE INDEX active_time_point ON active_time (session_id, type, from_ms, to_ms);
 CREATE INDEX active_time_series ON active_time (session_id, type, series_start, to_ms);
+
+-- When the agent's OTLP receiver was running: one row per daemon run, from
+-- its start, with to_ms moved forward every 30 s. ActiveTimes uses it to
+-- tell "Claude Code measured no active time" (receiver up, nothing came)
+-- from "no telemetry could arrive" (agent stopped), so missing exports never
+-- look like zero time.
+CREATE TABLE otlp_uptime (
+    from_ms INTEGER PRIMARY KEY, -- unix ms, the run's start
+    to_ms   INTEGER NOT NULL     -- unix ms, the run's latest mark
+);
+CREATE INDEX otlp_uptime_to ON otlp_uptime (to_ms);

@@ -74,10 +74,12 @@ From each `/v1/metrics` request the receiver keeps only `claude_code.active_time
 
 - Delta datapoints (Claude Code's default) are stored as they are; zero increments are skipped.
 - Cumulative datapoints are turned into increments per (`session.id`, `type`, start time) series, from the series' last stored point: the first point counts from the series start; a resent or older point is skipped; a lower total with the same start is a counter reset and counts in full; a new start time is a new series. The running total is stored with each point, so a restarted agent continues the series without double counting.
-- Datapoints without a session or a known type, in the future (over 2 min), older than 90 days, or with more seconds than their interval allows (plus 1 min) are rejected and reported as a partial success.
+- Datapoints without a session or a known type, ending in the future (over 2 min), starting more than 90 days ago (a start time of 1970 would otherwise allow decades of seconds), or with more seconds than their interval allows (plus 1 min) are rejected and reported as a partial success.
 - A retried export is stored once (unique on session, type and interval).
 
 `localdb.ActiveTimes(ctx, from, to)` returns the points overlapping the window (zero-second points left out) as `struggle.ActiveTime`, sorted, with `ProjectCwd` set to the latest working directory Claude Code's hooks reported for that session (same `session.id`), or empty. Active time is never uploaded.
+
+Claude Code sends nothing for idle intervals, so missing exports would look like zero active time and could make `otel_mismatch` flag an honest session. The daemon therefore records when its receiver runs (table `otlp_uptime`: one row per run, its start and a mark every 30 s, kept 90 days). `ActiveTimes` returns a session only when the receiver ran all through the session's span in the window (its Claude Code hook events and its points), counting each run from 2 minutes before its start (an export carries up to a minute of earlier time, and the exporter retries) to 1 minute after its last mark. A session that overlaps a time the agent was stopped is left out entirely, so the engine never judges it on incomplete data.
 
 ## Uploads
 

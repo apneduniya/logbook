@@ -28,6 +28,9 @@ func TestActiveTimesRangeOrderAndCwd(t *testing.T) {
 	if err := d.InsertEvents(ctx, evs); err != nil {
 		t.Fatal(err)
 	}
+	if err := d.MarkReceiverUp(ctx, at(-120), at(0)); err != nil {
+		t.Fatal(err)
+	}
 	pts := []ActiveTimePoint{
 		{From: at(-30), To: at(-29), SessionID: "s1", Type: ActiveCLI, Secs: 40},
 		{From: at(-30), To: at(-29), SessionID: "s1", Type: ActiveUser, Secs: 12.5},

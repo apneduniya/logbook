@@ -16,9 +16,23 @@ import (
 	"time"
 
 	"github.com/apneduniya/logbook/internal/agent/localdb"
+	"github.com/apneduniya/logbook/internal/agent/localkey"
 )
 
-const testToken = "59cd87cdb5c577d2173d433b577a1d803cfe94ca7b299b96492b7ff1c3a477c1"
+// testLocalToken is the agent's local token in these tests; testToken is
+// the OTLP token derived from it (TestTokenIsDerived pins the pair), which
+// is what the receiver requires.
+const (
+	testLocalToken = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	testToken      = "59cd87cdb5c577d2173d433b577a1d803cfe94ca7b299b96492b7ff1c3a477c1"
+)
+
+func TestTokenIsDerived(t *testing.T) {
+	got, err := localkey.OTLPToken(testLocalToken)
+	if err != nil || got != testToken {
+		t.Fatalf("OTLPToken(testLocalToken) = %q, %v; update testToken", got, err)
+	}
+}
 
 type env struct {
 	db   *localdb.DB
@@ -36,6 +50,11 @@ func newEnv(t testing.TB) *env {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
+	// The agent has been up all along, as the daemon records it; without
+	// this, ActiveTimes treats the telemetry as incomplete.
+	if err := db.MarkReceiverUp(context.Background(), now.Add(-24*time.Hour), now); err != nil {
+		t.Fatal(err)
+	}
 	e := &env{db: db, path: path, logs: &bytes.Buffer{}}
 	e.restart()
 	return e
@@ -175,7 +194,7 @@ func TestRejections(t *testing.T) {
 	}{
 		{"no token", "/v1/metrics", body, func(r *http.Request) { r.Header.Del(TokenHeader) }, http.StatusUnauthorized},
 		{"wrong token", "/v1/metrics", body, func(r *http.Request) { r.Header.Set(TokenHeader, testToken[1:]+"0") }, http.StatusUnauthorized},
-		{"local token is not the OTLP token", "/v1/metrics", body, func(r *http.Request) { r.Header.Set(TokenHeader, strings.Repeat("a", 64)) }, http.StatusUnauthorized},
+		{"local token is not the OTLP token", "/v1/metrics", body, func(r *http.Request) { r.Header.Set(TokenHeader, testLocalToken) }, http.StatusUnauthorized},
 		{"protobuf", "/v1/metrics", []byte{0x0a, 0x00}, func(r *http.Request) { r.Header.Set("Content-Type", "application/x-protobuf") }, http.StatusUnsupportedMediaType},
 		{"no content type", "/v1/metrics", body, func(r *http.Request) { r.Header.Del("Content-Type") }, http.StatusUnsupportedMediaType},
 		{"json with charset", "/v1/metrics", body, func(r *http.Request) { r.Header.Set("Content-Type", "application/json; charset=utf-8") }, http.StatusOK},
@@ -224,6 +243,24 @@ func gz(t *testing.T, b []byte) []byte {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
+}
+
+// Points whose interval claims to start in 1970 (delta, or the first point
+// of a cumulative series) are rejected, not stored as decades-long rows
+// that would dominate every window they overlap.
+func TestRejectsAncientStart(t *testing.T) {
+	e := newEnv(t)
+	rec := e.post(t, "/v1/metrics", fixture(t, "start_1970.json"))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"rejectedDataPoints":"2"`) {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body)
+	}
+	if got := e.stored(t); got != "honest 09:58:00..09:59:00 user=30 cli=0\n" {
+		t.Fatalf("stored:\n%s", got)
+	}
+	all, err := e.db.ActiveTimes(t.Context(), time.Unix(0, 0), now.Add(time.Minute))
+	if err != nil || len(all) != 1 {
+		t.Fatalf("ActiveTimes over all time = %+v, %v", all, err)
+	}
 }
 
 func TestGzipAccepted(t *testing.T) {

@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -51,5 +52,23 @@ func TestDaemonReceivesClaudeCodeActiveTime(t *testing.T) {
 	got, err := db.ActiveTimes(context.Background(), end.Add(-time.Hour), end.Add(time.Minute))
 	if err != nil || len(got) != 1 || got[0].SessionID != "s1" || got[0].UserSecs != 42 {
 		t.Fatalf("ActiveTimes = %+v, %v", got, err)
+	}
+}
+
+// Jobs run at start, again on their interval, each with a deadline, and
+// stop with the daemon.
+func TestDaemonRunsJobs(t *testing.T) {
+	e := newEnv(t)
+	var runs atomic.Int32
+	stop := e.start(t, func(o *Options) {
+		o.Jobs = []Job{{Every: 10 * time.Millisecond, Run: func(ctx context.Context) {
+			if _, ok := ctx.Deadline(); ok {
+				runs.Add(1)
+			}
+		}}}
+	})
+	waitFor(t, "jobs to run twice", func() bool { return runs.Load() >= 2 })
+	if err := stop(); err != nil {
+		t.Fatal(err)
 	}
 }

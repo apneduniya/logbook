@@ -8,10 +8,13 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"time"
 
 	"github.com/apneduniya/logbook/internal/agent/config"
 	"github.com/apneduniya/logbook/internal/agent/daemon"
 	"github.com/apneduniya/logbook/internal/agent/harness"
+	"github.com/apneduniya/logbook/internal/agent/harness/claudecode"
+	"github.com/apneduniya/logbook/internal/agent/harness/hostenv"
 	"github.com/apneduniya/logbook/internal/agent/install/autostart"
 	"github.com/apneduniya/logbook/internal/agent/logfile"
 	"github.com/apneduniya/logbook/internal/agent/sensors/activity"
@@ -90,6 +93,7 @@ func runAgent(ctx context.Context, args []string) error {
 			},
 		},
 		Harnesses: statusHarnesses,
+		Jobs:      []daemon.Job{claudeTelemetryJob(log)},
 	})
 	if errors.Is(err, daemon.ErrAlreadyRunning) {
 		// Autostart and a manual start can race; the second one just exits.
@@ -97,6 +101,27 @@ func runAgent(ctx context.Context, args []string) error {
 		return nil
 	}
 	return err
+}
+
+// claudeTelemetryEvery is how often the daemon checks that Claude Code's
+// telemetry entries still belong to Logbook. Claude Code reads them at
+// session start, so a few minutes' delay changes little.
+const claudeTelemetryEvery = 10 * time.Minute
+
+// claudeTelemetryJob hands Claude Code's telemetry back to an OpenTelemetry
+// setup (the user's or an administrator's) that appeared after install, so
+// Logbook's exporter never overrides it until the next `logbook install`.
+func claudeTelemetryJob(log *slog.Logger) daemon.Job {
+	env := hostenv.FromOS()
+	return daemon.Job{Every: claudeTelemetryEvery, Run: func(ctx context.Context) {
+		reason, err := claudecode.YieldTelemetry(ctx, env)
+		switch {
+		case err != nil:
+			log.DebugContext(ctx, "checking Claude Code telemetry settings", "err", err)
+		case reason != "":
+			log.WarnContext(ctx, "removed Logbook's Claude Code telemetry entries: telemetry is set up elsewhere", "reason", reason)
+		}
+	}}
 }
 
 // Sensors declare their own Sink interfaces so they don't import the daemon;
