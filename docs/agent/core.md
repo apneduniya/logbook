@@ -23,6 +23,7 @@ All in the data directory (`config.Dir()`: `os.UserConfigDir()/logbook`, or `$LO
 | File | Mode | Written by | Bound |
 |---|---|---|---|
 | `config.json` | 0600 | `logbook login` (via `config.Save`) | small |
+| `device.key` | 0600 | daemon, on first run (`internal/agent/devicekey`) | small; retired keys kept as `device.key.retired-<unix>` |
 | `logbook.db`, `-wal`, `-shm` | 0600 (db) | daemon, `status`/`doctor` when the daemon is down | see retention below |
 | `agent.log`, `agent.log.1..3` | 0600 | `logbook run` | 5 MiB × 4 |
 | `spool/events.jsonl.<n>.draining` | inherits | daemon (renamed from the hook spool) | removed after draining |
@@ -39,7 +40,9 @@ All in the data directory (`config.Dir()`: `os.UserConfigDir()/logbook`, or `$LO
 | `mirror_queue` | heartbeats waiting for Hackatime | same, `dropped.mirror_queue` |
 | `heartbeat_log` | time, project and **directory** of each accepted heartbeat (never the file name) | 48 hours |
 | `ai_events`, `activity_samples`, `git_events` | raw local evidence, never uploaded in step 2 | 90 days and 3 000 000 rows each |
-| `kv` | uploader state, drop counters, spool progress | small |
+| `heartbeats` | each accepted heartbeat in full, deduplicated, for the struggle engine and evidence (`docs/agent/crediting.md`) | 90 days and 3 000 000 rows |
+| `credited_minutes`, `evidence_days` | the engine's minutes with their upload state, and the signed evidence chain (`docs/agent/crediting.md`) | 90 days; one row per day |
+| `kv` | uploader state, drop counters, spool progress, device and evidence state | small |
 
 Commits are unique per `(project, commit_hash)`, so the git sensor can report a commit repeatedly. Pruning runs at start and every 6 hours.
 
@@ -91,7 +94,7 @@ Last success, last error and pause reason are saved in `kv` (`upload.<name>.*`),
 
 ## Daemon
 
-`daemon.Run` binds the listener first; the port is the single-instance lock. If it's taken and an agent answers `/local/v1/status` there, `Run` returns `ErrAlreadyRunning` and `logbook run` exits 0. Then it opens the database and runs, under one `errgroup`: the API server, both workers, the spool drainer (at start and every minute), pruning (at start and every 6 h) and each sensor.
+`daemon.Run` binds the listener first; the port is the single-instance lock. If it's taken and an agent answers `/local/v1/status` there, `Run` returns `ErrAlreadyRunning` and `logbook run` exits 0. Then it opens the database and runs, under one `errgroup`: the API server, both workers, the spool drainer (at start and every minute), pruning (at start and every 6 h), the crediting pipeline (every minute, supervised like a sensor; `docs/agent/crediting.md`) and each sensor.
 
 Sensors are supervised: a sensor that returns or panics is logged (with a truncated stack) and restarted after 1 s, doubling to 5 min; a run longer than a minute resets the backoff. Sensors receive the database as their `Sink`.
 
