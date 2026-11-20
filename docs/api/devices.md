@@ -1,0 +1,134 @@
+# Devices, credited minutes and evidence API
+
+How the Logbook agent registers its device key and uploads credited minutes and the daily evidence chain (ADR 0010, ADR 0014), and how users manage their devices. Packages: `internal/server/devices`, `internal/server/credited`, `internal/server/ledger`.
+
+## Conventions
+
+- **API-key auth** is the same as for heartbeats (`Authorization: Bearer`, `Basic`, or `?api_key=`; see [auth.md](auth.md)). A bad key gets `401 {"error": "invalid API key"}`.
+- **Session auth** is the browser session; `DELETE` also needs `X-CSRF-Token`.
+- Errors are `{"error": "message"}`. Bodies are JSON, at most 1 MiB.
+- These agent endpoints get no CORS headers: browsers never call them.
+- **Rate limits** are per user. Over a limit the response is `429` with `Retry-After`.
+  - `POST /api/v1/devices`: a burst of 30, refilled at 30 per hour.
+  - `POST /api/v1/devices/{id}/minutes`: a burst of 120, refilled at 2 per second (the heartbeat budget).
+  - `POST /api/v1/devices/{id}/evidence-days`: a burst of 60, refilled at 60 per minute.
+- A `{id}` that isn't a UUID, doesn't exist, or belongs to another user is `404 {"error": "device not found"}`. The response doesn't say which.
+- A revoked device gets `403 {"error": "device has been revoked"}` on every upload. The agent should stop uploading with it and register a new key.
+
+---
+
+## `POST /api/v1/devices`
+
+Auth: API key. Registers the agent's ed25519 public key.
+
+```json
+{ "name": "Fiona's laptop", "os": "darwin", "public_key": "<standard base64 of the 32-byte key>" }
+```
+
+- `name`: 1–64 characters after trimming, no control or bidirectional-override characters.
+- `os`: 1–32 characters, same rules.
+
+| Status | Body | When |
+|---|---|---|
+| `201` | `{"id": "<uuid>"}` | New device. Audited as `device.register`. |
+| `200` | `{"id": "<uuid>"}` | This user already registered this key. Name and OS are not changed. A revoked device stays revoked. |
+| `400` | error | Invalid field or JSON. |
+| `409` | `{"error": "public key is registered to another account"}` | The key belongs to another user. |
+| `409` | `{"error": "you already have 20 active devices; revoke one first"}` | Device cap reached. |
+
+## `POST /api/v1/devices/{id}/minutes`
+
+Auth: API key. Uploads labelled minutes from `pkg/struggle`.
+
+```json
+{
+  "rules_version": "v1",
+  "minutes": [
+    { "minute": "2026-11-20T10:31:00Z", "project": "logbook", "label": "you",
+      "credited": 45, "cuts": [], "flags": ["low_signal"] }
+  ]
+}
+```
+
+Whole-request errors (`400`): invalid JSON, more than 1000 minutes, or a `rules_version` the server doesn't know (currently only `v1`).
+
+Each item is then accepted or rejected on its own. `200`:
+
+```json
+{ "accepted": 999, "rejected": [{ "index": 3, "error": "minute is in the future" }] }
+```
+
+`rejected` is sorted by index and is `[]` when empty. Rejected items should be dropped, not retried. The rules:
+
+| Rule | Error |
+|---|---|
+| `minute` is RFC 3339 in UTC (`Z` or `+00:00`) on a whole minute | `minute must be an RFC 3339 UTC time on a whole minute` |
+| `minute` is at most 2 minutes ahead of the server clock | `minute is in the future` |
+| `minute` is in 2024 or later | `minute is before 2024` |
+| `project` is at most 256 bytes of UTF-8 with no control characters; `""` means no project | `project must be ...` |
+| `label` is `you`, `agent` or `idle` | `label must be ...` |
+| `credited` is 0–60, and 0 unless `label` is `you` | `credited must be ...` |
+| `cuts` and `flags` have at most 16 codes each, matching `[a-z][a-z0-9_]{0,31}` (duplicates are dropped) | `cuts and flags must be ...` |
+| `flags` never contains `multi_device`; the server works that out | `the multi_device flag is set by the server only` |
+| The same `(minute, project)` appears only once per request; later copies are rejected | `the same minute and project appear earlier in this batch` |
+| A stored `(minute, project)` can only change while the minute is under 30 minutes old by the server clock. Re-sending exactly the stored values is always accepted. A minute that was never sent can be sent at any time, so an agent that was offline can catch up. | `minute is final: ...` |
+| Across all projects of one minute on this device, `credited` adds up to at most 60. Items that lower a minute's credit are applied first, then the rest in request order, so moving a minute between projects works in one request. | `credited seconds for this minute would exceed 60 across projects` |
+
+- Writes are idempotent upserts keyed by `(device, minute, project)`.
+- Uploads for one device are serialised, so two concurrent batches can't break the 60-second rule.
+- Accepted changes send a `minutes` event on `/api/v1/me/live`.
+
+## `POST /api/v1/devices/{id}/evidence-days`
+
+Auth: API key. Uploads one link of the device's evidence chain (ADR 0010; formats in `pkg/evidence`).
+
+```json
+{
+  "day": "2026-11-19",
+  "prev_chain_hash": "<64 hex, or \"\" for the device's first day>",
+  "content_hash": "<64 hex>",
+  "chain_hash": "<64 hex>",
+  "signature": "<standard base64 of the 64-byte ed25519 signature over the chain hash>",
+  "rules_version": "v1",
+  "event_counts": { "activity": 9120, "heartbeat": 640, "ai": 75 }
+}
+```
+
+- Hex is lowercase. `day` is a UTC date, not after today.
+- `event_counts` has at most 32 keys matching `[a-z][a-z0-9_.]{0,63}`, with counts from 0 to 10^9.
+
+| Status | When |
+|---|---|
+| `201` `{"day": "..."}` | Stored. |
+| `200` `{"day": "..."}` | An identical record (every field, including the signature and counts) is already stored. |
+| `400` | A field is malformed, `chain_hash` isn't `evidence.ChainHash` of the fields, or the signature doesn't verify with the device's registered key. |
+| `409 {"error": "a different record is already stored for this day"}` | A different, validly signed record exists for the day. Nothing is changed, and the conflict is written to the audit log as `evidence_conflict` with both versions' hashes. |
+| `409 {"error": "chain mismatch"}` | `prev_chain_hash` isn't the `chain_hash` of the device's latest stored day before `day` (or `""` when there is none), or a later day is already stored, so this day can't be inserted before it. |
+
+Gaps are allowed: if the agent was off on the 18th, the 19th links to the 17th.
+
+---
+
+## `GET /api/v1/me/devices`
+
+Auth: session. `200`, newest first, revoked devices included:
+
+```json
+{
+  "devices": [
+    { "id": "…", "name": "Fiona's laptop", "os": "darwin",
+      "public_key": "<base64>", "key_fingerprint": "66687aadf862bd77",
+      "created_at": "2026-11-20T10:00:00Z", "last_seen_at": "2026-11-20T10:31:00Z",
+      "revoked_at": null }
+  ]
+}
+```
+
+- `key_fingerprint` is the first 16 hex characters of the SHA-256 of the public key, so users can match a device to a machine.
+- `last_seen_at` is the last upload, updated at most once a minute.
+
+## `DELETE /api/v1/me/devices/{id}`
+
+Auth: session + CSRF. Revokes the device: future uploads with it get `403`. Its credited minutes and evidence are kept. Audited as `device.revoke`.
+
+`204`, or `404` if the device doesn't exist, belongs to another user, or is already revoked.

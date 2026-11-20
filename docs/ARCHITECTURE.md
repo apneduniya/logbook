@@ -32,6 +32,9 @@ laptop                                     server (Go + Postgres)
 | `internal/server/hackatime` | Hackatime client: OAuth, trust level, history import |
 | `internal/server/ingest` | Heartbeat validation, dedup, rollups |
 | `internal/server/stats` | Dashboard and program-API aggregates |
+| `internal/server/devices` | Agent device keys: register, list, revoke |
+| `internal/server/credited` | Credited-minute uploads from the agent |
+| `internal/server/ledger` | Signed daily evidence chain per device |
 | `internal/server/live` | SSE fan-out |
 | `internal/server/httpapi` | HTTP handlers and middleware; thin, calls services |
 | `internal/server/jobs` | River workers |
