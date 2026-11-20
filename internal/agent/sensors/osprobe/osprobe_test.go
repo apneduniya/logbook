@@ -3,9 +3,9 @@ package osprobe
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -35,30 +35,46 @@ func TestIdleFromTicks(t *testing.T) {
 	}
 }
 
-func TestDetectSessionAndOrder(t *testing.T) {
-	tests := []struct {
-		name string
-		env  map[string]string
-		want []string
-	}{
-		{"x11", map[string]string{"XDG_SESSION_TYPE": "x11", "DISPLAY": ":0"},
-			[]string{srcMutter, srcScreenSaver, srcX11, srcLogind}},
-		{"x11 without session type", map[string]string{"DISPLAY": ":0"},
-			[]string{srcMutter, srcScreenSaver, srcX11, srcLogind}},
-		{"wayland with xwayland display", map[string]string{"XDG_SESSION_TYPE": "wayland", "DISPLAY": ":0", "WAYLAND_DISPLAY": "wayland-0"},
-			[]string{srcMutter, srcScreenSaver, srcLogind}},
-		{"wayland display only", map[string]string{"WAYLAND_DISPLAY": "wayland-0", "DISPLAY": ":1"},
-			[]string{srcMutter, srcScreenSaver, srcLogind}},
-		{"headless", map[string]string{},
-			[]string{srcMutter, srcScreenSaver, srcLogind}},
+func TestChainToleratesTimeouts(t *testing.T) {
+	now := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
+	mutter := &fakeSource{idle: time.Second}
+	logind := &fakeSource{idle: 9 * time.Second}
+	c := newIdleChain([]idleSource{{"mutter", mutter.read}, {"logind", logind.read}},
+		func() time.Time { return now }, slog.New(slog.DiscardHandler))
+	if _, err := c.Idle(t.Context()); err != nil || c.Current() != "mutter" {
+		t.Fatalf("start: %v %s", err, c.Current())
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			s := detectSession(func(k string) string { return tt.env[k] })
-			if got := linuxIdleOrder(s); !slices.Equal(got, tt.want) {
-				t.Fatalf("order = %v, want %v", got, tt.want)
-			}
-		})
+
+	// A slow reply costs that sample only; the source is kept.
+	mutter.err = fmt.Errorf("d-bus call: %w", context.DeadlineExceeded)
+	for i := range maxTimeouts - 1 {
+		if _, err := c.Idle(t.Context()); !errors.Is(err, ErrUnavailable) || c.Current() != "mutter" {
+			t.Fatalf("timeout %d: err=%v current=%s", i, err, c.Current())
+		}
+	}
+	mutter.err = nil
+	if d, err := c.Idle(t.Context()); err != nil || d != time.Second || c.Current() != "mutter" {
+		t.Fatalf("after recovery: %v %v %s", d, err, c.Current())
+	}
+	if logind.calls != 0 {
+		t.Fatalf("fell through to logind %d times", logind.calls)
+	}
+
+	// Repeated timeouts do switch.
+	mutter.err = fmt.Errorf("d-bus call: %w", context.DeadlineExceeded)
+	for range maxTimeouts {
+		_, _ = c.Idle(t.Context())
+	}
+	if c.Current() != "logind" {
+		t.Fatalf("after %d timeouts current = %s", maxTimeouts, c.Current())
+	}
+
+	// The caller's own cancellation says nothing about the source.
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	logind.err = context.Canceled
+	if _, err := c.Idle(ctx); !errors.Is(err, context.Canceled) || c.Current() != "logind" {
+		t.Fatalf("cancelled: err=%v current=%s", err, c.Current())
 	}
 }
 

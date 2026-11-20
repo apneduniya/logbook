@@ -13,6 +13,11 @@ import (
 // (for example Mutter starting after the daemon at login).
 const rescanEvery = 5 * time.Minute
 
+// maxTimeouts is how many samples in a row the current source may time out
+// before the chain gives up on it. A single slow reply (a busy compositor)
+// costs one sample, not a 5 minute switch to a worse source.
+const maxTimeouts = 3
+
 // idleSource is one way of reading idle time.
 type idleSource struct {
 	name string
@@ -31,6 +36,7 @@ type idleChain struct {
 	nextScan    time.Time // when to retry after every source failed
 	nextUpgrade time.Time // when to try sources better than current
 	warned      bool      // logged that nothing works, until something does
+	timeouts    int       // consecutive timeouts of the current source
 }
 
 func newIdleChain(sources []idleSource, now func() time.Time, log *slog.Logger) *idleChain {
@@ -50,10 +56,21 @@ func (c *idleChain) Idle(ctx context.Context) (time.Duration, error) {
 		src := c.sources[c.current]
 		d, err := src.read(ctx)
 		if err == nil {
+			c.timeouts = 0
 			return d, nil
+		}
+		if ctx.Err() != nil {
+			// The caller gave up (shutdown, or its own deadline): that
+			// says nothing about the source.
+			return 0, fmt.Errorf("%s: %w", src.name, ctx.Err())
+		}
+		if errors.Is(err, context.DeadlineExceeded) && c.timeouts+1 < maxTimeouts {
+			c.timeouts++
+			return 0, fmt.Errorf("%s timed out, retrying next sample: %w", src.name, ErrUnavailable)
 		}
 		c.log.Info("idle source stopped working, looking for another", "source", src.name, "err", err)
 		c.current = -1
+		c.timeouts = 0
 	} else if now.Before(c.nextScan) {
 		return 0, ErrUnavailable
 	}
@@ -77,6 +94,7 @@ func (c *idleChain) scan(ctx context.Context, limit int) (time.Duration, bool) {
 			c.log.Info("using idle source", "source", src.name)
 		}
 		c.current = i
+		c.timeouts = 0
 		c.warned = false
 		c.nextUpgrade = c.now().Add(rescanEvery)
 		return d, true
