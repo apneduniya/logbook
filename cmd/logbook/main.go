@@ -20,7 +20,7 @@ type Command struct {
 
 // commands lists every subcommand. Add new ones here.
 func commands() []Command {
-	return []Command{}
+	return []Command{runCommand(), loginCommand(), statusCommand(), doctorCommand()}
 }
 
 func main() {
