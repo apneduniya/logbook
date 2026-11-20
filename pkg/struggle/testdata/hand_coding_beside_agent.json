@@ -1,0 +1,45 @@
+{
+  "description": "The person hand-codes project app (a heartbeat every ~30 s) while an agent they started in lib fires a tool call every 3 s. The minutes go to app: the person's own signals decide the split, not the agent's event rate. After the person stops editing, the prompt-free minutes follow the agent's project.",
+  "date": "2026-11-20",
+  "window": {
+    "From": "10:00:00",
+    "To": "10:30:00"
+  },
+  "seed": 6,
+  "repos": [
+    {
+      "path": "/home/sam/app",
+      "project": "app"
+    },
+    {
+      "path": "/home/sam/lib",
+      "project": "lib"
+    }
+  ],
+  "inputs": [
+    {
+      "from": "09:55:00",
+      "to": "10:31:00",
+      "gap_min": 0.3,
+      "gap_max": 4
+    }
+  ],
+  "samples": [
+    {
+      "from": "09:55:00",
+      "to": "10:20:00",
+      "focus": "editor"
+    },
+    {
+      "from": "10:20:00",
+      "to": "10:31:00",
+      "focus": "terminal"
+    }
+  ],
+  "heartbeats": [
+    {"from": "10:00:30", "to": "10:20:00", "every_min": 25, "every_max": 35, "project": "app", "entity": "/home/sam/app/main.go", "cursor": true, "write_every": 4}
+  ],
+  "turns": [
+    {"session": "s1", "cwd": "/home/sam/lib", "start": "10:00:00", "end": "10:28:00", "chars": 120, "tool_every": 3}
+  ]
+}

@@ -1,5 +1,5 @@
 {
-  "description": "OS input exactly every 30 s and nothing else (a mouse jiggler on an editor window): flagged scripted_input.",
+  "description": "The person sends a prompt, then a mouse jiggler moves the mouse exactly every 30 s on the terminal while the agent works for an hour: the minutes are credited (presence looks real) but flagged scripted_input once 30 regular intervals are seen.",
   "date": "2026-11-20",
   "window": {
     "From": "10:00:00",
@@ -10,15 +10,17 @@
     {
       "path": "/home/sam/app",
       "project": "app"
-    },
-    {
-      "path": "/home/sam/lib",
-      "project": "lib"
     }
   ],
   "inputs": [
     {
-      "from": "09:30:00",
+      "from": "09:55:00",
+      "to": "09:58:00",
+      "gap_min": 0.2,
+      "gap_max": 1
+    },
+    {
+      "from": "09:58:30",
       "to": "11:01:00",
       "gap_min": 30,
       "gap_max": 30
@@ -28,19 +30,17 @@
     {
       "from": "09:30:00",
       "to": "11:02:00",
-      "focus": "editor"
+      "focus": "terminal"
     }
   ],
-  "heartbeats": [
+  "turns": [
     {
-      "from": "09:30:00",
-      "to": "09:31:00",
-      "every_min": 20,
-      "every_max": 20,
-      "project": "app",
-      "entity": "/home/sam/app/main.go",
-      "write_every": 1,
-      "cursor": true
+      "session": "s1",
+      "cwd": "/home/sam/app",
+      "start": "09:58:00",
+      "end": "11:00:00",
+      "chars": 120,
+      "tool_every": 20
     }
   ]
 }

@@ -1,5 +1,5 @@
 {
-  "description": "Credited 'you' time in a Claude Code session is far above Claude Code's own user active time (5 min vs ~60 min): flagged otel_mismatch.",
+  "description": "Credited 'you' time in a Claude Code session is far above the active time Claude Code itself measured (user + cli about 7 min vs ~60 min credited), as when hook events are fabricated: flagged otel_mismatch.",
   "date": "2026-11-20",
   "window": {
     "From": "10:00:00",
@@ -135,84 +135,84 @@
       "to": "10:05:00",
       "session": "s4",
       "user_secs": 25,
-      "cli_secs": 200
+      "cli_secs": 10
     },
     {
       "from": "10:05:00",
       "to": "10:10:00",
       "session": "s4",
       "user_secs": 25,
-      "cli_secs": 200
+      "cli_secs": 10
     },
     {
       "from": "10:10:00",
       "to": "10:15:00",
       "session": "s4",
       "user_secs": 25,
-      "cli_secs": 200
+      "cli_secs": 10
     },
     {
       "from": "10:15:00",
       "to": "10:20:00",
       "session": "s4",
       "user_secs": 25,
-      "cli_secs": 200
+      "cli_secs": 10
     },
     {
       "from": "10:20:00",
       "to": "10:25:00",
       "session": "s4",
       "user_secs": 25,
-      "cli_secs": 200
+      "cli_secs": 10
     },
     {
       "from": "10:25:00",
       "to": "10:30:00",
       "session": "s4",
       "user_secs": 25,
-      "cli_secs": 200
+      "cli_secs": 10
     },
     {
       "from": "10:30:00",
       "to": "10:35:00",
       "session": "s4",
       "user_secs": 25,
-      "cli_secs": 200
+      "cli_secs": 10
     },
     {
       "from": "10:35:00",
       "to": "10:40:00",
       "session": "s4",
       "user_secs": 25,
-      "cli_secs": 200
+      "cli_secs": 10
     },
     {
       "from": "10:40:00",
       "to": "10:45:00",
       "session": "s4",
       "user_secs": 25,
-      "cli_secs": 200
+      "cli_secs": 10
     },
     {
       "from": "10:45:00",
       "to": "10:50:00",
       "session": "s4",
       "user_secs": 25,
-      "cli_secs": 200
+      "cli_secs": 10
     },
     {
       "from": "10:50:00",
       "to": "10:55:00",
       "session": "s4",
       "user_secs": 25,
-      "cli_secs": 200
+      "cli_secs": 10
     },
     {
       "from": "10:55:00",
       "to": "11:00:00",
       "session": "s4",
       "user_secs": 25,
-      "cli_secs": 200
+      "cli_secs": 10
     }
   ]
 }

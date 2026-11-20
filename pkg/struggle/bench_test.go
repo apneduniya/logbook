@@ -8,13 +8,14 @@ import (
 	"github.com/apneduniya/logbook/pkg/wire"
 )
 
-// benchInput is what the agent recomputes every minute: a 2-hour window plus
-// 30 minutes of context, with activity every 5 s, heartbeats every ~30 s, an
-// agent turn every 5 minutes with a tool call every ~10 s, and OTel points.
+// benchInput is a 2-hour window (twice what the agent recomputes every
+// minute) plus ContextBefore of history, with activity every 5 s, heartbeats
+// every ~30 s, an agent turn every 5 minutes with a tool call every ~10 s,
+// and OTel points.
 func benchInput() Input {
 	r := rng(42)
 	from := t0
-	start := from.Add(-30 * time.Minute)
+	start := from.Add(-ContextBefore)
 	end := from.Add(2 * time.Hour)
 	in := Input{
 		Window: Window{From: from, To: end},

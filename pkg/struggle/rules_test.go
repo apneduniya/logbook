@@ -115,7 +115,6 @@ func TestBuildTurns(t *testing.T) {
 	type want struct {
 		start, end time.Duration
 		prompt     bool
-		byTurnEnd  bool
 		busy       int // busy spans
 	}
 	tests := []struct {
@@ -129,40 +128,40 @@ func TestBuildTurns(t *testing.T) {
 			events: []aiEvent{ai(0, wire.AIPromptSubmit, "s"), ai(time.Minute, wire.AIToolStart, "s"),
 				ai(2*time.Minute, wire.AIToolEnd, "s"), ai(3*time.Minute, wire.AITurnEnd, "s")},
 			horizon: time.Hour,
-			want:    []want{{0, 3 * time.Minute, true, true, 1}},
+			want:    []want{{0, 3 * time.Minute, true, 1}},
 		},
 		{
 			name: "permission wait splits busy time",
 			events: []aiEvent{ai(0, wire.AIPromptSubmit, "s"), ai(time.Minute, wire.AIPermissionAsk, "s"),
 				ai(5*time.Minute, wire.AIToolEnd, "s"), ai(6*time.Minute, wire.AITurnEnd, "s")},
 			horizon: time.Hour,
-			want:    []want{{0, 6 * time.Minute, true, true, 2}},
+			want:    []want{{0, 6 * time.Minute, true, 2}},
 		},
 		{
 			name: "next prompt ends the turn (interrupted)",
 			events: []aiEvent{ai(0, wire.AIPromptSubmit, "s"), ai(time.Minute, wire.AIToolStart, "s"),
 				ai(2*time.Minute, wire.AIPromptSubmit, "s"), ai(3*time.Minute, wire.AITurnEnd, "s")},
 			horizon: time.Hour,
-			want:    []want{{0, 2 * time.Minute, true, false, 1}, {2 * time.Minute, 3 * time.Minute, true, true, 1}},
+			want:    []want{{0, 2 * time.Minute, true, 1}, {2 * time.Minute, 3 * time.Minute, true, 1}},
 		},
 		{
 			name: "no events for more than 10 minutes ends the turn at its last event",
 			events: []aiEvent{ai(0, wire.AIPromptSubmit, "s"), ai(time.Minute, wire.AIToolStart, "s"),
 				ai(12*time.Minute, wire.AIToolStart, "s"), ai(13*time.Minute, wire.AITurnEnd, "s")},
 			horizon: time.Hour,
-			want:    []want{{0, time.Minute, true, false, 1}, {12 * time.Minute, 13 * time.Minute, false, true, 1}},
+			want:    []want{{0, time.Minute, true, 1}, {12 * time.Minute, 13 * time.Minute, false, 1}},
 		},
 		{
 			name:    "open turn near the horizon runs to the horizon",
 			events:  []aiEvent{ai(0, wire.AIPromptSubmit, "s"), ai(time.Minute, wire.AIToolStart, "s")},
 			horizon: 5 * time.Minute,
-			want:    []want{{0, 5 * time.Minute, true, false, 1}},
+			want:    []want{{0, 5 * time.Minute, true, 1}},
 		},
 		{
 			name:    "open turn long before the horizon timed out",
 			events:  []aiEvent{ai(0, wire.AIPromptSubmit, "s"), ai(time.Minute, wire.AIToolStart, "s")},
 			horizon: time.Hour,
-			want:    []want{{0, time.Minute, true, false, 1}},
+			want:    []want{{0, time.Minute, true, 1}},
 		},
 		{
 			name:    "permission ask and turn_end outside a turn are ignored",
@@ -175,7 +174,7 @@ func TestBuildTurns(t *testing.T) {
 			events: []aiEvent{ai(0, wire.AIPromptSubmit, "b"), ai(30*time.Second, wire.AIPromptSubmit, "a"),
 				ai(time.Minute, wire.AITurnEnd, "b"), ai(2*time.Minute, wire.AITurnEnd, "a")},
 			horizon: time.Hour,
-			want:    []want{{0, time.Minute, true, true, 1}, {30 * time.Second, 2 * time.Minute, true, true, 1}},
+			want:    []want{{0, time.Minute, true, 1}, {30 * time.Second, 2 * time.Minute, true, 1}},
 		},
 	}
 	for _, tt := range tests {
@@ -187,7 +186,7 @@ func TestBuildTurns(t *testing.T) {
 			for i, w := range tt.want {
 				g := got[i]
 				if !g.start.Equal(at(w.start)) || !g.end.Equal(at(w.end)) || g.prompt != w.prompt ||
-					g.endedByTurnEnd != w.byTurnEnd || len(g.busySpans()) != w.busy || g.project != "app" {
+					len(g.busySpans()) != w.busy || len(g.events) == 0 || g.events[0].project != "app" {
 					t.Errorf("turn %d = %+v (busy %v), want %+v", i, g, g.busySpans(), w)
 				}
 			}
@@ -195,8 +194,63 @@ func TestBuildTurns(t *testing.T) {
 	}
 }
 
+func TestBuildTurnsPermissionAndTurnEnd(t *testing.T) {
+	m := time.Minute
+	decided := ai(3*m, wire.AIPermissionAsk, "s")
+	decided.decided = true
+	events := []aiEvent{
+		ai(0, wire.AIPromptSubmit, "s"), ai(m, wire.AIPermissionAsk, "s"),
+		decided, // OpenCode's reply: ends the wait, is not a new ask
+		ai(5*m, wire.AIToolStart, "s"), ai(6*m, wire.AITurnEnd, "s"),
+		ai(6*m+10*time.Second, wire.AIPromptSubmit, "s"), ai(7*m, wire.AITurnEnd, "s"),
+	}
+	turns := buildTurns(events, at(time.Hour))
+	if len(turns) != 2 {
+		t.Fatalf("got %d turns", len(turns))
+	}
+	first, second := turns[0], turns[1]
+	if len(first.waits) != 1 || !first.waits[0].to.Equal(at(3*m)) {
+		t.Fatalf("waits %v, want one ending at the reply", first.waits)
+	}
+	if len(first.answers) != 1 || !first.answers[0].t.Equal(at(3*m)) {
+		t.Fatalf("answers %v, want the reply", first.answers)
+	}
+	if first.afterTurnEnd || !second.afterTurnEnd || !second.prevTurnEnd.Equal(at(6*m)) {
+		t.Fatalf("afterTurnEnd: first %v, second %v at %v", first.afterTurnEnd, second.afterTurnEnd, second.prevTurnEnd)
+	}
+}
+
+func TestTurnRuleSpanAndProjectAt(t *testing.T) {
+	tr := turn{start: t0, end: at(2 * time.Hour), events: []projectEvent{
+		{at(time.Minute), "a"}, {at(40 * time.Minute), "b"},
+	}}
+	if s := tr.ruleSpan(); !s.from.Equal(t0) || !s.to.Equal(at(turnRuleReach)) {
+		t.Fatalf("ruleSpan %v", s)
+	}
+	short := turn{start: t0, end: at(5 * time.Minute)}
+	if s := short.ruleSpan(); !s.to.Equal(at(5 * time.Minute)) {
+		t.Fatalf("short ruleSpan %v", s)
+	}
+	tests := []struct {
+		a, b time.Duration
+		want string
+		ok   bool
+	}{
+		{0, 10 * time.Minute, "a", true},
+		{30 * time.Minute, 50 * time.Minute, "b", true},
+		{50 * time.Minute, 60 * time.Minute, "", false},
+		{0, 40 * time.Minute, "a", true}, // b is at the end, which is excluded
+	}
+	for _, tt := range tests {
+		if p, _, ok := tr.projectAt(at(tt.a), at(tt.b)); p != tt.want || ok != tt.ok {
+			t.Errorf("projectAt(%v, %v) = %q %v, want %q %v", tt.a, tt.b, p, ok, tt.want, tt.ok)
+		}
+	}
+}
+
+// promptTurn is a turn started by a prompt.
 func promptTurn(start, end time.Duration, chars int, hash string) turn {
-	return turn{session: "s", start: at(start), end: at(end), prompt: true, chars: chars, hash: hash, endedByTurnEnd: true}
+	return turn{session: "s", start: at(start), end: at(end), prompt: true, chars: chars, hash: hash}
 }
 
 func TestLoopSpans(t *testing.T) {
@@ -204,19 +258,26 @@ func TestLoopSpans(t *testing.T) {
 	tests := []struct {
 		name  string
 		turns []turn
+		hbs   []heartbeat
 		cut   []time.Duration // start of each cut turn
 	}{
-		{"two sends are fine", []turn{promptTurn(0, m, 10, "h"), promptTurn(2*m, 3*m, 10, "h")}, nil},
-		{"third send is cut", []turn{promptTurn(0, m, 10, "h"), promptTurn(2*m, 3*m, 10, "h"), promptTurn(4*m, 5*m, 10, "h")}, []time.Duration{4 * m}},
-		{"outside 30 minutes", []turn{promptTurn(0, m, 10, "h"), promptTurn(20*m, 21*m, 10, "h"), promptTurn(31*m, 32*m, 10, "h")}, nil},
-		{"exactly 30 minutes counts", []turn{promptTurn(0, m, 10, "h"), promptTurn(20*m, 21*m, 10, "h"), promptTurn(30*m, 31*m, 10, "h")}, []time.Duration{30 * m}},
-		{"no hash never loops", []turn{promptTurn(0, m, 10, ""), promptTurn(2*m, 3*m, 10, ""), promptTurn(4*m, 5*m, 10, "")}, nil},
-		{"other sessions don't count", []turn{promptTurn(0, m, 10, "h"), {session: "t", start: at(2 * m), end: at(3 * m), prompt: true, hash: "h"}, promptTurn(4*m, 5*m, 10, "h")}, nil},
+		{"two sends are fine", []turn{promptTurn(0, m, 40, "h"), promptTurn(2*m, 3*m, 40, "h")}, nil, nil},
+		{"third send is cut", []turn{promptTurn(0, m, 40, "h"), promptTurn(2*m, 3*m, 40, "h"), promptTurn(4*m, 5*m, 40, "h")}, nil, []time.Duration{4 * m}},
+		{"outside 30 minutes", []turn{promptTurn(0, m, 40, "h"), promptTurn(20*m, 21*m, 40, "h"), promptTurn(31*m, 32*m, 40, "h")}, nil, nil},
+		{"exactly 30 minutes counts", []turn{promptTurn(0, m, 40, "h"), promptTurn(20*m, 21*m, 40, "h"), promptTurn(30*m, 31*m, 40, "h")}, nil, []time.Duration{30 * m}},
+		{"no hash never loops", []turn{promptTurn(0, m, 40, ""), promptTurn(2*m, 3*m, 40, ""), promptTurn(4*m, 5*m, 40, "")}, nil, nil},
+		{"unknown length still loops", []turn{promptTurn(0, m, 0, "h"), promptTurn(2*m, 3*m, 0, "h"), promptTurn(4*m, 5*m, 0, "h")}, nil, []time.Duration{4 * m}},
+		{"short prompts are left to rubber_stamp", []turn{promptTurn(0, m, 8, "h"), promptTurn(2*m, 3*m, 8, "h"), promptTurn(4*m, 5*m, 8, "h")}, nil, nil},
+		{"other sessions don't count", []turn{promptTurn(0, m, 40, "h"), {session: "t", start: at(2 * m), end: at(3 * m), prompt: true, chars: 40, hash: "h"}, promptTurn(4*m, 5*m, 40, "h")}, nil, nil},
+		{"editing in between resets the count", []turn{promptTurn(0, m, 40, "h"), promptTurn(2*m, 3*m, 40, "h"), promptTurn(4*m, 5*m, 40, "h"), promptTurn(6*m, 7*m, 40, "h")},
+			[]heartbeat{{t: at(3*m + 30*time.Second)}}, nil},
+		{"AI edits in between don't", []turn{promptTurn(0, m, 40, "h"), promptTurn(2*m, 3*m, 40, "h"), promptTurn(4*m, 5*m, 40, "h")},
+			[]heartbeat{{t: at(3*m + 30*time.Second), ai: true}}, []time.Duration{4 * m}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var got []time.Duration
-			for _, s := range loopSpans(tt.turns) {
+			for _, s := range loopSpans(tt.turns, tt.hbs) {
 				got = append(got, s.from.Sub(t0))
 			}
 			if !slices.Equal(got, tt.cut) {
@@ -224,18 +285,30 @@ func TestLoopSpans(t *testing.T) {
 			}
 		})
 	}
+
+	long := []turn{promptTurn(0, m, 40, "h"), promptTurn(2*m, 3*m, 40, "h"), promptTurn(4*m, 3*time.Hour, 40, "h")}
+	if s := loopSpans(long, nil); len(s) != 1 || !s[0].to.Equal(at(4*m+turnRuleReach)) {
+		t.Fatalf("long looping turn cut %v, want up to turnRuleReach after its prompt", s)
+	}
 }
 
 func TestRubberStampSpans(t *testing.T) {
 	m, s := time.Minute, time.Second
+	// stamps builds a first turn and n replies, each sent gap after the
+	// previous turn's turn_end.
 	stamps := func(n int, gap time.Duration, chars int, turnLen time.Duration) []turn {
 		ts := []turn{promptTurn(0, m, 200, "first")}
 		for i := range n {
-			start := ts[len(ts)-1].end.Sub(t0) + gap
-			ts = append(ts, promptTurn(start, start+turnLen, chars, "s"+strings.Repeat("x", i)))
+			prev := ts[len(ts)-1].end
+			start := prev.Sub(t0) + gap
+			tr := promptTurn(start, start+turnLen, chars, "s"+strings.Repeat("x", i))
+			tr.afterTurnEnd, tr.prevTurnEnd = true, prev
+			ts = append(ts, tr)
 		}
 		return ts
 	}
+	interrupted := stamps(4, 5*s, 3, m)
+	interrupted[2].afterTurnEnd = false
 	tests := []struct {
 		name  string
 		turns []turn
@@ -248,8 +321,10 @@ func TestRubberStampSpans(t *testing.T) {
 		{"slow replies are not stamps", stamps(4, 20*s, 3, m), nil, 0},
 		{"long prompts are not stamps", stamps(4, 5*s, 26, m), nil, 0},
 		{"unknown length is not a stamp", stamps(4, 5*s, 0, m), nil, 0},
+		{"no turn_end before is not a stamp", interrupted, nil, 0},
 		{"editing in between breaks it", stamps(3, 10*s, 3, m), []heartbeat{{t: at(m + 3*s)}}, 0},
 		{"AI edits in between don't", stamps(3, 10*s, 3, m), []heartbeat{{t: at(m + 3*s), ai: true}}, 2},
+		{"a streak spread over more than 30 minutes is not one", stamps(3, 5*s, 3, 16*m), nil, 0},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -259,13 +334,20 @@ func TestRubberStampSpans(t *testing.T) {
 		})
 	}
 
-	// The second stamp's turn is cut retroactively only within the finality
-	// horizon before the third stamp.
-	long := stamps(3, 5*s, 3, 45*m)
+	// The second stamp's turn is cut retroactively only within lookaheadClip
+	// before the third stamp, and every cut ends turnRuleReach after its prompt.
+	long := []turn{promptTurn(0, m, 200, "first")}
+	for _, r := range [][2]time.Duration{{m + 5*s, 2 * m}, {2*m + 5*s, 27 * m}, {27*m + 5*s, 28 * m}} {
+		tr := promptTurn(r[0], r[1], 3, "")
+		tr.afterTurnEnd, tr.prevTurnEnd = true, long[len(long)-1].end
+		long = append(long, tr)
+	}
 	spans := rubberStampSpans(long, nil)
-	third := long[3].start
-	if want := third.Add(-finalityHorizon); !spans[0].from.Equal(want) {
-		t.Fatalf("retroactive cut starts at %v, want %v", spans[0].from, want)
+	if want := long[3].start.Add(-lookaheadClip); len(spans) != 2 || !spans[0].from.Equal(want) || !want.After(long[2].start) {
+		t.Fatalf("retroactive cut %v, want from %v", spans, want)
+	}
+	if !spans[1].to.Equal(long[3].end) {
+		t.Fatalf("third stamp cut %v", spans[1])
 	}
 }
 
@@ -384,6 +466,79 @@ func TestComputeEdgeCases(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestPresenceFollowsIdleUnder60s(t *testing.T) {
+	// One input at 10:00:10, then the editor stays focused. Samples every
+	// 5 s see idle < 60 s up to 10:01:09, so 10:00 and 10:01 are present and
+	// the 3-minute grace runs to 10:04.
+	in := Input{Window: Window{From: t0, To: at(10 * time.Minute)}}
+	input := at(10 * time.Second)
+	for x := t0.Add(-5 * time.Minute); x.Before(at(10 * time.Minute)); x = x.Add(5 * time.Second) {
+		idle := 3600.0
+		if !x.Before(input) {
+			idle = x.Sub(input).Seconds()
+		}
+		in.Activity = append(in.Activity, wire.ActivitySample{Time: x, IdleSeconds: idle, FocusKind: "editor"})
+	}
+	in.Heartbeats = []Heartbeat{{Time: input, Project: "app", Entity: "/a.go", IsWrite: true}}
+	var you []int
+	for _, m := range Compute(in).Minutes {
+		if m.Label == LabelYou {
+			you = append(you, int(m.Minute.Sub(t0)/time.Minute))
+		}
+	}
+	if want := []int{0, 1, 2, 3, 4}; !slices.Equal(you, want) {
+		t.Fatalf("you minutes %v, want %v", you, want)
+	}
+}
+
+func TestHorizon(t *testing.T) {
+	sample := func(d time.Duration) wire.ActivitySample {
+		return wire.ActivitySample{Time: at(d), IdleSeconds: 1, FocusKind: "editor"}
+	}
+	tests := []struct {
+		name string
+		in   Input
+		want time.Duration
+	}{
+		{"window end", Input{Window: Window{From: t0, To: at(time.Hour)}}, time.Hour},
+		{"DataEnd", Input{Window: Window{From: t0, To: at(time.Hour)}, DataEnd: at(90 * time.Minute)}, 90 * time.Minute},
+		{"latest sample", Input{Window: Window{From: t0, To: at(time.Hour)}, Activity: []wire.ActivitySample{sample(80 * time.Minute)}}, 80 * time.Minute},
+		{"latest heartbeat", Input{Window: Window{From: t0, To: at(time.Hour)}, Heartbeats: []Heartbeat{{Time: at(70 * time.Minute)}}}, 70 * time.Minute},
+	}
+	for _, tt := range tests {
+		if got := prepare(tt.in).horizon; !got.Equal(at(tt.want)) {
+			t.Errorf("%s: horizon %v, want %v", tt.name, got.Sub(t0), tt.want)
+		}
+	}
+}
+
+func TestHeartbeatMovement(t *testing.T) {
+	line := func(n int) *int { return &n }
+	m := time.Minute
+	tests := []struct {
+		name string
+		hbs  []Heartbeat
+		want []bool
+	}{
+		{"write", []Heartbeat{{Time: at(0), Entity: "a", IsWrite: true}}, []bool{true}},
+		{"line change on the same file", []Heartbeat{{Time: at(0), Entity: "a", Lineno: line(1)}, {Time: at(m), Entity: "a", Lineno: line(2)}}, []bool{false, true}},
+		{"same line", []Heartbeat{{Time: at(0), Entity: "a", Lineno: line(1)}, {Time: at(m), Entity: "a", Lineno: line(1)}}, []bool{false, false}},
+		{"switching files is not movement", []Heartbeat{{Time: at(0), Entity: "a", Lineno: line(1)}, {Time: at(m), Entity: "b", Lineno: line(5)}, {Time: at(2 * m), Entity: "a", Lineno: line(1)}}, []bool{false, false, false}},
+		{"returning to a file at another line", []Heartbeat{{Time: at(0), Entity: "a", Lineno: line(1)}, {Time: at(m), Entity: "b", Lineno: line(5)}, {Time: at(2 * m), Entity: "a", Lineno: line(9)}}, []bool{false, false, true}},
+		{"positions older than 30 minutes are forgotten", []Heartbeat{{Time: at(0), Entity: "a", Lineno: line(1)}, {Time: at(31 * m), Entity: "a", Lineno: line(2)}}, []bool{false, false}},
+		{"AI heartbeats never move", []Heartbeat{{Time: at(0), Entity: "a", Lineno: line(1)}, {Time: at(m), Entity: "a", Lineno: line(2), IsWrite: true, AI: true}}, []bool{false, false}},
+	}
+	for _, tt := range tests {
+		var got []bool
+		for _, h := range prepareHeartbeats(tt.hbs, newRepoIndex(nil)) {
+			got = append(got, h.moved)
+		}
+		if !slices.Equal(got, tt.want) {
+			t.Errorf("%s: moved %v, want %v", tt.name, got, tt.want)
+		}
+	}
 }
 
 func TestOverlapFraction(t *testing.T) {

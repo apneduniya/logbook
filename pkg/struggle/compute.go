@@ -16,41 +16,45 @@ func Compute(in Input) Result {
 	if !p.to.After(p.from) {
 		return res
 	}
-	tl := newTimeline(p)
 	turns := buildTurns(p.ai, p.horizon)
-	tl.markBusy(turns)
+	markAutomated(turns, p.samples, p.instants)
+	tl := newTimeline(p, turns)
 
 	rows := make([][]Minute, tl.n) // per minute, sorted by project
 	for i := tl.first; i < tl.last; i++ {
 		rows[i] = tl.label(i, p.events)
 	}
 
-	cut := func(spans []span, code string) {
+	minutes := func(spans []span) []bool {
 		set := make([]bool, tl.n)
 		for _, s := range spans {
 			tl.mark(set, s.from, s.to)
 		}
+		return set
+	}
+	// Turn cuts take the time spent on the cut turn. A minute with a human
+	// heartbeat was spent editing, whatever the agent did, so it keeps its
+	// credit.
+	cut := func(spans []span, code string) {
+		set := minutes(spans)
 		for i := tl.first; i < tl.last; i++ {
-			if set[i] {
+			if set[i] && !tl.humanHB[i] {
 				cutYou(rows[i], code)
 			}
 		}
 	}
-	cut(loopSpans(turns), CutLoop)
+	cut(loopSpans(turns, p.heartbeats), CutLoop)
 	cut(rubberStampSpans(turns, p.heartbeats), CutRubberStamp)
 
 	flagSpans := func(spans []span, code string) {
-		set := make([]bool, tl.n)
-		for _, s := range spans {
-			tl.mark(set, s.from, s.to)
-		}
+		set := minutes(spans)
 		for i := tl.first; i < tl.last; i++ {
 			if set[i] {
 				flagAll(rows[i], code)
 			}
 		}
 	}
-	flagSpans(automatedSpans(turns, p.samples, p.instants), FlagAutomatedSession)
+	flagSpans(automatedSpans(turns), FlagAutomatedSession)
 	flagSpans(scriptedSpans(p.heartbeats, p.samples), FlagScriptedInput)
 
 	for i := tl.first; i < tl.last; i++ {
@@ -75,31 +79,44 @@ func Compute(in Input) Result {
 func (tl *timeline) label(i int, events []projectEvent) []Minute {
 	start := tl.minute(i)
 	end := tl.minute(i + 1)
-	tl.focusOK[i] = tl.focusAllowed(i)
-	tl.engaged[i] = tl.recentlyPresent(i) && tl.focusOK[i]
 	recent := func() string { return lastProject(events, start.Add(-projectLookback), end) }
 	row := func(project string, label Label, credited int, cuts ...string) Minute {
 		return Minute{Minute: start, Project: project, Label: label, Credited: credited,
 			Cuts: append([]string{}, cuts...), Flags: []string{}}
 	}
 
-	switch {
-	case tl.engaged[i]:
-		if len(tl.projects[i]) == 0 {
-			// No event in the minute: the latest project of the last 5
-			// minutes, else of the active session (e.g. reading docs).
-			project := recent()
-			if project == "" {
-				project = lastProject(events, start.Add(-activeSessionWindow), end)
+	if tl.recentlyPresent(i) && tl.focusAllowed(i) {
+		// Split the minute by the person's own signals; only without any,
+		// by every event (an agent's or editor's) that names a project.
+		counts := tl.humanProjects[i]
+		if len(counts) == 0 {
+			counts = tl.allProjects[i]
+		}
+		if len(counts) > 0 {
+			var out []Minute
+			for _, s := range splitSeconds(60, counts) {
+				out = append(out, row(s.project, LabelYou, s.count))
 			}
+			return out
+		}
+		// No event in the minute: the latest project of the last 5
+		// minutes, else of the last 15 (e.g. reading docs), else of the
+		// person's next signal within 5 minutes (e.g. composing the first
+		// prompt of a session).
+		project := recent()
+		if project == "" {
+			project = lastProject(events, start.Add(-activeSessionWindow), end)
+		}
+		if project == "" {
+			project = firstProject(tl.humanEvents, end, end.Add(projectLookback))
+		}
+		// Input with no project and no active session is not evidence of
+		// any work: it falls through to idle.
+		if project != "" || tl.activeSession(i) {
 			return []Minute{row(project, LabelYou, 60)}
 		}
-		var out []Minute
-		for _, s := range splitSeconds(60, tl.projects[i]) {
-			out = append(out, row(s.project, LabelYou, s.count))
-		}
-		return out
-	case tl.busy[i]:
+	}
+	if tl.busy[i] {
 		project := tl.busyProj[i]
 		if project == "" {
 			project = recent()
@@ -176,11 +193,15 @@ func appendOnce(list []string, code string) []string {
 // flagOTelMismatch compares, per Claude Code session with active-time data,
 // the seconds credited while the person was in the harness (minutes where
 // the session had an event or a turn, focus on a terminal, AI app or
-// unknown) with the session's own user active time over the window. When the
-// user time is under otelMaxRatio of the credited time and short by more
-// than otelMinGap, those minutes are flagged.
+// unknown) with the session's own active time over the window: user plus
+// cli. Claude Code counts "user" for keyboard interactions and "cli" for
+// tool execution and AI responses, so a person watching the agent work is
+// covered by cli time; user time alone would flag them. When the active time
+// is under otelMaxRatio of the credited time and short by more than
+// otelMinGap, those minutes are flagged: the hooks claim far more harness
+// time than Claude Code measured.
 func flagOTelMismatch(tl *timeline, rows [][]Minute, turns []turn, p prepared) {
-	userSecs := map[string]float64{}
+	activeSecs := map[string]float64{}
 	var sessions []string
 	for _, at := range p.activeTime { // sorted, so float sums are stable
 		h := string(at.Harness)
@@ -188,10 +209,11 @@ func flagOTelMismatch(tl *timeline, rows [][]Minute, turns []turn, p prepared) {
 			h = "claude-code"
 		}
 		key := h + "/" + at.SessionID
-		if _, ok := userSecs[key]; !ok {
+		if _, ok := activeSecs[key]; !ok {
 			sessions = append(sessions, key)
 		}
-		userSecs[key] += at.UserSecs * overlapFraction(at.From, at.To, p.from, p.to)
+		secs := max(at.UserSecs, 0) + max(at.CLISecs, 0)
+		activeSecs[key] += secs * overlapFraction(at.From, at.To, p.from, p.to)
 	}
 	for _, s := range sessions {
 		in := make([]bool, tl.n)
@@ -216,7 +238,7 @@ func flagOTelMismatch(tl *timeline, rows [][]Minute, turns []turn, p prepared) {
 				}
 			}
 		}
-		c, u := float64(credited), userSecs[s]
+		c, u := float64(credited), activeSecs[s]
 		if u >= otelMaxRatio*c || c-u <= otelMinGap.Seconds() {
 			continue
 		}

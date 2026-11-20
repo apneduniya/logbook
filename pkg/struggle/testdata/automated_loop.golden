@@ -1,14 +1,14 @@
 rules v1
-rows 55: you=5 agent=15 idle=35; credited 300s (5.0 min)
-cuts: agent_alone=15 idle=35
+rows 55: you=6 agent=15 idle=34; credited 360s (6.0 min)
+cuts: agent_alone=15 idle=34
 flags: automated_session=15
 
-2026-11-20T10:00Z  you   60  ""       cuts=- flags=-
+2026-11-20T10:00Z  you   60  app      cuts=- flags=-
 2026-11-20T10:01Z  you   60  app      cuts=- flags=-
 2026-11-20T10:02Z  you   60  app      cuts=- flags=-
 2026-11-20T10:03Z  you   60  app      cuts=- flags=-
 2026-11-20T10:04Z  you   60  app      cuts=- flags=-
-2026-11-20T10:05Z  idle   0  app      cuts=idle flags=-
+2026-11-20T10:05Z  you   60  app      cuts=- flags=-
 2026-11-20T10:06Z  idle   0  app      cuts=idle flags=-
 2026-11-20T10:07Z  idle   0  app      cuts=idle flags=-
 2026-11-20T10:08Z  idle   0  app      cuts=idle flags=-

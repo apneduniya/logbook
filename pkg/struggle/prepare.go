@@ -25,8 +25,9 @@ type sample struct {
 type heartbeat struct {
 	t       time.Time
 	project string
-	// moved: a write, a cursor or line change, or a switch to another file,
-	// by the person (AI-attributed heartbeats never move).
+	// moved: a write, or a line or cursor change since the person's last
+	// heartbeat on the same file within positionMemory (AI-attributed
+	// heartbeats never move).
 	moved bool
 	ai    bool
 }
@@ -39,6 +40,9 @@ type aiEvent struct {
 	project string
 	chars   int
 	hash    string
+	// decided: a permission_ask carrying the person's answer (OpenCode sends
+	// the reply as a second permission_ask with Decision set).
+	decided bool
 }
 
 // projectEvent is any event that names a project, for attribution.
@@ -50,7 +54,8 @@ type projectEvent struct {
 // prepared holds sorted, de-duplicated, normalised copies of an Input.
 type prepared struct {
 	from, to time.Time // the window, whole minutes, UTC
-	// horizon is the latest point the data speaks for: To, or a later event.
+	// horizon is the latest point the data speaks for: the latest of To,
+	// Input.DataEnd and every event.
 	horizon    time.Time
 	tz         *time.Location
 	samples    []sample
@@ -74,7 +79,6 @@ func prepare(in Input) prepared {
 	if p.tz == nil {
 		p.tz = time.UTC
 	}
-	p.horizon = p.to
 	repos := newRepoIndex(in.Repos)
 
 	p.samples, p.instants = prepareSamples(in.Activity)
@@ -82,8 +86,15 @@ func prepare(in Input) prepared {
 	p.ai = prepareAI(in.AI, repos)
 	p.activeTime = prepareActiveTime(in.ActiveTime)
 
-	if n := len(p.ai); n > 0 && p.ai[n-1].t.After(p.horizon) {
-		p.horizon = p.ai[n-1].t
+	p.horizon = maxTime(p.to, in.DataEnd.UTC())
+	if n := len(p.samples); n > 0 {
+		p.horizon = maxTime(p.horizon, p.samples[n-1].t)
+	}
+	if n := len(p.heartbeats); n > 0 {
+		p.horizon = maxTime(p.horizon, p.heartbeats[n-1].t)
+	}
+	if n := len(p.ai); n > 0 {
+		p.horizon = maxTime(p.horizon, p.ai[n-1].t)
 	}
 	p.events = mergeProjectEvents(p.heartbeats, p.ai)
 	return p
@@ -106,14 +117,11 @@ func mergeProjectEvents(hbs []heartbeat, ais []aiEvent) []projectEvent {
 	}
 	// Both halves are sorted by time; ties need the project order too, so
 	// finish with a sort that is linear on nearly sorted input.
-	byTimeProject := func(a, b projectEvent) int {
-		return cmp.Or(a.t.Compare(b.t), strings.Compare(a.project, b.project))
-	}
 	if mid > 0 && mid < len(out) {
 		merged := make([]projectEvent, 0, len(out))
 		i, j := 0, mid
 		for i < mid && j < len(out) {
-			if byTimeProject(out[i], out[j]) <= 0 {
+			if compareProjectEvents(out[i], out[j]) <= 0 {
 				merged, i = append(merged, out[i]), i+1
 			} else {
 				merged, j = append(merged, out[j]), j+1
@@ -122,7 +130,7 @@ func mergeProjectEvents(hbs []heartbeat, ais []aiEvent) []projectEvent {
 		merged = append(append(merged, out[i:mid]...), out[j:]...)
 		out = merged
 	}
-	sortIfNeeded(out, byTimeProject)
+	sortIfNeeded(out, compareProjectEvents)
 	return out
 }
 
@@ -170,7 +178,10 @@ func prepareHeartbeats(in []Heartbeat, repos repoIndex) []heartbeat {
 	sortIfNeeded(raw, compareHeartbeats)
 	raw = slices.CompactFunc(raw, func(a, b Heartbeat) bool { return compareHeartbeats(a, b) == 0 })
 	out := make([]heartbeat, 0, len(raw))
-	var prev *Heartbeat // previous human (non-AI) heartbeat
+	// The person's last heartbeat on each file, for movement. Entries older
+	// than positionMemory are ignored, so the result never depends on how
+	// much history the caller passed.
+	last := map[string]*Heartbeat{}
 	for i := range raw {
 		r := &raw[i]
 		h := heartbeat{t: r.Time.UTC(), ai: r.AI, project: repos.project(r.Entity)}
@@ -178,9 +189,11 @@ func prepareHeartbeats(in []Heartbeat, repos repoIndex) []heartbeat {
 			h.project = r.Project
 		}
 		if !r.AI {
-			h.moved = r.IsWrite || (prev != nil && (prev.Entity != r.Entity ||
-				intChanged(prev.Lineno, r.Lineno) || intChanged(prev.Cursorpos, r.Cursorpos)))
-			prev = r
+			prev := last[r.Entity]
+			recent := prev != nil && r.Time.Sub(prev.Time) <= positionMemory
+			h.moved = r.IsWrite || (recent &&
+				(intChanged(prev.Lineno, r.Lineno) || intChanged(prev.Cursorpos, r.Cursorpos)))
+			last[r.Entity] = r
 		}
 		out = append(out, h)
 	}
@@ -208,6 +221,7 @@ func prepareAI(in []wire.AIEvent, repos repoIndex) []aiEvent {
 		e := aiEvent{
 			t: r.Time.UTC(), kind: r.Kind, session: string(r.Harness) + "/" + r.SessionID,
 			project: repos.project(r.Cwd), chars: r.PromptChars, hash: r.PromptHash,
+			decided: r.Kind == wire.AIPermissionAsk && r.Decision != "",
 		}
 		if e.project == "" {
 			e.project = r.Project

@@ -1,0 +1,29 @@
+{
+  "description": "A desktop where idle time works but the focused app can't be read (focus unknown or empty): an hour of keyboard and mouse use with no editor or AI activity earns nothing.",
+  "date": "2026-11-20",
+  "window": {
+    "From": "10:00:00",
+    "To": "11:00:00"
+  },
+  "seed": 1,
+  "inputs": [
+    {
+      "from": "09:30:00",
+      "to": "11:01:00",
+      "gap_min": 0.3,
+      "gap_max": 20
+    }
+  ],
+  "samples": [
+    {
+      "from": "09:30:00",
+      "to": "10:30:00",
+      "focus": "unknown"
+    },
+    {
+      "from": "10:30:00",
+      "to": "11:02:00",
+      "focus": ""
+    }
+  ]
+}

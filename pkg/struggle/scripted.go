@@ -9,7 +9,7 @@ import (
 // consecutive intervals, each within [lo, hi], whose standard deviation is
 // below scriptedMaxStdDev seconds. It returns the span of each such run
 // (overlapping runs are returned separately; callers only mark minutes),
-// reaching back at most finalityHorizon from the run's last event so a flag
+// reaching back at most lookaheadClip from the run's last event so a flag
 // never lands on a minute that is already final. ts must be sorted.
 func regularSpans(ts []time.Time, lo, hi time.Duration) []span {
 	if len(ts) <= scriptedRun {
@@ -26,7 +26,7 @@ func regularSpans(ts []time.Time, lo, hi time.Duration) []span {
 			continue
 		}
 		if i-start >= scriptedRun && stdDev(gaps[i-scriptedRun+1:i+1]) < scriptedMaxStdDev {
-			out = append(out, span{maxTime(ts[i-scriptedRun], ts[i].Add(-finalityHorizon)), ts[i]})
+			out = append(out, span{maxTime(ts[i-scriptedRun], ts[i].Add(-lookaheadClip)), ts[i]})
 		}
 	}
 	return out

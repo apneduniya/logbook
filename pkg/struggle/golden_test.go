@@ -69,46 +69,91 @@ func firstDiff(want, got string) string {
 	return ""
 }
 
+// windowRelative lists the flags computed within the window, which the
+// server recomputes over whole days (ADR 0012); final-minute comparisons
+// ignore them.
+var windowRelative = []string{FlagOTelMismatch, FlagLongDay, FlagScriptedInput}
+
+// finalKey renders a minute without its window-relative flags.
+func finalKey(m Minute) string {
+	flags := slices.DeleteFunc(slices.Clone(m.Flags), func(f string) bool { return slices.Contains(windowRelative, f) })
+	return renderResult(Result{Minutes: []Minute{{m.Minute, m.Project, m.Label, m.Credited, m.Cuts, flags}}})
+}
+
+// minutesIn groups a result's rows in [from, to) by minute, as finalKeys.
+func minutesIn(res Result, from, to time.Time) map[time.Time][]string {
+	out := map[time.Time][]string{}
+	for _, m := range res.Minutes {
+		if !m.Minute.Before(from) && m.Minute.Before(to) {
+			out[m.Minute] = append(out[m.Minute], finalKey(m))
+		}
+	}
+	return out
+}
+
 // TestFinalMinutesMatchAgentReplay replays every scenario the way the agent
 // runs the engine (ADR 0010, ADR 0012): every minute, over the last 60
-// minutes, seeing only the events so far plus 30 minutes of history. Once a
-// minute is 30 minutes old (final), its label, project, credit, cuts and
-// window-independent flags must equal a re-run over the whole scenario.
+// minutes, seeing only the events of the last 90 minutes. The agent's last
+// accepted rewrite of a minute happens when it is 25 to 30 minutes old; at
+// that age the minute's label, project, credit, cuts and window-independent
+// flags must equal a re-run over the whole scenario.
 func TestFinalMinutesMatchAgentReplay(t *testing.T) {
-	windowRelative := []string{FlagOTelMismatch, FlagLongDay}
-	key := func(m Minute) string {
-		flags := slices.DeleteFunc(slices.Clone(m.Flags), func(f string) bool { return slices.Contains(windowRelative, f) })
-		return renderResult(Result{Minutes: []Minute{{m.Minute, m.Project, m.Label, m.Credited, m.Cuts, flags}}})
-	}
-	byMinute := func(res Result, from, to time.Time) map[time.Time][]string {
-		out := map[time.Time][]string{}
-		for _, m := range res.Minutes {
-			if !m.Minute.Before(from) && m.Minute.Before(to) {
-				out[m.Minute] = append(out[m.Minute], key(m))
-			}
-		}
-		return out
-	}
 	for _, path := range fixturePaths(t) {
 		t.Run(filepath.Base(path), func(t *testing.T) {
 			full := expandFixture(t, loadFixture(t, path))
 			server := Compute(full)
-			for now := full.Window.From.Add(31 * time.Minute); !now.After(full.Window.To); now = now.Add(time.Minute) {
-				agent := sliceInput(full, now.Add(-90*time.Minute), now)
+			fullFinal := full.Window.To.Add(-Lookahead)
+			for now := full.Window.From.Add(Lookahead + time.Minute); !now.After(full.Window.To); now = now.Add(time.Minute) {
+				agent := sliceInput(full, now.Add(-ContextBefore-finalAge), now)
 				agent.Window = Window{From: now.Add(-time.Hour), To: now}
-				from := maxTime(full.Window.From, agent.Window.From)
-				final := now.Add(-finalityHorizon)
-				want := byMinute(server, from, final)
-				got := byMinute(Compute(agent), from, final)
-				for m := from; m.Before(final); m = m.Add(time.Minute) {
-					if !slices.Equal(got[m], want[m]) {
-						t.Fatalf("agent at %s disagrees on final minute %s:\nagent:  %q\nre-run: %q",
-							now.Format("15:04"), m.Format("15:04"), got[m], want[m])
-					}
-				}
+				from := maxTime(full.Window.From, now.Add(-finalAge))
+				to := minTime(now.Add(-Lookahead), fullFinal)
+				compareMinutes(t, "agent at "+now.Format("15:04"), Compute(agent), server, from, to)
 			}
 		})
 	}
+}
+
+// finalAge is ADR 0010's finality age: the agent may rewrite a
+// minute until it is this old.
+const finalAge = 30 * time.Minute
+
+// TestServerSubWindowMatchesFullRun re-runs every scenario the way the
+// server re-runs closed history: windows ending anywhere, with ContextBefore
+// of events before and FinalAge after, and DataEnd set. Every minute of the
+// sub-window that is final in the full run must match it.
+func TestServerSubWindowMatchesFullRun(t *testing.T) {
+	for _, path := range fixturePaths(t) {
+		t.Run(filepath.Base(path), func(t *testing.T) {
+			full := expandFixture(t, loadFixture(t, path))
+			server := Compute(full)
+			fullFinal := full.Window.To.Add(-Lookahead)
+			for to := full.Window.From.Add(time.Minute); !to.After(full.Window.To); to = to.Add(time.Minute) {
+				from := maxTime(full.Window.From, to.Add(-time.Hour))
+				sub := sliceInput(full, from.Add(-ContextBefore), to.Add(finalAge))
+				sub.Window = Window{From: from, To: to}
+				sub.DataEnd = to.Add(finalAge)
+				compareMinutes(t, "server window ending "+to.Format("15:04"), Compute(sub), server, from, minTime(to, fullFinal))
+			}
+		})
+	}
+}
+
+func compareMinutes(t *testing.T, what string, got, want Result, from, to time.Time) {
+	t.Helper()
+	g, w := minutesIn(got, from, to), minutesIn(want, from, to)
+	for m := from; m.Before(to); m = m.Add(time.Minute) {
+		if !slices.Equal(g[m], w[m]) {
+			t.Fatalf("%s disagrees on final minute %s:\ngot:    %q\nre-run: %q", what, m.Format("15:04"), g[m], w[m])
+		}
+	}
+}
+
+func minTime(a, b time.Time) time.Time {
+	if a.Before(b) {
+		return a
+	}
+	return b
 }
 
 // sliceInput keeps the events in [from, to), as the agent's local database

@@ -1,6 +1,6 @@
 rules v1
-rows 40: you=38 agent=0 idle=2; credited 2280s (38.0 min)
-cuts: idle=2
+rows 40: you=39 agent=0 idle=1; credited 2340s (39.0 min)
+cuts: idle=1
 flags: -
 
 2026-11-20T10:00Z  you   60  app      cuts=- flags=-
@@ -26,7 +26,7 @@ flags: -
 2026-11-20T10:20Z  you   60  app      cuts=- flags=-
 2026-11-20T10:21Z  you   60  app      cuts=- flags=-
 2026-11-20T10:22Z  you   60  app      cuts=- flags=-
-2026-11-20T10:23Z  idle   0  app      cuts=idle flags=-
+2026-11-20T10:23Z  you   60  app      cuts=- flags=-
 2026-11-20T10:24Z  idle   0  app      cuts=idle flags=-
 2026-11-20T10:30Z  you   60  app      cuts=- flags=-
 2026-11-20T10:31Z  you   60  app      cuts=- flags=-
