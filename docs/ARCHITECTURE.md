@@ -40,6 +40,7 @@ laptop                                     server (Go + Postgres)
 | `internal/server/httpapi` | HTTP handlers and middleware; thin, calls services |
 | `internal/server/jobs` | River workers |
 | `internal/agent/...` | Agent: proxy, sensors, harness plugins, git, local store, uploader, tray |
+| `internal/e2e` | Tests only: the agent's crediting pipeline against the real minutes endpoint and Postgres (the one place importing both sides) |
 | `web/` | SvelteKit UI |
 | `migrations/` | goose SQL migrations |
 

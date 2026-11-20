@@ -338,7 +338,7 @@ func TestUploadFinalMinuteTakesNoNewProject(t *testing.T) {
 	e := newEnv(t)
 	u := seedtest.User(t, e.st, "alice", "UTC", true)
 	d := seedtest.Device(t, e.st, u, "laptop")
-	if code, res := e.upload(u, d, item{Minute: at(11, 40), Project: "a", Label: "idle"}); code != 200 || res.Accepted != 1 {
+	if code, res := e.upload(u, d, item{Minute: at(11, 40), Project: "a", Label: "idle", Cuts: []string{"idle"}}); code != 200 || res.Accepted != 1 {
 		t.Fatalf("seed upload: %d %+v", code, res)
 	}
 	e.clock.Advance(5 * time.Hour)
@@ -382,7 +382,7 @@ func TestUploadCapsProjectsPerMinute(t *testing.T) {
 	d := seedtest.Device(t, e.st, u, "laptop")
 	items := make([]item, 0, credited.MaxProjectsPerMinute+2)
 	for i := range credited.MaxProjectsPerMinute + 2 {
-		items = append(items, item{Minute: at(11, 50), Project: fmt.Sprintf("p%d", i), Label: "idle"})
+		items = append(items, item{Minute: at(11, 50), Project: fmt.Sprintf("p%d", i), Label: "idle", Cuts: []string{"idle"}})
 	}
 	code, res := e.upload(u, d, items...)
 	if code != http.StatusOK || res.Accepted != credited.MaxProjectsPerMinute || fmt.Sprint(rejectedIndexes(res)) != "[8 9]" {
@@ -405,6 +405,90 @@ func TestUploadNormalizesProjects(t *testing.T) {
 	if got := fmt.Sprint(e.rows(d)); got != "[11:50 logbook you 30 11:51  you 30]" {
 		t.Fatalf("rows = %q", got)
 	}
+}
+
+// A removal (an idle item with no credit, cuts or flags) deletes its row
+// from an open minute and frees the project slot for a replacement in the
+// same batch, whatever the order of the batch.
+func TestUploadReplacesProjectInOpenMinute(t *testing.T) {
+	e := newEnv(t)
+	u := seedtest.User(t, e.st, "alice", "UTC", true)
+	d := seedtest.Device(t, e.st, u, "laptop")
+	var items []item
+	for _, p := range []string{"a", "b", "c", "d", "e", "f", "g", "h"} {
+		items = append(items, you(at(11, 55), p, 7))
+	}
+	items[0].Credited = 11 // 60 s in all
+	if code, res := e.upload(u, d, items...); code != 200 || res.Accepted != 8 {
+		t.Fatalf("seed upload: %d %+v", code, res)
+	}
+	// i replaces h; the replacement is listed before the removal.
+	code, res := e.upload(u, d, you(at(11, 55), "i", 7), removal(at(11, 55), "h"))
+	if code != http.StatusOK || res.Accepted != 2 || len(res.Rejected) != 0 {
+		t.Fatalf("status %d, %+v", code, res)
+	}
+	want := "[11:55 a you 11 11:55 b you 7 11:55 c you 7 11:55 d you 7 11:55 e you 7 11:55 f you 7 11:55 g you 7 11:55 i you 7]"
+	if got := fmt.Sprint(e.rows(d)); got != want {
+		t.Fatalf("rows = %s", got)
+	}
+	// A retried removal is accepted and changes nothing.
+	if code, res := e.upload(u, d, removal(at(11, 55), "h")); code != 200 || res.Accepted != 1 {
+		t.Fatalf("retry: %d %+v", code, res)
+	}
+	if got := fmt.Sprint(e.rows(d)); got != want {
+		t.Fatalf("rows after retry = %s", got)
+	}
+}
+
+// A client can't use removals or zero-credit rows to store more than 8
+// rows or 60 seconds for a device-minute, nor to change a final minute.
+func TestUploadRemovalsKeepBounds(t *testing.T) {
+	e := newEnv(t)
+	u := seedtest.User(t, e.st, "alice", "UTC", true)
+	d := seedtest.Device(t, e.st, u, "laptop")
+	m := at(11, 50)
+	// Zero-credit rows that aren't removals still take slots.
+	var items []item
+	for i := range credited.MaxProjectsPerMinute + 1 {
+		items = append(items, item{Minute: m, Project: fmt.Sprintf("z%d", i), Label: "agent", Cuts: []string{"agent_alone"}})
+	}
+	if code, res := e.upload(u, d, items...); code != 200 || fmt.Sprint(rejectedIndexes(res)) != "[8]" {
+		t.Fatalf("zero rows: %d %+v", code, res)
+	}
+	// Removals of rows that aren't stored free nothing.
+	code, res := e.upload(u, d, removal(m, "x1"), removal(m, "x2"), you(m, "new", 10))
+	if code != 200 || fmt.Sprint(rejectedIndexes(res)) != "[2]" || !strings.Contains(res.Rejected[0].Error, "8 projects") {
+		t.Fatalf("removals of nothing: %d %+v", code, res)
+	}
+	// Churn: remove one row and add two, many times over. Never more than
+	// 8 rows or 60 seconds.
+	for i := range 20 {
+		code, res = e.upload(u, d, removal(m, fmt.Sprintf("z%d", i%8)),
+			you(m, fmt.Sprintf("n%d", i), 10), you(m, fmt.Sprintf("o%d", i), 10))
+		if code != 200 {
+			t.Fatalf("churn %d: %d %+v", i, code, res)
+		}
+		if n := countRows(t, e.st, `SELECT count(*) FROM credited_minutes WHERE device_id = $1 AND minute = $2`, d, m); n > credited.MaxProjectsPerMinute {
+			t.Fatalf("churn %d: %d rows stored", i, n)
+		}
+		if n := countRows(t, e.st, `SELECT coalesce(sum(credited), 0)::int FROM credited_minutes WHERE device_id = $1 AND minute = $2`, d, m); n > 60 {
+			t.Fatalf("churn %d: %d s stored", i, n)
+		}
+	}
+	// A final minute can't lose a row.
+	before := e.rows(d)
+	e.clock.Advance(30 * time.Minute)
+	code, res = e.upload(u, d, removal(m, strings.Fields(before[0])[1]))
+	if code != 200 || len(res.Rejected) != 1 || !strings.Contains(res.Rejected[0].Error, "final") {
+		t.Fatalf("removal in a final minute: %d %+v", code, res)
+	}
+	if got := e.rows(d); fmt.Sprint(got) != fmt.Sprint(before) {
+		t.Fatalf("final minute changed: %s, was %s", got, before)
+	}
+}
+
+func removal(minute, project string) item {
+	return item{Minute: minute, Project: project, Label: "idle"}
 }
 
 func countRows(t *testing.T, st *store.Store, query string, args ...any) int {

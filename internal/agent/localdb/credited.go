@@ -28,8 +28,8 @@ type MinuteUpdate struct {
 	OpenFrom time.Time
 	Minutes  []CreditedMinute
 	// Superseded returns the row that replaces an open minute's row the new
-	// result no longer contains, once the server has seen it. Rows the
-	// server never saw are simply deleted.
+	// result no longer contains, once the server has seen it (a removal,
+	// for the server). Rows the server never saw are simply deleted.
 	Superseded func(old CreditedMinute) CreditedMinute
 }
 

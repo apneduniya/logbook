@@ -33,11 +33,17 @@
 //   - one device stores at most MaxProjectsPerMinute projects per minute,
 //     which bounds rows per device-minute whatever their credit. The engine
 //     (pkg/struggle) never emits more, so this only stops other clients;
+//   - an item labelled idle with no credit, cuts or flags is a removal
+//     (IsRemoval): it deletes the stored row instead of storing one, under
+//     the same finality rules, and removing a row that isn't stored is a
+//     no-op. The agent sends one for a project that left an open minute's
+//     top 8, in the same batch as its replacement;
 //   - across all projects of one minute of one device, credited seconds
-//     never exceed 60. Items that lower a minute's credit are applied first,
-//     then the rest in request order, so moving a minute from one project
-//     to another works in one batch; an item that would push the minute
-//     over 60 is rejected and later items are still tried;
+//     never exceed 60. Removals are applied first, then items that lower a
+//     minute's credit, then the rest in request order, so replacing a
+//     project or moving a minute from one project to another works in one
+//     batch; an item that would push the minute over 60 or past 8 projects
+//     is rejected and later items are still tried;
 //   - the same (minute, project) twice in one batch: the later one is
 //     rejected.
 //
@@ -47,5 +53,5 @@
 // NO KEY UPDATE), so concurrent batches for a device are serialised and the
 // 60-second rule is checked against committed data; a concurrent revoke
 // waits for the upload to finish. Accepted rows are written in one
-// statement.
+// statement, after the batch's removals.
 package credited

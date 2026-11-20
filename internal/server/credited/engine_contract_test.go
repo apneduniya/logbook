@@ -46,7 +46,7 @@ func uploadEngineOutput(t *testing.T, res struggle.Result) (stored int) {
 	if len(rejected) != 0 {
 		t.Fatalf("Parse rejected engine output: %+v", rejected)
 	}
-	write, rejected := Plan(valid, nil, bounds())
+	write, _, rejected := Plan(valid, nil, bounds())
 	if len(rejected) != 0 {
 		t.Fatalf("Plan rejected engine output: %+v", rejected)
 	}

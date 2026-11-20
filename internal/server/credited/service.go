@@ -83,7 +83,7 @@ func (s *Service) Upload(ctx context.Context, userID, deviceID uuid.UUID, b Batc
 	now := s.now().UTC()
 	valid, rejected := Parse(b.Minutes, now)
 
-	var write []Item
+	var write, remove []Item
 	err := s.st.InTx(ctx, func(q *db.Queries) error {
 		dev, err := q.DeviceLockForUpload(ctx, db.DeviceLockForUploadParams{ID: deviceID, UserID: userID})
 		if store.IsNotFound(err) {
@@ -118,8 +118,12 @@ func (s *Service) Upload(ctx context.Context, userID, deviceID uuid.UUID, b Batc
 			bounds.Sealed = append(bounds.Sealed, d.Time)
 		}
 		var more []Rejection
-		write, more = Plan(valid, toStored(stored), bounds)
+		write, remove, more = Plan(valid, toStored(stored), bounds)
 		rejected = append(rejected, more...)
+		// Removals first: they free the slots their replacements take.
+		if err := deleteRows(ctx, q, deviceID, remove); err != nil {
+			return err
+		}
 		if err := upsert(ctx, q, userID, deviceID, b.RulesVersion, now, write); err != nil {
 			return err
 		}
@@ -131,9 +135,12 @@ func (s *Service) Upload(ctx context.Context, userID, deviceID uuid.UUID, b Batc
 	if err != nil {
 		return Result{}, err
 	}
-	if len(write) > 0 && s.pub != nil {
-		// write is sorted by minute.
-		s.pub.MinutesChanged(userID, write[0].Minute, write[len(write)-1].Minute.Add(time.Minute))
+	if changed := slices.Concat(write, remove); len(changed) > 0 && s.pub != nil {
+		from, to := changed[0].Minute, changed[0].Minute
+		for _, it := range changed {
+			from, to = minTime(from, it.Minute), maxTime(to, it.Minute)
+		}
+		s.pub.MinutesChanged(userID, from, to.Add(time.Minute))
 	}
 	slices.SortFunc(rejected, func(a, b Rejection) int { return a.Index - b.Index })
 	if rejected == nil {
@@ -177,6 +184,44 @@ type upsertRow struct {
 	Credited int       `json:"credited"`
 	Cuts     []string  `json:"cuts"`
 	Flags    []string  `json:"flags"`
+}
+
+// deleteRow is one element of the JSON array CreditedMinutesDelete reads.
+type deleteRow struct {
+	Minute  time.Time `json:"minute"`
+	Project string    `json:"project"`
+}
+
+func deleteRows(ctx context.Context, q *db.Queries, deviceID uuid.UUID, items []Item) error {
+	if len(items) == 0 {
+		return nil
+	}
+	rows := make([]deleteRow, len(items))
+	for i, it := range items {
+		rows[i] = deleteRow{Minute: it.Minute, Project: it.Project}
+	}
+	payload, err := json.Marshal(rows)
+	if err != nil {
+		return fmt.Errorf("encoding removed minutes: %w", err)
+	}
+	if err := q.CreditedMinutesDelete(ctx, db.CreditedMinutesDeleteParams{DeviceID: deviceID, Rows: payload}); err != nil {
+		return fmt.Errorf("removing minutes: %w", err)
+	}
+	return nil
+}
+
+func minTime(a, b time.Time) time.Time {
+	if b.Before(a) {
+		return b
+	}
+	return a
+}
+
+func maxTime(a, b time.Time) time.Time {
+	if b.After(a) {
+		return b
+	}
+	return a
 }
 
 func upsert(ctx context.Context, q *db.Queries, userID, deviceID uuid.UUID, rulesVersion string, now time.Time, items []Item) error {

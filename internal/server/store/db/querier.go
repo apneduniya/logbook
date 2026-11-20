@@ -30,6 +30,10 @@ type Querier interface {
 	CountActiveAPIKeys(ctx context.Context, userID uuid.UUID) (int64, error)
 	CreateAPIKey(ctx context.Context, arg CreateAPIKeyParams) (ApiKey, error)
 	CreateSession(ctx context.Context, arg CreateSessionParams) error
+	// Deletes the device's rows for a checked list of (minute, project) pairs:
+	// projects an agent removed from a still-open minute. rows is a JSON array
+	// of objects with minute (RFC 3339) and project.
+	CreditedMinutesDelete(ctx context.Context, arg CreditedMinutesDeleteParams) error
 	// The device's stored rows for the given minutes, for the rewrite-window,
 	// project-count and 60-second checks.
 	CreditedMinutesForDevice(ctx context.Context, arg CreditedMinutesForDeviceParams) ([]CreditedMinutesForDeviceRow, error)

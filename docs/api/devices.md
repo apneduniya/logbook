@@ -75,9 +75,11 @@ Each item is then accepted or rejected on its own. `200`:
 | `minute` is not in a UTC day for which this device has stored an evidence record. A sealed day takes no new minutes. | `minute is in a UTC day this device has already sealed ...` |
 | A minute is final once it is 30 minutes old by the server clock. A stored `(minute, project)` can only change while the minute is open. A final minute takes no new projects either, once the device has stored any row for it. Re-sending exactly the stored values is always accepted. A minute that was never sent can be sent at any time, so an agent that was offline can catch up. If its catch-up splits one minute across batches, more projects of that minute are accepted for 5 minutes after its first upload, but only if all of its rows were first uploaded after it was final. | `minute is final: ...` |
 | One minute has at most 8 projects on one device, whatever their credit. | `a minute can have at most 8 projects per device` |
-| Across all projects of one minute on this device, `credited` adds up to at most 60. Items that lower a minute's credit are applied first, then the rest in request order, so moving a minute between projects works in one request. | `credited seconds for this minute would exceed 60 across projects` |
+| Across all projects of one minute on this device, `credited` adds up to at most 60. Removals are applied first, then items that lower a minute's credit, then the rest in request order, so replacing a project or moving a minute between projects works in one request. | `credited seconds for this minute would exceed 60 across projects` |
 
-- Writes are idempotent upserts keyed by `(device, minute, project)`.
+**Removals.** An item labelled `idle` with `credited` 0 and empty `cuts` and `flags` is a removal: it deletes the stored `(minute, project)` row instead of storing one, freeing that project's slot and credit. The engine never emits a row of that shape (its idle rows always carry a cut), and a missing row already means idle. A removal follows the rules above (a final minute can't lose a row; re-sending a removal is always accepted), and a removal of a row that isn't stored is accepted and changes nothing. When the engine's top 8 projects of an open minute change, the agent sends the displaced project's removal and its replacement in one request, removal first.
+
+- Writes are idempotent upserts keyed by `(device, minute, project)`; removals are idempotent deletes.
 - Uploads for one device are serialised, so two concurrent batches can't break the 60-second rule.
 - Accepted changes send a `minutes` event on `/api/v1/me/live`.
 

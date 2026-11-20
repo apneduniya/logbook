@@ -166,35 +166,41 @@ func (f *fakeServer) handleMinutes(w http.ResponseWriter, r *http.Request, id st
 	}
 	var rejected []rej
 	accepted := 0
-	// Like the server, apply decreases before increases (then by index),
-	// so credit can move between projects of a minute in one request.
+	// Like the server, apply removals, then decreases, then the rest (then
+	// by index), so a project can replace another and credit can move
+	// between projects of a minute in one request.
 	key := func(m serverMinute) string { return id + "|" + m.Minute.Format(time.RFC3339) + "|" + m.Project }
-	raises := func(i int) bool { return req.Minutes[i].Credited >= f.minutes[key(req.Minutes[i])].Credited }
+	rank := func(i int) int {
+		m := req.Minutes[i]
+		switch {
+		case isRemoval(m):
+			return 0
+		case m.Credited < f.minutes[key(m)].Credited:
+			return 1
+		}
+		return 2
+	}
 	order := make([]int, len(req.Minutes))
 	for i := range order {
 		order[i] = i
 	}
-	slices.SortStableFunc(order, func(a, b int) int {
-		switch {
-		case raises(a) == raises(b):
-			return 0
-		case raises(a):
-			return 1
-		}
-		return -1
-	})
+	slices.SortStableFunc(order, func(a, b int) int { return rank(a) - rank(b) })
 	for _, i := range order {
 		m := req.Minutes[i]
 		k := key(m)
 		old, exists := f.minutes[k]
-		sum := m.Credited
+		sum, projects := m.Credited, 1
 		for k2, o := range f.minutes {
 			if strings.HasPrefix(k2, id+"|"+m.Minute.Format(time.RFC3339)+"|") && o.Project != m.Project {
 				sum += o.Credited
+				projects++
 			}
 		}
 		_, sealed := f.days[id][m.Minute.UTC().Format(time.DateOnly)]
+		final := f.now().Sub(m.Minute) >= 30*time.Minute
 		switch {
+		case isRemoval(m) && !exists:
+			accepted++ // nothing to remove
 		case sealed:
 			// Like the server: an evidence record seals its day.
 			rejected = append(rejected, rej{i, errSealedText})
@@ -204,8 +210,15 @@ func (f *fakeServer) handleMinutes(w http.ResponseWriter, r *http.Request, id st
 			rejected = append(rejected, rej{i, "cuts and flags must be arrays"})
 		case m.Minute.After(f.now().Add(2 * time.Minute)):
 			rejected = append(rejected, rej{i, "in the future"})
-		case exists && f.now().Sub(m.Minute) >= 30*time.Minute && !equalMinute(old, m):
+		case exists && final && equalMinute(old, m):
+			accepted++ // an exact repeat
+		case exists && final:
 			rejected = append(rejected, rej{i, "minute is final"})
+		case isRemoval(m):
+			delete(f.minutes, k)
+			accepted++
+		case !exists && projects > 8:
+			rejected = append(rejected, rej{i, "a minute can have at most 8 projects per device"})
 		case sum > 60:
 			rejected = append(rejected, rej{i, "more than 60 seconds in a minute"})
 		default:
@@ -219,6 +232,12 @@ func (f *fakeServer) handleMinutes(w http.ResponseWriter, r *http.Request, id st
 // errSealedText is the server's rejection of a minute in a day the device
 // has sealed (internal/server/credited).
 const errSealedText = "minute is in a UTC day this device has already sealed with an evidence record"
+
+// isRemoval reports whether m removes its row: idle, no credit, cuts or
+// flags (internal/server/credited.IsRemoval).
+func isRemoval(m serverMinute) bool {
+	return m.Label == "idle" && m.Credited == 0 && len(m.Cuts) == 0 && len(m.Flags) == 0
+}
 
 func equalMinute(a, b serverMinute) bool {
 	return a.Label == b.Label && a.Credited == b.Credited && slices.Equal(a.Cuts, b.Cuts) && slices.Equal(a.Flags, b.Flags)

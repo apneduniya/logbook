@@ -113,7 +113,11 @@ func minuteRows(s span, res struggle.Result) []localdb.CreditedMinute {
 }
 
 // superseded is the row that replaces an open minute's project the engine no
-// longer reports, once the server has seen it: no credit, labelled idle.
+// longer reports, once the server has seen it: labelled idle, with no
+// credit, cuts or flags. The server reads that shape as a removal and
+// deletes its row (credited.IsRemoval, ADR 0014), which frees the project's
+// slot for the one that displaced it; both go in one batch, since a minute's
+// rows are never split, and the removal sorts first (no credit).
 func superseded(old localdb.CreditedMinute) localdb.CreditedMinute {
 	return newRow(old.Minute, old.Project, string(struggle.LabelIdle), 0, nil, nil, struggle.RulesVersion)
 }

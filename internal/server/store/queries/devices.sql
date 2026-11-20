@@ -78,6 +78,16 @@ WHERE (credited_minutes.label, credited_minutes.credited, credited_minutes.cuts,
       IS DISTINCT FROM
       (EXCLUDED.label, EXCLUDED.credited, EXCLUDED.cuts, EXCLUDED.flags, EXCLUDED.rules_version);
 
+-- name: CreditedMinutesDelete :exec
+-- Deletes the device's rows for a checked list of (minute, project) pairs:
+-- projects an agent removed from a still-open minute. rows is a JSON array
+-- of objects with minute (RFC 3339) and project.
+DELETE FROM credited_minutes c
+USING jsonb_to_recordset(sqlc.arg(rows)::jsonb) AS r(minute timestamptz, project text)
+WHERE c.device_id = sqlc.arg(device_id)::uuid
+  AND c.minute = r.minute
+  AND c.project = r.project;
+
 -- name: EvidenceDaysSealed :many
 -- The device's stored evidence days between first and last (inclusive).
 -- Minutes of those days are sealed: no new rows are accepted for them.

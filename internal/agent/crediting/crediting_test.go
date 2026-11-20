@@ -219,17 +219,19 @@ func TestMinutesUploadAndRewriteWindow(t *testing.T) {
 	}
 	e.wantServerMinute(at("11:59"), "app", 30)
 
-	// An open minute moves to another project: the old row is zeroed first,
-	// so the server's 60-second cap holds.
+	// An open minute moves to another project: the old row is sent first,
+	// as a removal, so the server's 60-second cap and project limit hold.
 	e.credit(at("11:58"), "web", 60)
 	e.advance(time.Minute)
 	e.run()
 	b = e.srv.batches()
 	last := b[len(b)-1]
-	if len(last) != 2 || last[0].Project != "app" || last[0].Credited != 0 || last[0].Label != "idle" || last[1].Project != "web" {
+	if len(last) != 2 || !isRemoval(last[0]) || last[0].Project != "app" || last[1].Project != "web" {
 		t.Fatalf("project move batch = %+v", last)
 	}
-	e.wantServerMinute(at("11:58"), "app", 0)
+	if _, ok := e.srv.minute(e.deviceID(), at("11:58"), "app"); ok {
+		t.Fatal("the server kept the removed project")
+	}
 	e.wantServerMinute(at("11:58"), "web", 60)
 
 	// 40 minutes later 11:59 is final: a late change is not recomputed or sent.
