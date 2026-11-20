@@ -4,10 +4,20 @@ import "bytes"
 
 // StripJSONC turns JSONC into plain JSON: it removes // and /* */ comments
 // and trailing commas before ] and }, leaving string contents alone. It also
-// drops a leading UTF-8 byte order mark. Comments are replaced by spaces so
-// byte offsets in error messages stay close to the original. The second
-// result reports whether anything other than whitespace was removed.
+// drops a leading UTF-8 byte order mark. Comments and commas are replaced by
+// spaces, so after the byte order mark every byte keeps its offset. The
+// second result reports whether anything other than whitespace was removed.
 func StripJSONC(b []byte) ([]byte, bool) {
+	return strip(b, true)
+}
+
+// stripComments is StripJSONC without removing trailing commas.
+func stripComments(b []byte) []byte {
+	out, _ := strip(b, false)
+	return out
+}
+
+func strip(b []byte, commas bool) ([]byte, bool) {
 	b = bytes.TrimPrefix(b, []byte("\xef\xbb\xbf"))
 	out := make([]byte, 0, len(b))
 	changed := false
@@ -56,7 +66,7 @@ func StripJSONC(b []byte) ([]byte, bool) {
 				i++
 				out = append(out, ' ', ' ')
 			}
-		case c == ',' && nextSignificant(b, i+1) != 0 && (nextSignificant(b, i+1) == ']' || nextSignificant(b, i+1) == '}'):
+		case commas && c == ',' && nextSignificant(b, i+1) != 0 && (nextSignificant(b, i+1) == ']' || nextSignificant(b, i+1) == '}'):
 			changed = true
 			out = append(out, ' ')
 		default:

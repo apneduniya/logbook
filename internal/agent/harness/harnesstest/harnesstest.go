@@ -171,6 +171,7 @@ func SameJSON(t *testing.T, got, want []byte, jsonc bool) {
 	t.Helper()
 	if jsonc {
 		want, _ = jsonedit.StripJSONC(want)
+		got, _ = jsonedit.StripJSONC(got) // comments are kept on rewrite
 	}
 	if len(bytes.TrimSpace(want)) == 0 {
 		want = []byte("{}") // a blank config file is an empty object

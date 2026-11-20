@@ -22,7 +22,8 @@ type Spec struct {
 	// Layout is the hooks shape.
 	Layout Layout
 	// JSONC allows comments and trailing commas in the existing file.
-	// Comments are not kept when Logbook rewrites it (the backup has them).
+	// When only "hooks" changes, it is edited in place so comments outside
+	// it are kept; otherwise the file is rewritten (the backup has them).
 	JSONC bool
 	// Header lists top-level keys a new file starts with, in order (for
 	// example Cursor's "version": 1). Existing values are never changed.
@@ -93,7 +94,7 @@ func (in *Installer) Install(binPath string) error {
 	if err := backupOnce(dir, in.spec.Harness, path, original, existed); err != nil {
 		return fmt.Errorf("%s: %w", in.spec.Harness, err)
 	}
-	return in.save(path, doc, mode)
+	return in.save(path, original, doc, mode)
 }
 
 // Uninstall removes Logbook's hooks and nothing else. Keys Logbook added to
@@ -101,7 +102,7 @@ func (in *Installer) Install(binPath string) error {
 // when the backup shows the original didn't have them, and a file Logbook
 // created is deleted once nothing else is in it.
 func (in *Installer) Uninstall() error {
-	path, doc, _, existed, mode, err := in.load()
+	path, doc, original, existed, mode, err := in.load()
 	if err != nil || !existed {
 		return err
 	}
@@ -124,7 +125,7 @@ func (in *Installer) Uninstall() error {
 		}
 		return forgetBackup(dir, in.spec.Harness, path)
 	}
-	return in.save(path, doc, mode)
+	return in.save(path, original, doc, mode)
 }
 
 // tidy removes the top-level keys Logbook added. orig holds the original
@@ -217,15 +218,75 @@ func (in *Installer) load() (path string, doc *jsonedit.Object, original []byte,
 	return path, doc, original, existed, mode, nil
 }
 
-func (in *Installer) save(path string, doc *jsonedit.Object, mode fs.FileMode) error {
-	out, err := doc.Indented()
-	if err != nil {
-		return fmt.Errorf("%s: encoding %s: %w", in.spec.Harness, path, err)
+// save writes doc to path. For a JSONC file whose only change is the "hooks"
+// member, it edits that member in the original bytes so the user's comments
+// and layout survive; otherwise it writes doc re-indented.
+func (in *Installer) save(path string, original []byte, doc *jsonedit.Object, mode fs.FileMode) error {
+	out, ok := in.splice(original, doc)
+	if !ok {
+		var err error
+		if out, err = doc.Indented(); err != nil {
+			return fmt.Errorf("%s: encoding %s: %w", in.spec.Harness, path, err)
+		}
 	}
 	if err := WriteAtomic(path, out, mode); err != nil {
 		return fmt.Errorf("%s: %w", in.spec.Harness, err)
 	}
 	return nil
+}
+
+// splice returns original with only its "hooks" member changed to match
+// doc, when that is the only difference and the file has comments worth
+// keeping. The result is checked to parse to doc. ok is false when a full
+// rewrite is needed instead.
+func (in *Installer) splice(original []byte, doc *jsonedit.Object) ([]byte, bool) {
+	if !in.spec.JSONC {
+		return nil, false
+	}
+	plain, commented := jsonedit.StripJSONC(original)
+	if !commented || len(bytes.TrimSpace(plain)) == 0 {
+		return nil, false
+	}
+	before, err := jsonedit.ParseObject(plain)
+	if err != nil || !sameExcept(before, doc, "hooks") {
+		return nil, false
+	}
+	hooks, _ := doc.Get("hooks") // nil when uninstall removed it
+	out, err := jsonedit.SetMember(original, "hooks", hooks)
+	if err != nil {
+		return nil, false
+	}
+	check, _ := jsonedit.StripJSONC(out)
+	got, err := jsonedit.ParseObject(check)
+	if err != nil || !sameExcept(got, doc, "") {
+		return nil, false
+	}
+	return out, true
+}
+
+// sameExcept reports whether a and b have the same members, apart from skip.
+func sameExcept(a, b *jsonedit.Object, skip string) bool {
+	keys := func(o *jsonedit.Object) []string {
+		var out []string
+		for _, k := range o.Keys() {
+			if k != skip {
+				out = append(out, k)
+			}
+		}
+		return out
+	}
+	ka, kb := keys(a), keys(b)
+	if len(ka) != len(kb) {
+		return false
+	}
+	for _, k := range ka {
+		va, _ := a.Get(k)
+		vb, ok := b.Get(k)
+		if !ok || !jsonedit.Equal(va, vb) {
+			return false
+		}
+	}
+	return true
 }
 
 // addHeader puts the Header keys a file is missing at its start.

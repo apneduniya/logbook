@@ -4,6 +4,7 @@
 // layout and unknown keys when Logbook adds or removes its hook entries.
 //
 // It also reads JSONC (comments and trailing commas), which some harnesses
-// accept in their settings files. It doesn't know about hooks or files; see
+// accept in their settings files, and SetMember edits one top-level member
+// of a JSONC file in place so the user's comments survive. It doesn't know about hooks or files; see
 // package hookfile for that.
 package jsonedit
