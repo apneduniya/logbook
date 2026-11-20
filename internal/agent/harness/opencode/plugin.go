@@ -16,22 +16,45 @@ const binPlaceholder = "__LOGBOOK_BIN__"
 // OpenCode V2 (default export with id and setup) and V1 1.18.29+ (the same
 // object's server function). It sends metadata only: session id, the
 // session's directory (V2: from session.created; V1: the plugin's), model id, tool name, prompt length in
-// characters and a permission answer. Prompt text, tool arguments and output
-// never leave the plugin. Each event runs `logbook hook opencode <event>` in
+// characters, the SHA-256 of the normalised prompt (the hook keys it into
+// PromptHash; see aievent.NormalizePrompt) and a permission answer. Prompt
+// text, tool arguments and output never leave the plugin. Each event runs `logbook hook opencode <event>` in
 // the background with the metadata as JSON on stdin; nothing waits for it.
 const pluginSource = `// ` + marker + `
 // Logbook plugin for OpenCode. Written by "logbook install" and removed by
 // "logbook uninstall"; edits are overwritten on the next install.
 // It reports metadata only (session id, project directory, model id, tool
-// name, prompt length, permission answer) to the local Logbook agent. Prompt
-// text, tool arguments and tool output never leave this file.
+// name, prompt length and digest, permission answer) to the local Logbook
+// agent. Prompt text, tool arguments and tool output never leave this file.
 import { spawn } from "node:child_process"
+import { createHash } from "node:crypto"
 
 const BIN = ` + binPlaceholder + `
 const models = new Map()
 
 function chars(text) {
   return typeof text === "string" ? Array.from(text).length : 0
+}
+
+// White space as Go's unicode.IsSpace defines it, so prompts normalise the
+// same way as in the logbook binary (aievent.NormalizePrompt).
+const SPACE = /[\t\n\v\f\r \u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+/
+
+// lower lowercases one code point at a time, like Go's strings.ToLower
+// (no context-dependent final sigma, and U+0130 becomes a plain "i").
+function lower(s) {
+  return Array.from(s, (c) => (c === "\u0130" ? "i" : c.toLowerCase())).join("")
+}
+
+// digest is the hex SHA-256 of the normalised prompt, or "" for no text.
+function digest(text) {
+  if (typeof text !== "string") return ""
+  const norm = lower(text.split(SPACE).filter((w) => w !== "").join(" "))
+  return createHash("sha256").update(norm, "utf8").digest("hex")
+}
+
+function prompt(text) {
+  return { prompt_chars: chars(text), prompt_sha256: digest(text) }
 }
 
 function str(v) {
@@ -86,7 +109,7 @@ async function setup(ctx) {
   }
   await ctx.session.hook("prompt", safe((ev) => {
     const id = str(ev.sessionID)
-    send("prompt", meta(id, own(id), { prompt_chars: chars(ev.prompt && ev.prompt.text) }))
+    send("prompt", meta(id, own(id), prompt(ev.prompt && ev.prompt.text)))
   }))
   await ctx.tool.hook("execute.before", safe((ev) => {
     const id = str(ev.sessionID)
@@ -176,9 +199,16 @@ async function server(input) {
       safe(() => {
         if (inp && inp.model && inp.model.modelID) models.set(str(inp.sessionID), str(inp.model.modelID))
         const parts = (out && Array.isArray(out.parts)) ? out.parts : []
+        const texts = []
         let n = 0
-        for (const part of parts) if (part && part.type === "text" && !part.synthetic) n += chars(part.text)
-        send("prompt", meta(inp && inp.sessionID, dir, { prompt_chars: n }))
+        for (const part of parts) {
+          if (part && part.type === "text" && !part.synthetic && typeof part.text === "string") {
+            texts.push(part.text)
+            n += chars(part.text)
+          }
+        }
+        const p = { prompt_chars: n, prompt_sha256: texts.length > 0 ? digest(texts.join(" ")) : "" }
+        send("prompt", meta(inp && inp.sessionID, dir, p))
       })()
     },
     "tool.execute.before": async (inp) => {

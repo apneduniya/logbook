@@ -26,6 +26,10 @@ type Fields struct {
 	Tool      string
 	// PromptChars is the prompt's length in runes (prompt_submit only).
 	PromptChars int
+	// PromptDigest is the prompt's unkeyed digest (prompt_submit only). The
+	// hook keys it with the device's prompt key (see PromptHash); it is
+	// never recorded as is.
+	PromptDigest PromptDigest
 	// Decision is "allow", "deny" or "".
 	Decision string
 	// Ago is how long before the hook ran the event happened. It is zero

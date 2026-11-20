@@ -89,12 +89,12 @@ func entries(binPath string) []hookfile.Entry {
 // prompt, tool_input, tool_response, last_assistant_message, transcript_path
 // and session_title, is never decoded into a field.
 type payload struct {
-	SessionID     string          `json:"session_id"`
-	Cwd           string          `json:"cwd"`
-	Model         string          `json:"model"`
-	ToolName      string          `json:"tool_name"`
-	Prompt        aievent.TextLen `json:"prompt"`
-	CursorVersion string          `json:"cursor_version"`
+	SessionID     string         `json:"session_id"`
+	Cwd           string         `json:"cwd"`
+	Model         string         `json:"model"`
+	ToolName      string         `json:"tool_name"`
+	Prompt        aievent.Prompt `json:"prompt"`
+	CursorVersion string         `json:"cursor_version"`
 }
 
 // Parse maps a hook payload to AI event fields. It returns nil for events
@@ -117,7 +117,7 @@ func Parse(event string, in aievent.Input, getenv func(string) string) []aievent
 	case wire.AIToolStart, wire.AIToolEnd, wire.AIPermissionAsk:
 		f.Tool = p.ToolName
 	case wire.AIPromptSubmit:
-		f.PromptChars = int(p.Prompt)
+		f.PromptChars, f.PromptDigest = p.Prompt.Len(), p.Prompt.Digest()
 	}
 	return []aievent.Fields{f}
 }

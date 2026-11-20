@@ -86,11 +86,11 @@ func entries(binPath string) []hookfile.Entry {
 // length; initialPrompt, toolArgs, toolResult, message, title and
 // transcriptPath are never decoded. Copilot payloads carry no model name.
 type payload struct {
-	SessionID        string          `json:"sessionId"`
-	Cwd              string          `json:"cwd"`
-	ToolName         string          `json:"toolName"`
-	Prompt           aievent.TextLen `json:"prompt"`
-	NotificationType string          `json:"notification_type"`
+	SessionID        string         `json:"sessionId"`
+	Cwd              string         `json:"cwd"`
+	ToolName         string         `json:"toolName"`
+	Prompt           aievent.Prompt `json:"prompt"`
+	NotificationType string         `json:"notification_type"`
 }
 
 // Parse maps a hook payload to AI event fields, or nil if Logbook doesn't
@@ -112,7 +112,7 @@ func Parse(event string, in aievent.Input, _ func(string) string) []aievent.Fiel
 	case wire.AIToolEnd:
 		f.Tool = p.ToolName
 	case wire.AIPromptSubmit:
-		f.PromptChars = int(p.Prompt)
+		f.PromptChars, f.PromptDigest = p.Prompt.Len(), p.Prompt.Digest()
 	}
 	return []aievent.Fields{f}
 }

@@ -81,14 +81,14 @@ func entries(sh cmdline.Shell, binPath string) []hookfile.Entry {
 // working directory, so the project comes from workspace_roots (or the
 // tool's cwd), never from the hook's own directory.
 type payload struct {
-	ConversationID string          `json:"conversation_id"`
-	SessionID      string          `json:"session_id"`
-	Model          string          `json:"model"`
-	ModelID        string          `json:"model_id"`
-	WorkspaceRoots []string        `json:"workspace_roots"`
-	Cwd            string          `json:"cwd"`
-	ToolName       string          `json:"tool_name"`
-	Prompt         aievent.TextLen `json:"prompt"`
+	ConversationID string         `json:"conversation_id"`
+	SessionID      string         `json:"session_id"`
+	Model          string         `json:"model"`
+	ModelID        string         `json:"model_id"`
+	WorkspaceRoots []string       `json:"workspace_roots"`
+	Cwd            string         `json:"cwd"`
+	ToolName       string         `json:"tool_name"`
+	Prompt         aievent.Prompt `json:"prompt"`
 	// Duration is the tool's run time in milliseconds (postToolUse).
 	Duration float64 `json:"duration"`
 }
@@ -120,7 +120,7 @@ func Parse(event string, in aievent.Input, _ func(string) string) []aievent.Fiel
 	}
 	switch kind {
 	case wire.AIPromptSubmit:
-		f.PromptChars = int(p.Prompt)
+		f.PromptChars, f.PromptDigest = p.Prompt.Len(), p.Prompt.Digest()
 	case wire.AIToolEnd:
 		f.Tool = p.ToolName
 		ago := time.Duration(p.Duration * float64(time.Millisecond))
