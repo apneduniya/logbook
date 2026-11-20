@@ -119,13 +119,25 @@ func humanHeartbeatIn(hbs []heartbeat, a, b time.Time) bool {
 // automatedLookback before it (e.g. /loop, scheduled tasks, SDK runs).
 // Prompts on low-signal stretches (no activity samples near them) are not
 // judged: missing data is not evidence of automation.
-func markAutomated(turns []turn, samples []sample, instants []time.Time) {
+//
+// A prompt is judged only from the samples taken within lowSignalRadius of
+// it. A sample taken much later can still report input from before the
+// prompt (a sensor catching up after a stall), but reading it would let an
+// event far beyond Lookahead change a final minute.
+func markAutomated(turns []turn, samples []sample) {
 	for k := range turns {
 		t := &turns[k]
-		if !t.prompt || !sampleIn(samples, t.start.Add(-lowSignalRadius), t.start.Add(lowSignalRadius)) {
+		if !t.prompt {
 			continue
 		}
-		t.automated = !hasTimeIn(instants, t.start.Add(-automatedLookback), t.start.Add(automatedTolerance))
+		near := samplesIn(samples, t.start.Add(-lowSignalRadius), t.start.Add(lowSignalRadius))
+		if len(near) == 0 {
+			continue
+		}
+		t.automated = !slices.ContainsFunc(near, func(s sample) bool {
+			return s.hasInput && !s.input.Before(t.start.Add(-automatedLookback)) &&
+				s.input.Before(t.start.Add(automatedTolerance))
+		})
 	}
 }
 
@@ -140,10 +152,15 @@ func automatedSpans(turns []turn) []span {
 	return out
 }
 
-// sampleIn reports an activity sample in [a, b].
-func sampleIn(samples []sample, a, b time.Time) bool {
-	i, _ := slices.BinarySearchFunc(samples, a, func(s sample, t time.Time) int { return s.t.Compare(t) })
-	return i < len(samples) && !samples[i].t.After(b)
+// samplesIn returns the activity samples taken in [a, b].
+func samplesIn(samples []sample, a, b time.Time) []sample {
+	cmpTime := func(s sample, t time.Time) int { return s.t.Compare(t) }
+	i, _ := slices.BinarySearchFunc(samples, a, cmpTime)
+	j, found := slices.BinarySearchFunc(samples, b, cmpTime)
+	for found && j < len(samples) && samples[j].t.Equal(b) {
+		j++
+	}
+	return samples[i:max(i, j)]
 }
 
 func maxTime(a, b time.Time) time.Time {

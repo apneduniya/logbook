@@ -61,7 +61,6 @@ type prepared struct {
 	horizon    time.Time
 	tz         *time.Location
 	samples    []sample
-	instants   []time.Time // sorted OS input instants
 	heartbeats []heartbeat
 	ai         []aiEvent
 	// events lists heartbeats and AI events that have a project, by time.
@@ -83,7 +82,7 @@ func prepare(in Input) prepared {
 	}
 	repos := newRepoIndex(in.Repos)
 
-	p.samples, p.instants = prepareSamples(in.Activity)
+	p.samples = prepareSamples(in.Activity)
 	p.heartbeats = prepareHeartbeats(in.Heartbeats, repos)
 	p.ai = prepareAI(in.AI, repos)
 	p.activeTime = prepareActiveTime(in.ActiveTime)
@@ -144,7 +143,7 @@ func sortIfNeeded[T any](s []T, compare func(a, b T) int) {
 	}
 }
 
-func prepareSamples(in []wire.ActivitySample) ([]sample, []time.Time) {
+func prepareSamples(in []wire.ActivitySample) []sample {
 	raw := slices.Clone(in)
 	sortIfNeeded(raw, func(a, b wire.ActivitySample) int {
 		return cmp.Or(
@@ -159,7 +158,6 @@ func prepareSamples(in []wire.ActivitySample) ([]sample, []time.Time) {
 			a.FocusKind == b.FocusKind && a.FocusApp == b.FocusApp
 	})
 	out := make([]sample, 0, len(raw))
-	instants := make([]time.Time, 0, len(raw))
 	for _, r := range raw {
 		s := sample{t: r.Time.UTC(), kind: parseFocusKind(r.FocusKind)}
 		// A NaN, infinite or negative reading says nothing about input.
@@ -167,12 +165,10 @@ func prepareSamples(in []wire.ActivitySample) ([]sample, []time.Time) {
 			s.idle = time.Duration(min(idle, maxIdleSeconds) * float64(time.Second))
 			s.input = s.t.Add(-s.idle)
 			s.hasInput = true
-			instants = append(instants, s.input)
 		}
 		out = append(out, s)
 	}
-	sortIfNeeded(instants, time.Time.Compare)
-	return out, instants
+	return out
 }
 
 func prepareHeartbeats(in []Heartbeat, repos repoIndex) []heartbeat {

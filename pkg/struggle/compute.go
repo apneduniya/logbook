@@ -18,7 +18,7 @@ func Compute(in Input) Result {
 		return res
 	}
 	turns := buildTurns(p.ai, p.horizon)
-	markAutomated(turns, p.samples, p.instants)
+	markAutomated(turns, p.samples)
 	tl := newTimeline(p, turns)
 
 	rows := make([][]Minute, tl.n) // per minute, sorted by project
