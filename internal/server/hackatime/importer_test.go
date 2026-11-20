@@ -12,6 +12,10 @@ import (
 
 var day1 = time.Date(2025, 3, 1, 0, 0, 0, 0, time.UTC)
 
+// perDay makes every day with activity, and the day after it, a window of
+// its own, for tests about what happens between days.
+var perDay = ImportOptions{WindowActivity: time.Nanosecond}
+
 // linkedUser links a new user to Hackatime account hid through the real flow.
 func (e *testEnv) linkedUser(t *testing.T, name string, hid int64) uuid.UUID {
 	t.Helper()
@@ -45,8 +49,12 @@ func TestImportAcrossDays(t *testing.T) {
 	if got := e.sink.count(alice); got != 4 {
 		t.Fatalf("imported %d heartbeats, want 4", got)
 	}
-	if calls := e.fake.heartbeatCalls(); len(calls) != 3 {
-		t.Fatalf("heartbeat calls = %v, want one per day", calls)
+	// Three quiet days fit in one window: one probe, one heartbeats request.
+	if calls := e.fake.heartbeatCalls(); len(calls) != 1 || calls[0] != "2025-03-01T00:00:00Z..2025-03-03T23:59:59Z" {
+		t.Fatalf("heartbeat calls = %v, want one covering all three days", calls)
+	}
+	if calls := e.fake.spanCalls(); len(calls) != 1 {
+		t.Fatalf("span calls = %v, want one probe", calls)
 	}
 	var ai bool
 	for _, h := range e.sink.byUser[alice] {
@@ -74,7 +82,7 @@ func TestImportAcrossDays(t *testing.T) {
 	if res, err := e.importer(t, ImportOptions{}).Run(ctx, alice, false); err != nil || !res.Done {
 		t.Fatalf("second Run() = %+v, %v", res, err)
 	}
-	if calls := e.fake.heartbeatCalls(); len(calls) != 3 {
+	if calls := e.fake.heartbeatCalls(); len(calls) != 1 {
 		t.Fatalf("done import fetched again: %v", calls)
 	}
 }
@@ -114,7 +122,7 @@ func TestImportResumesAfterFailure(t *testing.T) {
 		return false
 	}
 
-	_, err := e.importer(t, ImportOptions{}).Run(ctx, alice, false)
+	_, err := e.importer(t, perDay).Run(ctx, alice, false)
 	var se *StatusError
 	if !errors.As(err, &se) {
 		t.Fatalf("Run() err = %v, want status error", err)
@@ -126,7 +134,7 @@ func TestImportResumesAfterFailure(t *testing.T) {
 	}
 
 	failing = false
-	res, err := e.importer(t, ImportOptions{}).Run(ctx, alice, false)
+	res, err := e.importer(t, perDay).Run(ctx, alice, false)
 	if err != nil || !res.Done {
 		t.Fatalf("resumed Run() = %+v, %v", res, err)
 	}
@@ -151,17 +159,17 @@ func TestImportSinkFailureThenIdempotentRerun(t *testing.T) {
 		e.fake.addHeartbeat(42, day1.Add(time.Duration(d)*24*time.Hour+time.Hour), "/x.go", nil)
 	}
 	e.sink.failOn = 2 // day 2's ingest fails
-	if _, err := e.importer(t, ImportOptions{}).Run(ctx, alice, false); !errors.Is(err, errSinkDown) {
+	if _, err := e.importer(t, perDay).Run(ctx, alice, false); !errors.Is(err, errSinkDown) {
 		t.Fatalf("Run() err = %v", err)
 	}
-	if _, err := e.importer(t, ImportOptions{}).Run(ctx, alice, false); err != nil {
+	if _, err := e.importer(t, perDay).Run(ctx, alice, false); err != nil {
 		t.Fatal(err)
 	}
 	// Relinking re-runs the window; dedup in the sink keeps it at 3.
 	if _, err := e.st.Pool.Exec(ctx, "UPDATE hackatime_imports SET next_date = from_date, status = 'pending' WHERE user_id = $1", alice); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.importer(t, ImportOptions{}).Run(ctx, alice, false); err != nil {
+	if _, err := e.importer(t, perDay).Run(ctx, alice, false); err != nil {
 		t.Fatal(err)
 	}
 	if e.sink.count(alice) != 3 {
@@ -229,11 +237,14 @@ func TestImportYieldsAfterBudget(t *testing.T) {
 	e := newEnv(t)
 	alice := e.linkedUser(t, "alice", 42)
 	ctx := context.Background()
+	for d := range 3 {
+		e.fake.addHeartbeat(42, day1.Add(time.Duration(d)*24*time.Hour+time.Hour), "/x.go", nil)
+	}
 	e.fake.hbHook = func(_ http.ResponseWriter, _ *http.Request, _ int) bool {
 		time.Sleep(5 * time.Millisecond)
 		return false
 	}
-	res, err := e.importer(t, ImportOptions{RunBudget: time.Millisecond}).Run(ctx, alice, false)
+	res, err := e.importer(t, ImportOptions{RunBudget: time.Millisecond, WindowActivity: time.Nanosecond}).Run(ctx, alice, false)
 	if err != nil || res.Done {
 		t.Fatalf("Run() = %+v, %v; want not done", res, err)
 	}

@@ -36,6 +36,21 @@ const (
 // response is too large to accept in one go.
 const minWindow = 15 * time.Minute
 
+// probeDays is how many days one spans request covers. A month of spans is
+// tens of KiB even for a busy user, and cheap for Hackatime to compute.
+const probeDays = 31
+
+// maxPlanDays bounds how far ahead the importer probes before fetching, so
+// the saved cursor (and the progress the user sees) moves at least every
+// six probes even through a long quiet stretch.
+const maxPlanDays = 6 * probeDays
+
+// defaultWindowActivity is how much Hackatime activity one heartbeats request
+// should cover. Editors send a heartbeat every few tens of seconds while
+// active, so eight hours is around a thousand heartbeats (about 1 MiB), well
+// under the response cap; a denser window is split as before.
+const defaultWindowActivity = 8 * time.Hour
+
 // defaultMaxPerDay caps the heartbeats imported for one day. A heartbeat every
 // two seconds around the clock is 43,200; more than that isn't plausible
 // editor activity, and Hackatime heartbeats are user-controlled.
@@ -55,8 +70,13 @@ const importSweepLimit = 500
 // ImportOptions tune the importer. Zero values get defaults.
 type ImportOptions struct {
 	Logger *slog.Logger
-	// DayDelay is the pause between days, on top of the client's global pace. Default 1s.
-	DayDelay time.Duration
+	// WindowDelay is the pause after each heartbeats window, on top of the
+	// client's global pace. Spans probes are cheap and only paced. Default
+	// 500ms; negative disables it.
+	WindowDelay time.Duration
+	// WindowActivity is how much Hackatime activity (from the spans probe)
+	// one heartbeats request should cover. Default 8h.
+	WindowActivity time.Duration
 	// RunBudget is how long one run works before yielding; the job is then
 	// rescheduled and resumes from the saved day. Default 4m.
 	RunBudget time.Duration
@@ -69,24 +89,25 @@ type ImportOptions struct {
 
 // Importer copies a user's Hackatime heartbeat history into Logbook.
 type Importer struct {
-	st        *store.Store
-	box       *secretbox.Box
-	client    *Client
-	sink      HeartbeatSink
-	log       *slog.Logger
-	delay     time.Duration
-	budget    time.Duration
-	chunk     int
-	maxPerDay int
-	now       func() time.Time
+	st             *store.Store
+	box            *secretbox.Box
+	client         *Client
+	sink           HeartbeatSink
+	log            *slog.Logger
+	delay          time.Duration
+	windowActivity time.Duration
+	budget         time.Duration
+	chunk          int
+	maxPerDay      int
+	now            func() time.Time
 }
 
 // NewImporter builds an Importer.
 func NewImporter(st *store.Store, box *secretbox.Box, client *Client, sink HeartbeatSink, opts ImportOptions) *Importer {
 	im := &Importer{
 		st: st, box: box, client: client, sink: sink, log: opts.Logger,
-		delay: opts.DayDelay, budget: opts.RunBudget, chunk: opts.ChunkSize,
-		maxPerDay: opts.MaxPerDay, now: opts.Now,
+		delay: opts.WindowDelay, windowActivity: opts.WindowActivity, budget: opts.RunBudget,
+		chunk: opts.ChunkSize, maxPerDay: opts.MaxPerDay, now: opts.Now,
 	}
 	if im.log == nil {
 		im.log = slog.Default()
@@ -94,7 +115,10 @@ func NewImporter(st *store.Store, box *secretbox.Box, client *Client, sink Heart
 	if im.delay < 0 {
 		im.delay = 0
 	} else if im.delay == 0 {
-		im.delay = time.Second
+		im.delay = 500 * time.Millisecond
+	}
+	if im.windowActivity <= 0 {
+		im.windowActivity = defaultWindowActivity
 	}
 	if im.budget <= 0 {
 		im.budget = 4 * time.Minute
@@ -124,9 +148,13 @@ type RunResult struct {
 var errPermanent = errors.New("permanent import failure")
 
 // Run imports days from the user's saved cursor until the import finishes or
-// the run budget is spent. Progress is saved after every day, so a crash or
-// cancellation resumes at the first unfinished day. lastAttempt marks the
-// final retry: a failure then marks the import failed instead of pending.
+// the run budget is spent. It asks Hackatime where the user was active (a
+// spans probe per month), then fetches the heartbeats in windows of whole
+// UTC days sized to that activity, so quiet months cost one probe and part of
+// one window. Every day in the range is still fetched: the probe only sizes
+// windows. Progress is saved after every window, so a crash or cancellation
+// resumes at the first unfinished window. lastAttempt marks the final retry:
+// a failure then marks the import failed instead of pending.
 //
 // A run belongs to the link it started with (identified by linked_at, which
 // changes on every link). Every write is conditional on that link still being
@@ -170,44 +198,51 @@ func (im *Importer) Run(ctx context.Context, userID uuid.UUID, lastAttempt bool)
 		note = truncatedNote
 	}
 	started := time.Now()
-	day, last := imp.NextDate.Time, imp.ToDate.Time
+	day, last := utcDay(imp.NextDate.Time), utcDay(imp.ToDate.Time)
+days:
 	for !day.After(last) {
-		if time.Since(started) > im.budget {
-			return RunResult{}, nil
-		}
-		fetchedAt := im.now()
-		res, err := im.importDay(ctx, userID, string(token), day)
+		windows, err := im.plan(ctx, string(token), day, last)
 		if err != nil {
 			return im.fail(ctx, userID, gen, lastAttempt, err)
 		}
-		if res.truncated {
-			note = truncatedNote
-		}
-		next := day.AddDate(0, 0, 1)
-		partial := next.After(fetchedAt)
-		if partial {
-			// The day hadn't ended when it was fetched. Keep the cursor on
-			// it so the next import (after a relink) fetches the rest;
-			// ingest drops what we already have.
-			next = day
-		}
-		toDate, err := im.st.AdvanceHackatimeImport(ctx, db.AdvanceHackatimeImportParams{
-			NextDate: pgDate(next), HeartbeatsImported: int64(res.inserted), LastError: note,
-			UserID: userID, LinkedAt: gen, PrevNextDate: pgDate(day),
-		})
-		if store.IsNotFound(err) {
-			return im.superseded(ctx, userID)
-		}
-		if err != nil {
-			return RunResult{}, fmt.Errorf("saving hackatime import progress: %w", err)
-		}
-		if partial {
-			break // no later day can have ended either
-		}
-		day, last = next, toDate.Time
-		if !day.After(last) {
-			if err := sleep(ctx, im.delay); err != nil {
-				return RunResult{}, err
+		for _, w := range windows {
+			fetchedAt := im.now()
+			res, err := im.importWindow(ctx, userID, string(token), w)
+			if err != nil {
+				return im.fail(ctx, userID, gen, lastAttempt, err)
+			}
+			if len(res.truncated) > 0 {
+				note = truncatedNote
+			}
+			next := w.to
+			partial := next.After(fetchedAt)
+			if partial {
+				// The last day hadn't ended when it was fetched. Keep the
+				// cursor on it so the next import (after a relink) fetches
+				// the rest; ingest drops what we already have.
+				next = latest(w.from, utcDay(fetchedAt))
+			}
+			toDate, err := im.st.AdvanceHackatimeImport(ctx, db.AdvanceHackatimeImportParams{
+				NextDate: pgDate(next), HeartbeatsImported: int64(res.inserted), LastError: note,
+				UserID: userID, LinkedAt: gen, PrevNextDate: pgDate(w.from),
+			})
+			if store.IsNotFound(err) {
+				return im.superseded(ctx, userID)
+			}
+			if err != nil {
+				return RunResult{}, fmt.Errorf("saving hackatime import progress: %w", err)
+			}
+			if partial {
+				break days // no later day can have ended either
+			}
+			day, last = next, utcDay(toDate.Time)
+			if time.Since(started) > im.budget {
+				return RunResult{}, nil
+			}
+			if !day.After(last) {
+				if err := sleep(ctx, im.delay); err != nil {
+					return RunResult{}, err
+				}
 			}
 		}
 	}
@@ -246,34 +281,138 @@ func (im *Importer) StalledUsers(ctx context.Context) ([]uuid.UUID, error) {
 	return ids, nil
 }
 
-// dayResult is what importing one day did.
-type dayResult struct {
-	inserted  int  // new heartbeats stored
-	kept      int  // heartbeats handed to the sink, including duplicates
-	truncated bool // the day hit a cap and some heartbeats were skipped
+// window is a run of whole UTC days, [from, to), fetched as one unit and
+// saved as one step of progress.
+type window struct{ from, to time.Time }
+
+// plan probes Hackatime's activity spans a month at a time from `from` and
+// returns windows that tile [from, end) for some end no later than the day
+// after last. It keeps probing through quiet months, so a long empty stretch
+// becomes part of a single window, until it has seen a window's worth of
+// activity or maxPlanDays.
+//
+// If a probe fails for any reason other than cancellation or a rate limit,
+// the month it covered is planned one day per window, as the importer
+// worked before it probed. A probe never causes a day to be skipped.
+func (im *Importer) plan(ctx context.Context, token string, from, last time.Time) ([]window, error) {
+	end := last.AddDate(0, 0, 1)
+	activity := map[time.Time]time.Duration{}
+	var total time.Duration
+	for chunkFrom := from; ; {
+		chunkTo := earliest(chunkFrom.AddDate(0, 0, probeDays), end)
+		spans, err := im.client.Spans(ctx, token, chunkFrom, chunkTo.Add(-time.Microsecond))
+		if err != nil {
+			var rl *RateLimitedError
+			if ctx.Err() != nil || errors.As(err, &rl) {
+				return nil, err
+			}
+			im.log.WarnContext(ctx, "hackatime activity probe failed; importing day by day",
+				"from", chunkFrom.Format(time.DateOnly), "err", err)
+			var windows []window
+			if chunkFrom.After(from) {
+				windows = planWindows(from, chunkFrom, activity, im.windowActivity)
+			}
+			return append(windows, dailyWindows(chunkFrom, chunkTo)...), nil
+		}
+		for _, s := range spans {
+			if d := utcDay(s.Start); !d.Before(chunkFrom) && d.Before(chunkTo) {
+				activity[d] += s.Duration
+				total += s.Duration
+			}
+		}
+		chunkFrom = chunkTo
+		if !chunkFrom.Before(end) || total >= im.windowActivity || chunkFrom.Sub(from) >= maxPlanDays*24*time.Hour {
+			return planWindows(from, chunkFrom, activity, im.windowActivity), nil
+		}
+	}
 }
 
-// importDay fetches and stores one UTC day.
-func (im *Importer) importDay(ctx context.Context, userID uuid.UUID, token string, day time.Time) (dayResult, error) {
-	var res dayResult
-	if err := im.importWindow(ctx, userID, token, day, day.Add(24*time.Hour), &res); err != nil {
-		return dayResult{}, err
+// planWindows tiles the days [from, to) with windows. Each window covers
+// consecutive days and closes before a day that would take its activity past
+// budget, so idle days are absorbed into their neighbours and a busy day gets
+// a window of its own. activity is keyed by UTC day.
+func planWindows(from, to time.Time, activity map[time.Time]time.Duration, budget time.Duration) []window {
+	var windows []window
+	start, sum := from, time.Duration(0)
+	for d := from; d.Before(to); d = d.AddDate(0, 0, 1) {
+		a := activity[d]
+		if sum > 0 && sum+a > budget {
+			windows = append(windows, window{start, d})
+			start, sum = d, 0
+		}
+		sum += a
 	}
-	if res.truncated {
+	return append(windows, window{start, to})
+}
+
+// utcDay is the start of t's UTC day.
+func utcDay(t time.Time) time.Time {
+	t = t.UTC()
+	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
+}
+
+func earliest(a, b time.Time) time.Time {
+	if a.Before(b) {
+		return a
+	}
+	return b
+}
+
+func latest(a, b time.Time) time.Time {
+	if a.After(b) {
+		return a
+	}
+	return b
+}
+
+// dailyWindows is one window per day in [from, to).
+func dailyWindows(from, to time.Time) []window {
+	var windows []window
+	for d := from; d.Before(to); d = d.AddDate(0, 0, 1) {
+		windows = append(windows, window{d, d.AddDate(0, 0, 1)})
+	}
+	return windows
+}
+
+// windowResult is what importing one window did.
+type windowResult struct {
+	inserted  int                // new heartbeats stored
+	kept      map[time.Time]int  // heartbeats handed to the sink per UTC day, including duplicates
+	truncated map[time.Time]bool // days that hit a cap and had heartbeats skipped
+}
+
+// importWindow fetches and stores one window.
+func (im *Importer) importWindow(ctx context.Context, userID uuid.UUID, token string, w window) (windowResult, error) {
+	res := windowResult{kept: map[time.Time]int{}, truncated: map[time.Time]bool{}}
+	if err := im.importRange(ctx, userID, token, w.from, w.to, &res); err != nil {
+		return windowResult{}, err
+	}
+	for d := range res.truncated {
 		im.log.WarnContext(ctx, "hackatime import day truncated", "user_id", userID,
-			"day", day.Format(time.DateOnly), "kept", res.kept)
+			"day", d.Format(time.DateOnly), "kept", res.kept[d])
 	}
 	return res, nil
 }
 
-// importWindow imports the heartbeats in [from, to), halving the window when
-// Hackatime's response is too large. Each window is stored as soon as it is
-// fetched, so memory is bounded by one response rather than one day. A window
-// still too large at minWindow, and anything past the daily cap, is skipped
-// and the day marked truncated.
-func (im *Importer) importWindow(ctx context.Context, userID uuid.UUID, token string, from, to time.Time, res *dayResult) error {
-	if res.kept >= im.maxPerDay {
-		res.truncated = true
+// capped reports whether every UTC day overlapping [from, to) has reached
+// the daily cap, so there is nothing left to fetch there.
+func (im *Importer) capped(res *windowResult, from, to time.Time) bool {
+	for d := utcDay(from); d.Before(to); d = d.AddDate(0, 0, 1) {
+		if res.kept[d] < im.maxPerDay {
+			return false
+		}
+	}
+	return true
+}
+
+// importRange imports the heartbeats in [from, to), halving the range when
+// Hackatime's response is too large. Each range is stored as soon as it is
+// fetched, so memory is bounded by one response rather than one window. A
+// range still too large at minWindow, and anything past a day's cap, is
+// skipped and the day marked truncated.
+func (im *Importer) importRange(ctx context.Context, userID uuid.UUID, token string, from, to time.Time, res *windowResult) error {
+	if im.capped(res, from, to) {
+		res.truncated[utcDay(from)] = true
 		return nil
 	}
 	// Hackatime's range is inclusive at both ends; stop just short of `to`
@@ -281,33 +420,40 @@ func (im *Importer) importWindow(ctx context.Context, userID uuid.UUID, token st
 	remote, err := im.client.Heartbeats(ctx, token, from, to.Add(-time.Microsecond))
 	if errors.Is(err, ErrResponseTooLarge) {
 		if to.Sub(from) <= minWindow {
-			res.truncated = true
+			res.truncated[utcDay(from)] = true
 			return nil
 		}
 		mid := from.Add(to.Sub(from) / 2)
-		if err := im.importWindow(ctx, userID, token, from, mid, res); err != nil {
+		if err := im.importRange(ctx, userID, token, from, mid, res); err != nil {
 			return err
 		}
-		return im.importWindow(ctx, userID, token, mid, to, res)
+		return im.importRange(ctx, userID, token, mid, to, res)
 	}
 	if err != nil {
 		return err
 	}
 	now := im.now()
 	hbs := make([]wire.Heartbeat, 0, len(remote))
+	invalid := 0
 	for _, r := range remote {
-		if h, ok := toWire(r, from, to, now); ok {
-			hbs = append(hbs, h)
+		h, ok := toWire(r, from, to, now)
+		if !ok {
+			invalid++
+			continue
 		}
+		// Hackatime returns heartbeats oldest first, so each day keeps
+		// its earliest heartbeats up to the cap.
+		day := utcDay(h.Timestamp())
+		if res.kept[day] >= im.maxPerDay {
+			res.truncated[day] = true
+			continue
+		}
+		res.kept[day]++
+		hbs = append(hbs, h)
 	}
-	if skipped := len(remote) - len(hbs); skipped > 0 {
-		im.log.DebugContext(ctx, "skipped hackatime heartbeats", "count", skipped, "from", from)
+	if invalid > 0 {
+		im.log.DebugContext(ctx, "skipped hackatime heartbeats", "count", invalid, "from", from)
 	}
-	if room := im.maxPerDay - res.kept; len(hbs) > room {
-		hbs = hbs[:room]
-		res.truncated = true
-	}
-	res.kept += len(hbs)
 	for start := 0; start < len(hbs); start += im.chunk {
 		end := min(start+im.chunk, len(hbs))
 		n, err := im.sink.Ingest(ctx, userID, hbs[start:end], ImportSource)

@@ -150,3 +150,56 @@ func (c *Client) Heartbeats(ctx context.Context, token string, from, to time.Tim
 	}
 	return *r.Heartbeats, nil
 }
+
+// Span is one stretch of activity on Hackatime: heartbeats no more than two
+// minutes apart, starting at Start.
+type Span struct {
+	Start    time.Time
+	Duration time.Duration
+}
+
+type spansResponse struct {
+	Spans *[]struct {
+		StartTime *float64 `json:"start_time"`
+		Duration  *float64 `json:"duration"`
+	} `json:"spans"`
+}
+
+// Spans returns the token owner's activity spans with from <= time <= to,
+// from GET /api/v1/users/my/heartbeats/spans (scope "read"). It is a cheap
+// summary of where activity is. The importer uses it only to size heartbeat
+// windows, never to decide what to skip: Hackatime omits spans with no
+// duration, so a lone heartbeat at the end of the range is in none.
+func (c *Client) Spans(ctx context.Context, token string, from, to time.Time) ([]Span, error) {
+	if !from.Before(to) {
+		return nil, fmt.Errorf("fetching hackatime spans: empty range %v..%v", from, to)
+	}
+	q := url.Values{
+		"start_date": {from.UTC().Format(time.RFC3339Nano)},
+		"end_date":   {to.UTC().Format(time.RFC3339Nano)},
+	}
+	var r spansResponse
+	if err := c.getJSON(ctx, "/api/v1/users/my/heartbeats/spans", q, token, maxSpansBody, &r); err != nil {
+		return nil, fmt.Errorf("fetching hackatime spans: %w", err)
+	}
+	if r.Spans == nil {
+		return nil, fmt.Errorf("fetching hackatime spans: %w: missing spans", ErrInvalidResponse)
+	}
+	spans := make([]Span, 0, len(*r.Spans))
+	for i, s := range *r.Spans {
+		if !plausibleSeconds(s.StartTime) || !plausibleSeconds(s.Duration) || *s.Duration < 0 {
+			return nil, fmt.Errorf("fetching hackatime spans: %w: span %d is malformed", ErrInvalidResponse, i)
+		}
+		spans = append(spans, Span{
+			Start:    time.UnixMicro(int64(*s.StartTime * 1e6)).UTC(),
+			Duration: time.Duration(*s.Duration * float64(time.Second)),
+		})
+	}
+	return spans, nil
+}
+
+// plausibleSeconds reports whether f is a number of seconds that converts to
+// a time.Duration or Unix time without overflowing (under ~126 years).
+func plausibleSeconds(f *float64) bool {
+	return f != nil && !math.IsNaN(*f) && math.Abs(*f) < 4e9
+}

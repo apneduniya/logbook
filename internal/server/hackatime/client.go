@@ -32,6 +32,7 @@ const UserAgent = "Logbook (+https://boogles.dev)"
 // it is far more than a 15-minute window can plausibly need.
 const (
 	maxSmallBody             = 64 << 10 // me
+	maxSpansBody             = 2 << 20  // a month of activity spans is tens of KiB
 	defaultMaxHeartbeatsBody = 8 << 20
 )
 

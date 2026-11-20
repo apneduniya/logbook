@@ -143,8 +143,8 @@ func newEnv(t *testing.T) *testEnv {
 func (e *testEnv) importer(t *testing.T, opts ImportOptions) *Importer {
 	t.Helper()
 	opts.Logger = e.logger
-	if opts.DayDelay == 0 {
-		opts.DayDelay = -1 // no pause in tests
+	if opts.WindowDelay == 0 {
+		opts.WindowDelay = -1 // no pause in tests
 	}
 	opts.Now = e.clock
 	return NewImporter(e.st, e.box, e.client, e.sink, opts)

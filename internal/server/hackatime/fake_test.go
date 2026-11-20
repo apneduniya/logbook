@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strconv"
 	"sync"
 	"testing"
@@ -53,6 +54,11 @@ type fakeHackatime struct {
 	hbTotal int
 	// meHook, when set, may answer a /me request itself.
 	meHook func(w http.ResponseWriter, r *http.Request) bool
+	// spansHook, when set, may answer a spans request itself.
+	spansHook  func(w http.ResponseWriter, r *http.Request) bool
+	spansCalls []string // "start..end" of each spans call that succeeded
+	// importReqs counts every heartbeats and spans request, answered or not.
+	importReqs int
 }
 
 func newFakeHackatime(t *testing.T) *fakeHackatime {
@@ -67,6 +73,7 @@ func newFakeHackatime(t *testing.T) *fakeHackatime {
 	mux.HandleFunc("GET /api/v1/authenticated/me", f.me)
 	mux.HandleFunc("GET /api/v1/users/{id}/trust_factor", f.trustFactor)
 	mux.HandleFunc("GET /api/v1/my/heartbeats", f.myHeartbeats)
+	mux.HandleFunc("GET /api/v1/users/{id}/heartbeats/spans", f.userSpans)
 	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		f.userAgents = append(f.userAgents, r.UserAgent())
@@ -333,6 +340,7 @@ func (f *fakeHackatime) addHeartbeat(userID int64, at time.Time, entity string, 
 
 func (f *fakeHackatime) myHeartbeats(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
+	f.importReqs++
 	f.hbTotal++
 	call := f.hbTotal
 	hook := f.hbHook
@@ -367,6 +375,82 @@ func (f *fakeHackatime) myHeartbeats(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{
 		"start_time": start, "end_time": end, "total_seconds": 0, "heartbeats": out,
 	})
+}
+
+// userSpans mirrors StatsController#user_spans and Heartbeatable.to_span:
+// "my" resolves the bearer token's owner (an unknown token finds no user, so
+// it is a 404, not a 401), the range is inclusive at both ends, and a span
+// ends at a gap of more than two minutes. A span is reported only when its
+// duration is positive, so the last heartbeat in the range, if it stands
+// alone, appears in no span.
+func (f *fakeHackatime) userSpans(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	f.importReqs++
+	hook := f.spansHook
+	f.mu.Unlock()
+	if hook != nil && hook(w, r) {
+		return
+	}
+	u, ok := f.bearer(r)
+	if r.PathValue("id") != "my" || !ok {
+		writeJSON(w, 404, map[string]string{"error": "User not found"})
+		return
+	}
+	start, err1 := time.Parse(time.RFC3339Nano, r.URL.Query().Get("start_date"))
+	end, err2 := time.Parse(time.RFC3339Nano, r.URL.Query().Get("end_date"))
+	if err1 != nil || err2 != nil {
+		writeJSON(w, 422, map[string]string{"error": "Invalid start_date"})
+		return
+	}
+	f.mu.Lock()
+	var times []float64
+	for _, h := range f.heartbeats[u.id] {
+		ts := h["time"].(float64)
+		if ts >= float64(start.UnixMicro())/1e6 && ts <= float64(end.UnixMicro())/1e6 {
+			times = append(times, ts)
+		}
+	}
+	f.spansCalls = append(f.spansCalls, start.Format(time.RFC3339)+".."+end.Format(time.RFC3339))
+	f.mu.Unlock()
+	slices.Sort(times)
+	const timeout = 120.0
+	spans := []map[string]any{}
+	for i := 0; i < len(times); {
+		j := i
+		for j+1 < len(times) && times[j+1]-times[j] <= timeout {
+			j++
+		}
+		duration, endTime := float64(int64(times[j]-times[i]+0.5)), times[j]
+		if j+1 < len(times) {
+			duration += timeout
+			endTime += timeout
+		}
+		if duration > 0 {
+			spans = append(spans, map[string]any{"start_time": times[i], "end_time": endTime, "duration": duration})
+		}
+		i = j + 1
+	}
+	writeJSON(w, 200, map[string]any{"spans": spans})
+}
+
+// setSpansHook installs (or, with nil, removes) a spans override.
+func (f *fakeHackatime) setSpansHook(h func(w http.ResponseWriter, r *http.Request) bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.spansHook = h
+}
+
+func (f *fakeHackatime) spanCalls() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.spansCalls...)
+}
+
+// importRequests counts heartbeats and spans requests, answered or not.
+func (f *fakeHackatime) importRequests() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.importReqs
 }
 
 func (f *fakeHackatime) heartbeatCalls() []string {
