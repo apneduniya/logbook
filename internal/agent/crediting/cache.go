@@ -30,7 +30,14 @@ func (c *eventCache) refresh(ctx context.Context, s Store, from, to time.Time) e
 	if err != nil {
 		return err
 	}
-	fresh, err := s.EventsAfter(ctx, c.seen, hw, from, to.Add(futureSlack))
+	var fresh localdb.Events
+	if c.seen == (localdb.HighWater{}) {
+		// The first fill reads the window by time: walking ids from zero
+		// would scan every row of a 90-day database.
+		fresh, err = s.EventsBetween(ctx, from, to.Add(futureSlack), &hw)
+	} else {
+		fresh, err = s.EventsAfter(ctx, c.seen, hw, from, to.Add(futureSlack))
+	}
 	if err != nil {
 		return err
 	}
