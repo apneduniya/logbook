@@ -2,6 +2,7 @@ package geminicli
 
 import (
 	"encoding/json"
+	"path/filepath"
 
 	"github.com/apneduniya/logbook/internal/agent/harness/aievent"
 	"github.com/apneduniya/logbook/internal/agent/harness/cmdline"
@@ -32,9 +33,24 @@ func Events() aievent.Table {
 	}
 }
 
+// configDir returns Gemini CLI's global dir. Gemini CLI uses
+// $GEMINI_CLI_HOME in place of the home directory when it is set
+// (homedir() in packages/core/src/utils/paths.ts).
+func configDir(env hostenv.Env) (string, error) {
+	home, err := env.DirFromEnv("GEMINI_CLI_HOME")
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".gemini"), nil
+}
+
 // SettingsPath returns the user settings file.
 func SettingsPath(env hostenv.Env) (string, error) {
-	return env.HomePath(".gemini", "settings.json")
+	dir, err := configDir(env)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "settings.json"), nil
 }
 
 // NewInstaller returns the Gemini CLI installer.
@@ -48,13 +64,13 @@ func NewInstaller(env hostenv.Env) *hookfile.Installer {
 		Path:    func() (string, error) { return SettingsPath(env) },
 		Layout:  hookfile.Nested,
 		// Gemini CLI reads settings.json with comments allowed. Logbook
-		// rewrites it as plain JSON; the original, comments included, is in
-		// the backup.
+		// edits only the "hooks" member in place, so the user's comments
+		// elsewhere are kept.
 		JSONC:   true,
 		Entries: func(binPath string) []hookfile.Entry { return entries(sh, binPath) },
 		Argv:    hookfile.CommandArgv,
 		Detect: func() bool {
-			dir, err := env.HomePath(".gemini")
+			dir, err := configDir(env)
 			return (err == nil && hostenv.Exists(dir)) || env.OnPath("gemini")
 		},
 		BackupDir: env.BackupDir,

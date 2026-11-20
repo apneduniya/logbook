@@ -2,6 +2,9 @@ package geminicli
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/apneduniya/logbook/internal/agent/harness/aievent"
@@ -37,7 +40,54 @@ func TestInstallRoundTrip(t *testing.T) {
 	harnesstest.JSONInstallRoundTrip(t, newInstaller, SettingsPath, true, []harnesstest.InstallCase{
 		{Name: "missing"},
 		{Name: "existing_jsonc", Existing: userSettings},
+		{Name: "comments_no_hooks", Existing: "{\n  // keep me\n  \"ui\": {\"theme\": \"GitHub\"} // and me\n}\n"},
 	})
+}
+
+// Install and uninstall keep the user's comments and layout. Only the
+// "hooks" member is re-encoded, so a file without one comes back byte for
+// byte and a file with one keeps every line outside it.
+func TestUninstallKeepsComments(t *testing.T) {
+	for name, tc := range map[string]struct {
+		orig string
+		keep []string // lines that must survive; nil = whole file
+	}{
+		"no_hooks": {orig: "{\n  // keep me\n  \"ui\": {\"theme\": \"GitHub\"} // and me\n}\n"},
+		"with_hooks": {orig: userSettings, keep: []string{
+			"  // personal settings\n  \"general\": {\"vimMode\": true, \"preferredEditor\": \"code\"},\n",
+			"  /* MCP servers */\n  \"mcpServers\": {\"github\": {\"command\": \"npx\", \"args\": [\"-y\", \"@modelcontextprotocol/server-github\"]}},\n}\n",
+			"secret-scanner",
+		}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			orig := tc.orig
+			env, _ := harnesstest.Env(t)
+			path, err := SettingsPath(env)
+			if err != nil {
+				t.Fatal(err)
+			}
+			harnesstest.WriteFile(t, path, orig)
+			in := NewInstaller(env)
+			if err := in.Install(harnesstest.Bin); err != nil {
+				t.Fatal(err)
+			}
+			if err := in.Uninstall(); err != nil {
+				t.Fatal(err)
+			}
+			got := string(harnesstest.ReadFile(t, path))
+			if tc.keep == nil && got != orig {
+				t.Fatalf("after uninstall:\n%s\nwant:\n%s", got, orig)
+			}
+			for _, k := range tc.keep {
+				if !strings.Contains(got, k) {
+					t.Fatalf("after uninstall, lost %q:\n%s", k, got)
+				}
+			}
+			if strings.Contains(got, "logbook") {
+				t.Fatalf("Logbook hooks left behind:\n%s", got)
+			}
+		})
+	}
 }
 
 // On Windows Gemini CLI runs hooks with PowerShell, so a quoted path needs
@@ -91,6 +141,38 @@ func TestParseSkipsOtherNotifications(t *testing.T) {
 	in := aievent.Input{Data: harnesstest.Fixture(t, "NotificationOther.json")}
 	if got := Parse("Notification", in, nil); got != nil {
 		t.Fatalf("Parse = %+v, want nil", got)
+	}
+}
+
+func TestSettingsPathHonoursGeminiCLIHome(t *testing.T) {
+	env, _ := harnesstest.Env(t)
+	want := filepath.Join(env.Home, ".gemini", "settings.json")
+	if got, err := SettingsPath(env); err != nil || got != want {
+		t.Fatalf("default SettingsPath = %q, %v; want %q", got, err, want)
+	}
+	custom := t.TempDir()
+	env.Getenv = func(k string) string {
+		if k == "GEMINI_CLI_HOME" {
+			return custom
+		}
+		return ""
+	}
+	want = filepath.Join(custom, ".gemini", "settings.json")
+	if got, err := SettingsPath(env); err != nil || got != want {
+		t.Fatalf("SettingsPath = %q, %v; want %q", got, err, want)
+	}
+	in := NewInstaller(env)
+	if in.Detect() {
+		t.Fatal("Detect true before the custom dir exists")
+	}
+	if err := in.Install(harnesstest.Bin); err != nil {
+		t.Fatal(err)
+	}
+	if !in.Detect() {
+		t.Fatal("Detect false after install under GEMINI_CLI_HOME")
+	}
+	if _, err := os.Stat(want); err != nil {
+		t.Fatalf("settings not written under GEMINI_CLI_HOME: %v", err)
 	}
 }
 

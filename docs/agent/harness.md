@@ -32,11 +32,11 @@ The parsers decode only the fields they need into typed structs. Prompt text is 
 
 ## Install rules (all harnesses)
 
-- **Merge, don't replace.** Config files are parsed as JSON (JSONC where the tool allows comments). Key order and every value Logbook doesn't own are kept byte for byte (numbers like `2.50` stay as written). The file is re-indented with two spaces.
+- **Merge, don't replace.** Config files are parsed as JSON (JSONC where the tool allows comments). Key order and every value Logbook doesn't own are kept byte for byte (numbers like `2.50` stay as written). Plain JSON files are re-indented with two spaces; JSONC files with comments are edited in place so the comments survive (see Gemini CLI).
 - **Logbook's entries are recognised by their command line**: an executable whose base name starts with `logbook`, followed by exactly `hook <harness> <event>`. Exec-form entries (`command` + `args`, or Copilot's `exec` + `args`) and shell strings quoted for sh, cmd.exe or PowerShell are all recognised. Nothing else is ever modified or removed.
 - **Idempotent.** Re-installing with the same binary path doesn't rewrite the file. Installing with a new path replaces Logbook's entries one for one. Entries for events Logbook no longer installs are removed.
 - **Backups.** Before the first change, the original file is copied to `<data dir>/backups/<harness>.<file name>.orig` (or a `.absent` marker is written if there was no file). Later installs keep that first backup.
-- **Uninstall** removes only Logbook's entries. Keys Logbook added (an emptied `"hooks": {}`, Cursor's and Copilot's `"version": 1`) are removed when the backup shows the original didn't have them; a file Logbook created is deleted once nothing else is in it. The backup is not restored automatically, because the user may have changed the file since.
+- **Uninstall** removes only Logbook's entries. Keys Logbook added (an emptied `"hooks": {}`, Cursor's and Copilot's `"version": 1`) are removed when the backup shows the original didn't have them; a file Logbook created is deleted once nothing else is in it. In a file Logbook created, `"version"` stays as long as the user has added hooks of their own, because Cursor requires it. The backup is not restored automatically, because the user may have changed the file since.
 - **Safety.** Writes are atomic (temp file + rename, retried briefly on Windows where the tool may hold the file). Symlinked config files (dotfile managers) are written through, so the link stays. A new file is created 0600; an existing file keeps its mode. Files over 8 MiB, files that aren't valid JSON, and files whose `hooks` isn't an object are left alone with an error.
 - The binary path must be absolute, because hooks run in the tool's working directory.
 
@@ -104,8 +104,8 @@ Limitations:
 
 | | |
 |---|---|
-| Config | `~/.gemini/settings.json` (user level, so no per-project trust prompt) |
-| Detect | `~/.gemini` exists, or `gemini` on `PATH` |
+| Config | `~/.gemini/settings.json`, or `$GEMINI_CLI_HOME/.gemini/settings.json` when `GEMINI_CLI_HOME` is set (Gemini CLI uses it in place of the home directory). User level, so no per-project trust prompt. |
+| Detect | that `.gemini` dir exists, or `gemini` on `PATH` |
 | Handler | `{"type": "command", "command": "<quoted logbook> hook gemini-cli <Event>", "name": "logbook", "timeout": 5000}` (milliseconds). Gemini CLI runs commands with `bash -c` on macOS/Linux and PowerShell (`-NoProfile -NonInteractive -Command`) on Windows, so a quoted Windows path is written as `& 'C:\...\logbook.exe' hook ...`. |
 | stdout | nothing. Gemini parses stdout as JSON and treats empty output as "no decision"; if stdout is empty it parses stderr, which the hook also keeps empty. |
 | Version | google-gemini/gemini-cli `docs/hooks/*` and `packages/core/src/hooks/hookRunner.ts` on main, read 2026-11-20 |
@@ -124,7 +124,7 @@ Ignored: `prompt` text, `prompt_response`, `tool_input`, `tool_response`, `llm_r
 
 Limitations:
 - No hook payload carries the model name. `BeforeModel` has it but also carries the whole request and fires per request, so it isn't installed.
-- `settings.json` may contain comments and trailing commas. Logbook reads them, but rewrites the file as plain JSON, so **comments are lost on install**; the original, comments included, is in the backup.
+- `settings.json` may contain comments and trailing commas, and it is the user's main Gemini settings file. When it has comments, Logbook edits only the bytes of the top-level `"hooks"` member (replacing its value, adding it before the closing brace, or removing it with its comma), so every comment and the layout outside `"hooks"` are kept; comments *inside* `"hooks"` are lost because that value is re-encoded. The edit is checked to parse back to the intended settings, and Logbook falls back to a full rewrite (comments lost; the backup has them) only if that check fails or the file has `"hooks"` twice.
 - `SessionEnd` is best effort: the CLI doesn't wait for it.
 
 ## Cursor (editor Agent and Cursor CLI)

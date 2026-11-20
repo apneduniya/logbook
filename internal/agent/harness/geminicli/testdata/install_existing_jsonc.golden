@@ -1,14 +1,8 @@
 {
-  "general": {
-    "vimMode": true,
-    "preferredEditor": "code"
-  },
-  "ui": {
-    "theme": "GitHub"
-  },
-  "hooksConfig": {
-    "enabled": true
-  },
+  // personal settings
+  "general": {"vimMode": true, "preferredEditor": "code"},
+  "ui": {"theme": "GitHub"},
+  "hooksConfig": {"enabled": true},
   "hooks": {
     "BeforeTool": [
       {
@@ -106,13 +100,6 @@
       }
     ]
   },
-  "mcpServers": {
-    "github": {
-      "command": "npx",
-      "args": [
-        "-y",
-        "@modelcontextprotocol/server-github"
-      ]
-    }
-  }
+  /* MCP servers */
+  "mcpServers": {"github": {"command": "npx", "args": ["-y", "@modelcontextprotocol/server-github"]}},
 }
