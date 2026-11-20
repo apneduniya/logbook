@@ -1,6 +1,7 @@
 package claudecode
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"path/filepath"
@@ -77,7 +78,9 @@ func (in *Installer) Install(binPath string) error {
 	if err := in.Installer.Install(binPath); err != nil {
 		return err
 	}
-	if err := installTelemetry(in.env); err != nil {
+	// The Installer interface carries no context; the reads are local and
+	// the one subprocess (macOS plutil) has its own deadline.
+	if err := installTelemetry(context.Background(), in.env); err != nil {
 		return fmt.Errorf("%s: telemetry: %w", Name, err)
 	}
 	return nil
@@ -86,14 +89,14 @@ func (in *Installer) Install(binPath string) error {
 // Uninstall removes the telemetry entries Logbook added, then the hooks
 // (which deletes settings.json if Logbook created it and nothing is left).
 func (in *Installer) Uninstall() error {
-	if err := uninstallTelemetry(in.env); err != nil {
+	if err := uninstallTelemetry(context.Background(), in.env); err != nil {
 		return fmt.Errorf("%s: telemetry: %w", Name, err)
 	}
 	return in.Installer.Uninstall()
 }
 
 // Notes says when telemetry was left alone, and why.
-func (in *Installer) Notes() []string { return telemetryNotes(in.env) }
+func (in *Installer) Notes() []string { return telemetryNotes(context.Background(), in.env) }
 
 // handler is a command hook in exec form: Claude Code (v2.1.139+) spawns
 // the binary directly with args, so no shell quoting is involved on any OS.

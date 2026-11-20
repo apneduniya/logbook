@@ -2,13 +2,16 @@ package claudecode
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/apneduniya/logbook/internal/agent/harness/hookfile"
@@ -23,11 +26,23 @@ import (
 // package otlp). Only metrics are exported: logs and traces stay off
 // because their exporter variables are never set.
 //
-// The user's own telemetry always wins. If settings.json, or the
-// environment `logbook install` runs in, already has any OpenTelemetry
-// setting (an OTEL_* variable, a different value for one of Logbook's keys,
-// or an otelHeadersHelper), Logbook adds nothing, removes what it added
-// earlier, and Notes explains why.
+// Anyone else's telemetry setup always wins. Logbook adds nothing, and
+// removes what it added earlier, when:
+//   - managed settings mention telemetry at all (managed.go explains why
+//     that matters for privacy); or
+//   - settings.json, or the environment `logbook install` runs in, has any
+//     OpenTelemetry setting of the user's (an OTEL_* variable, a different
+//     value for one of Logbook's keys, or an otelHeadersHelper).
+//
+// When it yields to the user's own setup (not to managed settings), the
+// two entries that switch export on, CLAUDE_CODE_ENABLE_TELEMETRY and
+// OTEL_METRICS_EXPORTER, are handed over instead of removed: the user's
+// setup may have been relying on them since they added it. Only the
+// entries that point at the agent (endpoint, headers, protocol, interval)
+// go. Notes says which entries were left.
+//
+// Install checks this once; the daemon re-checks it with YieldTelemetry,
+// so a setup added later isn't overridden until the next install.
 //
 // Which entries Logbook added is recorded in a sidecar file next to the
 // settings backup (<data dir>/backups/claude-code.telemetry.json). Uninstall
@@ -43,6 +58,11 @@ var telemetryKeys = []string{
 	"OTEL_EXPORTER_OTLP_METRICS_HEADERS",
 	"OTEL_METRIC_EXPORT_INTERVAL",
 }
+
+// selectorKeys are the entries that switch metrics export on, rather than
+// say where it goes. They are handed over, not removed, when Logbook yields
+// to the user's own setup.
+var selectorKeys = []string{"CLAUDE_CODE_ENABLE_TELEMETRY", "OTEL_METRICS_EXPORTER"}
 
 // shellKeys are variables that, set in the user's shell, mean they already
 // export Claude Code telemetry somewhere (generic OTLP headers would also be
@@ -95,72 +115,177 @@ func wantTelemetry(agent hostenv.Agent) ([]kv, error) {
 type ownership struct {
 	EnvCreated bool              `json:"env_created"`
 	Keys       map[string]string `json:"keys"`
+	// HandedOver are selector entries Logbook wrote and then left in place
+	// for the user's own setup (key → the value Logbook wrote). They are no
+	// longer Logbook's to remove, but a later install takes them back once
+	// the user's setup is gone and they still hold that value.
+	HandedOver map[string]string `json:"handed_over,omitempty"`
+}
+
+// wrote returns the value Logbook wrote for k, if it did (owned or handed
+// over).
+func (o ownership) wrote(k string) (string, bool) {
+	if v, ok := o.Keys[k]; ok {
+		return v, true
+	}
+	v, ok := o.HandedOver[k]
+	return v, ok
+}
+
+func sameOwnership(a, b ownership) bool {
+	return a.EnvCreated == b.EnvCreated && maps.Equal(a.Keys, b.Keys) && maps.Equal(a.HandedOver, b.HandedOver)
 }
 
 // telemetryPlan is what install should do to "env".
 type telemetryPlan struct {
-	// conflict, when set, says why Logbook leaves telemetry to the user.
+	// conflict, when set, says why Logbook leaves telemetry to someone else.
 	conflict string
 	// set are the entries to write (all of want, unless there's a conflict).
 	set []kv
-	// remove are entries Logbook owns that must go (on conflict).
+	// remove are entries Logbook wrote that must go (on conflict).
 	remove []string
+	// handover are selector entries Logbook wrote that stay for the user's
+	// own setup (on a conflict with it).
+	handover []string
 }
 
-// planTelemetry decides what install does, from the current "env" object
-// (nil if absent), whether settings.json has an otelHeadersHelper, what
-// Logbook owns, the wanted entries, and the installer's environment. It is
-// pure.
-func planTelemetry(env *jsonedit.Object, hasHelper bool, owned ownership, want []kv, getenv func(string) string) telemetryPlan {
+// planInput is everything planTelemetry looks at.
+type planInput struct {
+	// env is settings.json's "env" object (nil if absent).
+	env *jsonedit.Object
+	// hasHelper is whether settings.json has an otelHeadersHelper.
+	hasHelper bool
+	owned     ownership
+	// want are the entries Logbook would write (nil when unknown).
+	want []kv
+	// shell reads the environment Claude Code is likely to start from; nil
+	// skips it (the daemon's environment isn't the user's shell).
+	shell func(string) string
+	// managed says why managed settings decide telemetry ("" if they don't).
+	managed string
+}
+
+// planTelemetry decides what install does. It is pure.
+func planTelemetry(in planInput) telemetryPlan {
 	ours := map[string]string{}
-	for _, w := range want {
+	for _, w := range in.want {
 		ours[w.Key] = w.Value
 	}
-	conflict := ""
-	switch {
-	case hasHelper:
-		conflict = `settings.json has "otelHeadersHelper"`
-	default:
-		for _, k := range shellKeys {
-			if getenv(k) != "" {
-				conflict = k + " is set in your environment"
-				break
-			}
-		}
+	conflict := in.managed
+	if conflict == "" {
+		conflict = userConflict(in, ours)
 	}
-	if conflict == "" && env != nil {
-		for _, k := range env.Keys() {
-			raw, _ := env.Get(k)
-			cur, isString := stringValue(raw)
-			_, mine := ours[k]
-			switch {
-			case mine && isString && owned.Keys[k] != "" && (cur == ours[k] || cur == owned.Keys[k]):
-				// already Logbook's, current or stale
-			case mine:
-				conflict = `settings.json already sets env.` + k
-			case strings.HasPrefix(k, "OTEL_"):
-				conflict = `settings.json already sets env.` + k
-			}
-			if conflict != "" {
-				break
-			}
-		}
+	if conflict == "" {
+		return telemetryPlan{set: in.want}
 	}
-	if conflict != "" {
-		return telemetryPlan{conflict: conflict, remove: ownedPresent(env, owned)}
-	}
-	return telemetryPlan{set: want}
+	// Under managed settings, Logbook's selectors would send metrics to the
+	// administrator's collector: everything goes.
+	handover := in.managed == "" && userOwnsOTel(in, ours)
+	remove, kept := yieldEntries(in.env, in.owned, handover)
+	return telemetryPlan{conflict: conflict, remove: remove, handover: kept}
 }
 
-// ownedPresent lists the owned entries still holding the value Logbook
-// wrote, in a fixed order.
-func ownedPresent(env *jsonedit.Object, owned ownership) []string {
+// userConflict says why the user's own settings or shell conflict with
+// Logbook's entries ("" if they don't).
+func userConflict(in planInput, ours map[string]string) string {
+	if in.hasHelper {
+		return `settings.json has "otelHeadersHelper"`
+	}
+	if in.shell != nil {
+		for _, k := range shellKeys {
+			if in.shell(k) != "" {
+				return k + " is set in your environment"
+			}
+		}
+	}
+	if in.env == nil {
+		return ""
+	}
+	for _, k := range in.env.Keys() {
+		_, mine := ours[k]
+		if (mine || strings.HasPrefix(k, "OTEL_")) && !isLogbooks(in.env, in.owned, ours, k) {
+			return `settings.json already sets env.` + k
+		}
+	}
+	return ""
+}
+
+// userOwnsOTel reports whether the user has an exporter of their own that
+// may rely on Logbook's selectors: an otelHeadersHelper, an OTLP variable
+// in the shell, or an exporter, endpoint or headers entry in "env" that
+// Logbook didn't write. Tuning entries alone (an export interval the user
+// edited, resource attributes) don't send telemetry anywhere, so they don't
+// count.
+func userOwnsOTel(in planInput, ours map[string]string) bool {
+	if in.hasHelper {
+		return true
+	}
+	if in.shell != nil {
+		for _, k := range shellKeys {
+			if strings.HasPrefix(k, "OTEL_") && in.shell(k) != "" {
+				return true
+			}
+		}
+	}
+	if in.env == nil {
+		return false
+	}
+	for _, k := range in.env.Keys() {
+		if isExporterKey(k) && !isLogbooks(in.env, in.owned, ours, k) {
+			return true
+		}
+	}
+	return false
+}
+
+// isExporterKey reports whether an env key chooses an OpenTelemetry
+// exporter or where it sends (selectors, endpoints, headers, client
+// certificates), generic or per signal.
+func isExporterKey(k string) bool {
+	if !strings.HasPrefix(k, "OTEL_") {
+		return false
+	}
+	return strings.HasSuffix(k, "_EXPORTER") || strings.HasPrefix(k, "OTEL_EXPORTER_OTLP_") &&
+		(strings.HasSuffix(k, "_ENDPOINT") || strings.HasSuffix(k, "_HEADERS") ||
+			strings.HasSuffix(k, "_CLIENT_KEY") || strings.HasSuffix(k, "_CLIENT_CERTIFICATE"))
+}
+
+// isLogbooks reports whether env.k holds a value Logbook wrote (as recorded
+// in the sidecar), or the value it would write now for a key it wrote
+// before with another value (a stale entry after a config change).
+func isLogbooks(env *jsonedit.Object, owned ownership, ours map[string]string, k string) bool {
+	wrote, ok := owned.wrote(k)
+	if !ok {
+		return false
+	}
+	raw, _ := env.Get(k)
+	cur, isString := stringValue(raw)
+	return isString && (cur == wrote || (ours[k] != "" && cur == ours[k]))
+}
+
+// yieldEntries splits the entries Logbook wrote that still hold its value
+// into those to remove and, when handover is set, the selectors to leave for
+// the user. Both are in a fixed order.
+func yieldEntries(env *jsonedit.Object, owned ownership, handover bool) (remove, kept []string) {
+	for _, k := range writtenPresent(env, owned) {
+		if handover && slices.Contains(selectorKeys, k) {
+			kept = append(kept, k)
+		} else {
+			remove = append(remove, k)
+		}
+	}
+	return remove, kept
+}
+
+// writtenPresent lists the entries Logbook wrote (owned or handed over)
+// that still hold the value it wrote, in a fixed order.
+func writtenPresent(env *jsonedit.Object, owned ownership) []string {
 	if env == nil {
 		return nil
 	}
 	var out []string
 	for _, k := range telemetryKeys {
-		want, ok := owned.Keys[k]
+		want, ok := owned.wrote(k)
 		if !ok {
 			continue
 		}
@@ -254,7 +379,7 @@ func writeOwnership(env hostenv.Env, o ownership) error {
 	if err != nil {
 		return err
 	}
-	if len(o.Keys) == 0 {
+	if len(o.Keys) == 0 && len(o.HandedOver) == 0 {
 		if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return fmt.Errorf("removing %s: %w", path, err)
 		}
@@ -274,8 +399,10 @@ type telemetryState struct {
 	plan  telemetryPlan
 }
 
-// loadTelemetry reads settings.json and the sidecar and plans the change.
-func loadTelemetry(env hostenv.Env) (telemetryState, error) {
+// loadTelemetry reads settings.json, the sidecar and the managed settings
+// and plans the change. shell is the environment to check for the user's
+// own OTLP variables (nil skips it).
+func loadTelemetry(ctx context.Context, env hostenv.Env, shell func(string) string) (telemetryState, error) {
 	if env.Agent == nil {
 		return telemetryState{}, errors.New("agent config unavailable")
 	}
@@ -296,32 +423,69 @@ func loadTelemetry(env hostenv.Env) (telemetryState, error) {
 		return telemetryState{}, err
 	}
 	_, hasHelper := f.doc.Get("otelHeadersHelper")
-	return telemetryState{file: f, owned: owned, plan: planTelemetry(f.env, hasHelper, owned, want, env.Getenv)}, nil
+	plan := planTelemetry(planInput{
+		env: f.env, hasHelper: hasHelper, owned: owned, want: want, shell: shell,
+		managed: managedTelemetry(managedDocs(ctx, env)),
+	})
+	return telemetryState{file: f, owned: owned, plan: plan}, nil
 }
 
-// installTelemetry applies the plan. A conflict is not an error: the user's
-// own setup is left as it is and Notes explains.
-func installTelemetry(env hostenv.Env) error {
-	st, err := loadTelemetry(env)
+// installTelemetry applies the plan. A conflict is not an error: the other
+// setup is left as it is and Notes explains.
+func installTelemetry(ctx context.Context, env hostenv.Env) error {
+	st, err := loadTelemetry(ctx, env, env.Getenv)
 	if err != nil {
 		return nil //nolint:nilerr // telemetry is optional; Notes reports why it wasn't set up
 	}
-	f, owned := st.file, st.owned
+	return applyPlan(env, st)
+}
+
+// YieldTelemetry hands Claude Code telemetry back to a setup that appeared
+// after install. When managed settings, or the user's own entries in
+// settings.json, now configure OpenTelemetry, it removes Logbook's exporter
+// entries exactly as install would (handing the selectors over to a user's
+// setup) and returns why. It never adds entries, and it doesn't look at the
+// calling process's environment: the daemon calls it, and its environment
+// isn't the user's shell. It returns "" when there was nothing to remove.
+func YieldTelemetry(ctx context.Context, env hostenv.Env) (string, error) {
+	st, err := loadTelemetry(ctx, env, nil)
+	if err != nil {
+		return "", err
+	}
+	if st.plan.conflict == "" || len(st.plan.remove) == 0 {
+		return "", nil
+	}
+	if err := applyPlan(env, st); err != nil {
+		return "", err
+	}
+	return st.plan.conflict, nil
+}
+
+// applyPlan writes the planned entries (or removes and hands over, on a
+// conflict) and records what Logbook now owns.
+func applyPlan(env hostenv.Env, st telemetryState) error {
+	f, plan := st.file, st.plan
+	next := ownership{EnvCreated: st.owned.EnvCreated, Keys: map[string]string{}, HandedOver: map[string]string{}}
 	envObj := f.env
-	created := false
 	if envObj == nil {
-		if len(st.plan.set) == 0 {
-			return nil
+		if len(plan.set) == 0 {
+			// Nothing of Logbook's can be in a missing "env".
+			if sameOwnership(st.owned, ownership{}) {
+				return nil
+			}
+			return writeOwnership(env, ownership{})
 		}
-		envObj, created = jsonedit.NewObject(), true
+		envObj, next.EnvCreated = jsonedit.NewObject(), true
 	}
 	changed := false
-	next := ownership{EnvCreated: owned.EnvCreated || created, Keys: map[string]string{}}
-	for _, k := range st.plan.remove {
+	for _, k := range plan.remove {
 		envObj.Delete(k)
 		changed = true
 	}
-	for _, e := range st.plan.set {
+	for _, k := range plan.handover {
+		next.HandedOver[k], _ = st.owned.wrote(k)
+	}
+	for _, e := range plan.set {
 		raw, _ := json.Marshal(e.Value) // marshalling a string can't fail
 		if cur, ok := envObj.Get(e.Key); !ok || !jsonedit.Equal(cur, raw) {
 			envObj.Set(e.Key, raw)
@@ -330,14 +494,19 @@ func installTelemetry(env hostenv.Env) error {
 		next.Keys[e.Key] = e.Value
 	}
 	if !changed {
-		return nil
+		if sameOwnership(st.owned, next) {
+			return nil
+		}
+		return writeOwnership(env, next)
 	}
 	return saveTelemetry(env, f, envObj, next)
 }
 
-// uninstallTelemetry removes the entries Logbook added that still hold the
-// value it wrote, and "env" itself if Logbook created it and it is now empty.
-func uninstallTelemetry(env hostenv.Env) error {
+// uninstallTelemetry removes the entries Logbook wrote that still hold its
+// value, and "env" itself if Logbook created it and it is now empty. The
+// selectors stay when the user has an OpenTelemetry setup of their own that
+// may rely on them (never under managed telemetry settings).
+func uninstallTelemetry(ctx context.Context, env hostenv.Env) error {
 	f, err := readSettings(env)
 	if errors.Is(err, errEnvNotObject) {
 		// The user replaced "env"; nothing of Logbook's can be in it.
@@ -350,7 +519,10 @@ func uninstallTelemetry(env hostenv.Env) error {
 	if err != nil {
 		return err
 	}
-	remove := ownedPresent(f.env, owned)
+	_, hasHelper := f.doc.Get("otelHeadersHelper")
+	in := planInput{env: f.env, hasHelper: hasHelper, owned: owned, shell: env.Getenv,
+		managed: managedTelemetry(managedDocs(ctx, env))}
+	remove, _ := yieldEntries(f.env, owned, in.managed == "" && userOwnsOTel(in, nil))
 	if len(remove) == 0 {
 		return writeOwnership(env, ownership{})
 	}
@@ -394,14 +566,19 @@ func saveTelemetry(env hostenv.Env, f settingsFile, envObj *jsonedit.Object, own
 }
 
 // telemetryNotes explains, after install, why telemetry wasn't set up.
-func telemetryNotes(env hostenv.Env) []string {
-	st, err := loadTelemetry(env)
+func telemetryNotes(ctx context.Context, env hostenv.Env) []string {
+	st, err := loadTelemetry(ctx, env, env.Getenv)
 	switch {
 	case err != nil:
 		return []string{"Claude Code active time is not recorded: " + err.Error()}
 	case st.plan.conflict != "":
-		return []string{"Claude Code telemetry was left as you set it up (" + st.plan.conflict + "), so Logbook " +
-			"doesn't receive Claude Code's own active-time measure. Hooks still record your sessions."}
+		note := "Claude Code telemetry is set up elsewhere (" + st.plan.conflict + "), so Logbook doesn't add its " +
+			"exporter and doesn't receive Claude Code's own active-time measure. Hooks still record your sessions."
+		if len(st.plan.handover) > 0 {
+			note += " Logbook left " + strings.Join(st.plan.handover, " and ") + " in place because your setup " +
+				"may rely on them; delete them if you don't want Claude Code to export metrics."
+		}
+		return []string{note}
 	}
 	return nil
 }
