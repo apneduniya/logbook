@@ -51,7 +51,7 @@ func TestInstallRoundTrip(t *testing.T) {
 	if err := in.Install(harnesstest.OtherBin); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(harnesstest.ReadFile(t, path)), `const BIN = "`+harnesstest.OtherBin+`"`) {
+	if !strings.Contains(string(harnesstest.ReadFile(t, path)), `const BIN = "`+harnesstest.Encoded(harnesstest.OtherBin)+`"`) {
 		t.Fatal("install with a new path didn't update the plugin")
 	}
 	if err := in.Uninstall(); err != nil {
@@ -89,13 +89,14 @@ func TestInstallLeavesForeignFile(t *testing.T) {
 
 func TestConfigDirHonoursXDG(t *testing.T) {
 	env, _ := harnesstest.Env(t)
+	xdg := filepath.Join(t.TempDir(), "xdg")
 	env.Getenv = func(k string) string {
 		if k == "XDG_CONFIG_HOME" {
-			return "/xdg"
+			return xdg
 		}
 		return ""
 	}
-	if got, err := PluginPath(env); err != nil || got != "/xdg/opencode/plugins/logbook.js" {
+	if got, err := PluginPath(env); err != nil || got != filepath.Join(xdg, "opencode", "plugins", "logbook.js") {
 		t.Fatalf("PluginPath = %q, %v", got, err)
 	}
 }

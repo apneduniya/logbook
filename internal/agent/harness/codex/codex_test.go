@@ -2,6 +2,7 @@ package codex
 
 import (
 	"encoding/json"
+	"path/filepath"
 	"testing"
 
 	"github.com/apneduniya/logbook/internal/agent/harness/aievent"
@@ -38,13 +39,14 @@ func TestInstallRoundTrip(t *testing.T) {
 
 func TestHooksPathHonoursCodexHome(t *testing.T) {
 	env, _ := harnesstest.Env(t)
+	home := filepath.Join(t.TempDir(), "codex")
 	env.Getenv = func(k string) string {
 		if k == "CODEX_HOME" {
-			return "/srv/codex"
+			return home
 		}
 		return ""
 	}
-	if got, err := HooksPath(env); err != nil || got != "/srv/codex/hooks.json" {
+	if got, err := HooksPath(env); err != nil || got != filepath.Join(home, "hooks.json") {
 		t.Fatalf("HooksPath = %q, %v", got, err)
 	}
 }
