@@ -108,9 +108,13 @@ const (
 	// already has as done, without sending them again.
 	qMinutesSettleFinal = `UPDATE credited_minutes SET sent_final = 1
 		WHERE sent_final = 0 AND minute < ? AND digest = sent_digest`
+	// qMinutesUnsent returns unsent rows up to and including the minute of
+	// the (OFFSET+1)-th unsent row, so that minute comes whole.
 	qMinutesUnsent = `SELECT minute, project, label, credited, cuts, flags, rules_version, digest
 		FROM credited_minutes WHERE sent_final = 0 AND digest <> sent_digest
-		ORDER BY minute, credited, project LIMIT ?`
+		AND minute <= COALESCE((SELECT minute FROM credited_minutes WHERE sent_final = 0 AND digest <> sent_digest
+			ORDER BY minute, credited, project LIMIT 1 OFFSET ?), 9223372036854775807)
+		ORDER BY minute, credited, project`
 	qMinuteMarkSent = `UPDATE credited_minutes SET sent_digest = digest, sent_final = ?
 		WHERE minute = ? AND project = ? AND digest = ?`
 	qMinutesRetire      = `UPDATE credited_minutes SET sent_final = 1 WHERE sent_final = 0 AND minute < ?`

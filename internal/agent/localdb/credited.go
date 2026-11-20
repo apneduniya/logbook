@@ -156,17 +156,24 @@ func codesJSON(codes []string) (string, error) {
 	return string(b), nil
 }
 
-// UnsentMinutes returns up to limit rows whose current content the server
-// hasn't accepted yet, oldest minute first and, within a minute, smallest
-// credit first (so a project losing credit is sent before one gaining it).
-// Final minutes (before finalBefore) whose content the server already has
-// are first marked done.
+// UnsentMinutes returns rows whose current content the server hasn't
+// accepted yet, oldest minute first and, within a minute, smallest credit
+// first (so a project losing credit is sent before one gaining it). It
+// returns whole minutes only: at most limit rows, unless the first minute
+// alone has more, in which case that minute is returned whole. A minute's
+// rows are never split across batches, because the server can keep its
+// 60-second cap only by applying a minute's decreases and increases in one
+// request. Final minutes (before finalBefore) whose content the server
+// already has are first marked done.
 func (d *DB) UnsentMinutes(ctx context.Context, finalBefore time.Time, limit int) ([]CreditedMinute, error) {
+	if limit < 1 {
+		limit = 1
+	}
 	if _, err := d.sql.ExecContext(ctx, qMinutesSettleFinal, finalBefore.Unix()); err != nil {
 		return nil, fmt.Errorf("settling final minutes: %w", err)
 	}
 	var out []CreditedMinute
-	err := d.query(ctx, qMinutesUnsent, []any{limit}, func(r *sql.Rows) error {
+	err := d.query(ctx, qMinutesUnsent, []any{limit - 1}, func(r *sql.Rows) error {
 		var (
 			m           CreditedMinute
 			at          int64
@@ -188,7 +195,24 @@ func (d *DB) UnsentMinutes(ctx context.Context, finalBefore time.Time, limit int
 	if err != nil {
 		return nil, fmt.Errorf("reading unsent minutes: %w", err)
 	}
-	return out, nil
+	return wholeMinutes(out, limit), nil
+}
+
+// wholeMinutes trims rows (ordered by minute) to at most limit rows without
+// splitting a minute; a first minute longer than limit is kept whole.
+func wholeMinutes(rows []CreditedMinute, limit int) []CreditedMinute {
+	if len(rows) <= limit {
+		return rows
+	}
+	last := rows[len(rows)-1].Minute
+	n := len(rows)
+	for n > 0 && rows[n-1].Minute.Equal(last) {
+		n--
+	}
+	if n == 0 {
+		return rows
+	}
+	return rows[:n]
 }
 
 // MarkMinutesSent records that the server has answered for ms (accepted or

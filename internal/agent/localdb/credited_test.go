@@ -3,6 +3,7 @@ package localdb
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -179,6 +180,85 @@ func TestUnsentMinutesSettlesFinal(t *testing.T) {
 	}
 	if err := d.RetireMinutesBefore(ctx, minute(0)); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestUnsentMinutesWholeMinutes(t *testing.T) {
+	ctx := context.Background()
+	d, _ := openTest(t)
+	if _, err := d.SaveMinutes(ctx, MinuteUpdate{From: minute(-60), To: minute(0), OpenFrom: minute(-30),
+		Minutes: []CreditedMinute{
+			cm(-10, "a", 30), cm(-10, "b", 30),
+			cm(-9, "a", 60),
+			cm(-8, "x", 10), cm(-8, "y", 20), cm(-8, "z", 30),
+		}, Superseded: superseded}); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		limit int
+		want  []string // "minute/project"
+	}{
+		{1, []string{"-10/a", "-10/b"}}, // a first minute longer than the limit comes whole
+		{2, []string{"-10/a", "-10/b"}},
+		{3, []string{"-10/a", "-10/b", "-9/a"}},
+		{4, []string{"-10/a", "-10/b", "-9/a"}}, // -8 would be split: left for the next batch
+		{5, []string{"-10/a", "-10/b", "-9/a"}},
+		{6, []string{"-10/a", "-10/b", "-9/a", "-8/x", "-8/y", "-8/z"}},
+		{100, []string{"-10/a", "-10/b", "-9/a", "-8/x", "-8/y", "-8/z"}},
+	}
+	for _, tt := range tests {
+		ms, err := d.UnsentMinutes(ctx, minute(-30), tt.limit)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := make([]string, len(ms))
+		for i, m := range ms {
+			got[i] = fmt.Sprintf("%d/%s", int(m.Minute.Sub(testNow)/time.Minute), m.Project)
+		}
+		if fmt.Sprint(got) != fmt.Sprint(tt.want) {
+			t.Errorf("UnsentMinutes(limit %d) = %v, want %v", tt.limit, got, tt.want)
+		}
+	}
+}
+
+// TestAIEventPromptHashRoundTrip guards the merge with the signals module,
+// whose migration 0003 adds ai_events.prompt_hash: once the column exists,
+// both event reads must return it, or the engine's repeated-prompt cut can
+// never fire and evidence hashes leave the field out.
+func TestAIEventPromptHashRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	d, _ := openTest(t)
+	var hasColumn int
+	if err := d.sql.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM pragma_table_info('ai_events') WHERE name = 'prompt_hash'`).Scan(&hasColumn); err != nil {
+		t.Fatal(err)
+	}
+	hash := strings.Repeat("ab", 32)
+	at := testNow.Add(-time.Minute)
+	if err := d.InsertEvents(ctx, []wire.LocalEvent{{Type: "ai", AI: &wire.AIEvent{Time: at,
+		Harness: wire.HarnessCodex, Kind: wire.AIPromptSubmit, SessionID: "s", PromptHash: hash}}}); err != nil {
+		t.Fatal(err)
+	}
+	want := ""
+	if hasColumn == 1 {
+		want = hash
+	}
+	hw, err := d.HighWater(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	between, err := d.EventsBetween(ctx, at, testNow, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := d.EventsAfter(ctx, HighWater{}, hw, at, testNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, ev := range map[string]Events{"EventsBetween": between, "EventsAfter": after} {
+		if len(ev.AI) != 1 || ev.AI[0].PromptHash != want {
+			t.Errorf("%s: AI events = %+v, want prompt hash %q (column present: %v)", name, ev.AI, want, hasColumn == 1)
+		}
 	}
 }
 
