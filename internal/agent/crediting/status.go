@@ -31,9 +31,9 @@ const (
 	// keyClock describes a clock problem ("" when none); see
 	// MinutesStatus.Clock.
 	keyClock = "crediting.clock"
-	// keySealedThrough is the end (UTC midnight, RFC 3339) of the latest
-	// day the evidence chain has moved past, sealed or found empty. It only
-	// grows; no minute before it is computed or stored again.
+	// keySealedThrough is the latest UTC day (YYYY-MM-DD) the evidence
+	// chain has moved past, sealed or found empty. It only grows; no minute
+	// before that day's end is computed or stored again.
 	keySealedThrough = "crediting.sealed_through"
 	// keySettling says why no minute becomes final yet after a start or a
 	// wake ("" once settled).
