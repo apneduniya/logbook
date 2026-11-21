@@ -222,6 +222,13 @@ func (p *Probe) logindString(ctx context.Context, name string) (string, error) {
 // logindProp reads a property of the user's display session. The session is
 // found through /org/freedesktop/login1/user/self, which works for a
 // systemd --user service that is not itself inside the graphical session.
+//
+// Without a desktop, logind elects a text session as Display, even a remote
+// SSH login, and its hints describe that terminal, not the person's work. A
+// session's Type can also change while it lives (a compositor started from a
+// tty and then quit leaves a "tty" session). So the Type is checked on every
+// read, and a session that isn't a desktop is dropped and looked up again
+// next time, in case a desktop session starts.
 func (p *Probe) logindProp(ctx context.Context, name string) (dbus.Variant, error) {
 	if p.logindSession == "" {
 		var display struct {
@@ -239,42 +246,33 @@ func (p *Probe) logindProp(ctx context.Context, name string) (dbus.Variant, erro
 		if display.Path == "" || display.Path == "/" {
 			return dbus.Variant{}, fmt.Errorf("logind: no graphical session: %w", ErrUnavailable)
 		}
-		// Without a desktop, logind elects a text session as Display, even
-		// a remote SSH login. Its hints describe that terminal, not the
-		// person's work, so it isn't used. It is looked up again next time,
-		// in case a desktop session starts.
-		typ, err := p.sessionType(ctx, display.Path)
-		if err != nil {
-			return dbus.Variant{}, err
-		}
-		if !graphicalSession(typ) {
-			return dbus.Variant{}, fmt.Errorf("logind: no graphical session (display session is %q): %w",
-				typ, ErrUnavailable)
-		}
 		p.logindSession = display.Path
 	}
+	typ, err := p.sessionProp(ctx, "Type")
+	if err != nil {
+		return dbus.Variant{}, err
+	}
+	if t, _ := typ.Value().(string); !graphicalSession(t) {
+		p.logindSession = ""
+		return dbus.Variant{}, fmt.Errorf("logind: no graphical session (display session is %q): %w", t, ErrUnavailable)
+	}
+	if name == "Type" {
+		return typ, nil
+	}
+	return p.sessionProp(ctx, name)
+}
+
+// sessionProp reads one property of the cached display session, dropping
+// the cache when the read fails (the session may have ended).
+func (p *Probe) sessionProp(ctx context.Context, name string) (dbus.Variant, error) {
 	var v dbus.Variant
 	err := p.sys.call(ctx, "org.freedesktop.login1", p.logindSession,
 		"org.freedesktop.DBus.Properties.Get", &v, "org.freedesktop.login1.Session", name)
 	if err != nil {
-		p.logindSession = "" // the session may have ended; look it up again next time
+		p.logindSession = ""
 		return dbus.Variant{}, err
 	}
 	return v, nil
-}
-
-// sessionType reads the Type property of a logind session.
-func (p *Probe) sessionType(ctx context.Context, path dbus.ObjectPath) (string, error) {
-	var v dbus.Variant
-	if err := p.sys.call(ctx, "org.freedesktop.login1", path,
-		"org.freedesktop.DBus.Properties.Get", &v, "org.freedesktop.login1.Session", "Type"); err != nil {
-		return "", fmt.Errorf("reading logind session Type: %w", err)
-	}
-	typ, ok := v.Value().(string)
-	if !ok {
-		return "", fmt.Errorf("logind Type has type %s", v.Signature())
-	}
-	return typ, nil
 }
 
 // sessionBus connects to the session bus without ever launching one: the
