@@ -41,17 +41,16 @@ All in the data directory (`config.Dir()`: `os.UserConfigDir()/logbook`, or `$LO
 | `heartbeat_queue` | heartbeats waiting for Logbook (JSON) | 200 000 rows; oldest dropped, counted in `kv` `dropped.heartbeat_queue` and logged |
 | `mirror_queue` | heartbeats waiting for Hackatime | same, `dropped.mirror_queue` |
 | `heartbeat_log` | time, project and **directory** of each accepted heartbeat (never the file name) | 48 hours |
-| `ai_events`, `activity_samples`, `git_events` | raw local evidence, never uploaded in step 2. `ai_events.prompt_hash` holds the keyed prompt hash ([harness.md](harness.md#prompt-hashes)) | 90 days and 3 000 000 rows each |
-| `active_time` | Claude Code's active time as deltas (see below) | 90 days and 3 000 000 rows |
-| `kv` | uploader state, drop counters, spool progress | small |
-| `ai_events`, `activity_samples`, `git_events` | raw local evidence, never uploaded in step 2 | 90 days and 3 000 000 rows each |
-| `heartbeats` | each accepted heartbeat in full, deduplicated, for the struggle engine and evidence (`docs/agent/crediting.md`) | 90 days and 3 000 000 rows |
-| `credited_minutes`, `evidence_days` | the engine's minutes with their upload state, and the signed evidence chain (`docs/agent/crediting.md`) | 90 days; one row per day |
+| `ai_events`, `activity_samples`, `git_events` | raw local evidence (part of the event log), never uploaded. `ai_events.prompt_hash` holds the keyed prompt hash ([harness.md](harness.md#prompt-hashes)) | 90 days and 3 000 000 rows each, sealed rows only (below) |
+| `active_time` | Claude Code's active time as deltas (see below; part of the event log) | 90 days and 3 000 000 rows, sealed rows only |
+| `heartbeats` | each accepted heartbeat in full, deduplicated, for the struggle engine and evidence (part of the event log; `docs/agent/crediting.md`) | 90 days and 3 000 000 rows, sealed rows only |
+| `repo_map` | repository path to project, a row when a path is first seen or its project changes (part of the event log) | a sealed row goes once a newer row for its path is 90 days old |
+| `credited_minutes`, `final_spans`, `evidence_days` | the engine's minutes with their computation keys, finality and upload state, and the signed evidence chain (`docs/agent/crediting.md`) | 90 days; one row per day |
 | `kv` | uploader state, drop counters, spool progress, device and evidence state | small |
 
 Commits are unique per `(project, commit_hash)`, so the git sensor can report a commit repeatedly. Pruning runs at start and every 6 hours.
 
-Every raw event row (`heartbeats`, `ai_events`, `activity_samples`, `git_events`, `active_time`) records `arrived_at`, when it was stored, taken inside the inserting transaction (migration 0006; older rows got their event time). Crediting counts a final minute's events by arrival (ADR 0016). Any transaction that prunes or trims raw event rows also moves `kv` `events.generation`, so in-memory copies of the window know rows are gone.
+The raw event tables (`heartbeats`, `ai_events`, `activity_samples`, `git_events`, `active_time`) and `repo_map` form one append-only event log (ADR 0017, migration 0007): every stored row takes the next sequence number `seq` from `kv` `log.seq` inside its inserting transaction, an ignored duplicate (a resent heartbeat, a commit seen again, a retried export) takes none, and logged rows are never updated. Readers take a snapshot (`DB.View`: one read transaction that reads the high-water mark first) and read rows at or below it. Pruning (90 days) and the row cap delete only rows the device's evidence chain has sealed (`kv` `log.sealed`); when unsealed rows fill a table, new activity samples are dropped and counted (`log.dropped_samples`), and every other kind of row is kept. Any transaction that prunes or trims logged rows also moves `kv` `events.generation`, so in-memory copies of the window know rows are gone.
 
 ## Loopback API
 
@@ -133,7 +132,7 @@ Hooks append to `spool/events.jsonl` when the daemon is down. The drainer:
 
 A crash mid-drain resumes from the saved offset, so events are neither lost nor duplicated. Leftover `.draining` files are processed first, oldest first.
 
-The first drain runs at start, and crediting waits for it (at most 2 minutes) before its first run and makes no minute final until it has finished: spooled events arrive late, and must count before the minutes they belong to are final (ADR 0016).
+The first drain runs at start, and crediting waits for it (at most 2 minutes) before its first run and makes no minute final until it has finished: spooled events arrive late, and must count before the minutes they belong to are final (ADR 0017).
 
 Hooks append through `internal/agent/spoolfile`: one write per hook (so lines from concurrent hooks never interleave), at the end of the file, capped at 10 MiB, file 0600 in a 0700 directory. The rename in step 1 has to work while hooks hold the file open:
 
