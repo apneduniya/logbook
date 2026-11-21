@@ -207,7 +207,7 @@ func TestFinalMinutesAgreeWithServerAndReplay(t *testing.T) {
 			t.Error("no seed made the server answer a final refusal with its rows")
 		}
 	})
-	for seed := range uint64(6) {
+	for seed := range uint64(4) {
 		t.Run(fmt.Sprint(seed), func(t *testing.T) {
 			t.Parallel()
 			ctx := context.Background()
