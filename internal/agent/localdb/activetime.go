@@ -47,9 +47,11 @@ func (d *DB) LastCumulative(ctx context.Context, sessionID, typ string, seriesSt
 	return time.UnixMilli(ms).UTC(), total, true, nil
 }
 
-// InsertActiveTime stores points in one transaction. A point already stored
-// for the same session, type and interval (a retried export) is ignored.
-// The table is trimmed to the event cap like the raw event tables.
+// InsertActiveTime stores points in one transaction, each taking the next
+// sequence number of the event log (ADR 0017). A point already stored for
+// the same session, type and interval (a retried export) is ignored and
+// takes none. Over the event cap, only points the evidence chain sealed are
+// trimmed; active time is always kept.
 func (d *DB) InsertActiveTime(ctx context.Context, pts []ActiveTimePoint) error {
 	if len(pts) == 0 {
 		return nil
@@ -60,17 +62,31 @@ func (d *DB) InsertActiveTime(ctx context.Context, pts []ActiveTimePoint) error 
 		}
 	}
 	return d.inTx(ctx, func(tx *sql.Tx) error {
-		arrived := d.now().UnixMilli() // see InsertEvents
+		now := d.now()
+		w, err := openLog(ctx, tx)
+		if err != nil {
+			return err
+		}
+		stmt, err := tx.PrepareContext(ctx, qActiveInsert)
+		if err != nil {
+			return fmt.Errorf("preparing: %w", err)
+		}
+		defer func() { _ = stmt.Close() }()
 		for _, p := range pts {
-			if _, err := tx.ExecContext(ctx, qActiveInsert, p.From.UnixMilli(), p.To.UnixMilli(), p.SessionID,
-				p.Type, p.Secs, p.Repository, seriesMillis(p.SeriesStart), p.Cumulative, arrived); err != nil {
+			if err := w.insert(ctx, stmt, p.From.UnixMilli(), p.To.UnixMilli(), p.SessionID,
+				p.Type, p.Secs, p.Repository, seriesMillis(p.SeriesStart), p.Cumulative); err != nil {
 				return fmt.Errorf("storing active time: %w", err)
 			}
 		}
-		if _, err := trim(ctx, tx, qActiveTrim, d.eventCap); err != nil {
+		if err := w.close(ctx, tx, now); err != nil {
 			return err
 		}
-		return nil
+		sealed, err := sealedSeq(ctx, tx)
+		if err != nil {
+			return err
+		}
+		_, err = trimSealed(ctx, tx, qActiveTrim, d.eventCap, sealed)
+		return err
 	})
 }
 

@@ -51,7 +51,7 @@ Auth: API key. Uploads labelled minutes from `pkg/struggle`.
 }
 ```
 
-`computed_at` and `snapshot` are the minute's computation key (ADR 0017): the end `T` of the agent run's window and the high-water mark `H` of the agent's event log that the run read. Both are required on every item, removals included. The server stores them with the row so a reviewer can re-run the minute at exactly that key. All rows of one device-minute carry the same key; the agent sends them together.
+`computed_at` and `snapshot` are the minute's computation key (ADR 0017): the end `T` of the agent run's window (RFC 3339 UTC, a whole minute) and the high-water mark `H` of the agent's event log that the run read. Both are required on every item, removals included. The server stores them with the row so a reviewer can re-run the minute at exactly that key. All rows of one device-minute carry the same key; the agent sends them together. A changed key is a rewrite, under the finality rule below.
 
 Whole-request errors (`400`): invalid JSON (including a field of the wrong type, such as a `snapshot` that isn't an integer), more than 1000 minutes, or a `rules_version` the server doesn't know (currently only `v1`). An empty `minutes` array is valid and changes nothing; the agent sends one to read the server's clock (`server_time`) before it seals a day.
 
@@ -64,9 +64,9 @@ Each item is then accepted or rejected on its own. `200`:
 
 `server_time` is the server's clock when it checked the batch, RFC 3339 in UTC (fractional seconds optional). The agent seals an evidence day only when this is within 5 minutes of its own clock, and reads it from the body rather than the `Date` header, which a proxy may drop or rewrite. An agent that gets no `server_time`, or one it can't parse, keeps uploading minutes but seals nothing.
 
-`rejected` is sorted by index and is `[]` when empty. Rejected items should be dropped, not retried.
+`rejected` is sorted by index and is `[]` when empty.
 
-A rejection because the minute is final also carries `stored`: every row the server holds for that device-minute once the batch is applied, sorted by project. That is the server's answer for the minute, so an agent whose earlier response was lost can adopt it instead of guessing which value won. `computed_at` and `snapshot` are `null` for rows stored before ADR 0017. Other rejections have no `stored` field.
+A rejection because the minute is final also carries `stored`: every row the server holds for that device-minute once the batch is applied, sorted by project. That is the server's answer for the minute, so an agent whose earlier response was lost can adopt it instead of guessing which value won. `stored` is `[]` when the server holds no row for the minute, and `computed_at` and `snapshot` are `null` for rows stored before ADR 0017. Other rejections have no `stored` field.
 
 ```json
 { "index": 0, "error": "minute is final: stored minutes can only be changed for 30 minutes",
@@ -74,7 +74,7 @@ A rejection because the minute is final also carries `stored`: every row the ser
                "computed_at": "2026-11-20T11:00:00Z", "snapshot": 18234 }] }
 ```
 
-The rules:
+The agent replaces its rows for the minute with exactly the `stored` rows and treats the minute as final and acknowledged. It doesn't retry other rejected items while their minute is open; it sends a final minute again until the server accepts it or answers with `stored`. The rules:
 
 | Rule | Error |
 |---|---|
@@ -118,6 +118,7 @@ Auth: API key. Uploads one link of the device's evidence chain (ADR 0010; format
 }
 ```
 
+- The record for `day` covers the device's logged rows from where its previous record ended up to the log's high-water mark when the agent sealed it (ADR 0017): a block can hold events of any time, and every row is sealed exactly once. `content_hash` is `evidence.ContentHash` of those rows; `event_counts` counts them by type (`activity`, `active_time`, `ai`, `git`, `heartbeat`, `repo`).
 - Hex is lowercase. `day` is a UTC date, not after today and not before the UTC day the device was registered (`400` otherwise).
 - `rules_version` must be one the server knows (currently only `v1`), as for minutes, because step 5 re-runs the engine at that version (`400` otherwise).
 - `event_counts` has at most 32 keys matching `[a-z][a-z0-9_.]{0,63}`, with counts from 0 to 10^9.
@@ -130,7 +131,7 @@ Auth: API key. Uploads one link of the device's evidence chain (ADR 0010; format
 | `409 {"error": "a different record is already stored for this day"}` | A different, validly signed record exists for the day. Nothing is changed, and the conflict is written to the audit log as `evidence_conflict` with both versions' hashes. |
 | `409 {"error": "chain mismatch"}` | `prev_chain_hash` isn't the `chain_hash` of the device's latest stored day before `day` (or `""` when there is none), or a later day is already stored, so this day can't be inserted before it. |
 
-Gaps are allowed: if the agent was off on the 18th, the 19th links to the 17th.
+Gaps are allowed: if nothing was logged since the 17th's record when the 18th is sealed, the 19th links to the 17th.
 
 ---
 

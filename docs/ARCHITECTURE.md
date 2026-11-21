@@ -25,7 +25,7 @@ laptop                                     server (Go + Postgres)
 | `cmd/logbook` | Agent daemon and CLI (`logbook login`, `status`, `submit`, ...) |
 | `pkg/wire` | Wire types shared by server and agent (heartbeats, minute batches, evidence) |
 | `pkg/struggle` | Pure rules engine: events in, labelled minutes and cuts out |
-| `pkg/evidence` | Canonical encoding, hash chain, ed25519 signing and verification |
+| `pkg/evidence` | Canonical encoding of the agent's logged rows, hash chain, ed25519 signing and verification |
 | `pkg/projectname` | Project name normalisation shared by heartbeat ingest and credited minutes |
 | `internal/server/config` | Typed env config |
 | `internal/server/store` | sqlc-generated queries and transaction helpers |
@@ -39,7 +39,7 @@ laptop                                     server (Go + Postgres)
 | `internal/server/live` | SSE fan-out |
 | `internal/server/httpapi` | HTTP handlers and middleware; thin, calls services |
 | `internal/server/jobs` | River workers |
-| `internal/agent/...` | Agent: proxy, sensors, harness plugins, git, local store, uploader, tray |
+| `internal/agent/...` | Agent: proxy, sensors, harness plugins, git, local store (an append-only event log, ADR 0017), crediting, uploader, tray |
 | `internal/e2e` | Tests only: the agent's crediting pipeline against the real minutes endpoint and Postgres (the one place importing both sides) |
 | `web/` | SvelteKit UI |
 | `migrations/` | goose SQL migrations |

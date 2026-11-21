@@ -7,6 +7,29 @@ import (
 	"time"
 )
 
+// A wake is a gap by either clock: a suspend shows on the wall clock while
+// the monotonic clock may not count it, and a long gap shows on the
+// monotonic clock even if the wall clock was set back meanwhile.
+func TestWokeByEitherClock(t *testing.T) {
+	gap := 3 * time.Minute
+	tests := []struct {
+		name       string
+		wall, mono time.Duration
+		want       bool
+	}{
+		{"a minute on both", time.Minute, time.Minute, false},
+		{"suspend: wall clock only", 2 * time.Hour, time.Minute, true},
+		{"clock set back during a long gap: monotonic only", time.Minute, 2 * time.Hour, true},
+		{"clock set back past the last run", -5 * time.Minute, time.Minute, true},
+		{"just within the gap", gap, gap, false},
+	}
+	for _, tt := range tests {
+		if got := woke(tt.wall, tt.mono, gap); got != tt.want {
+			t.Errorf("%s: woke = %v, want %v", tt.name, got, tt.want)
+		}
+	}
+}
+
 // Run makes its first run only once the startup spool drain has finished,
 // so it starts from every event the hooks spooled while the agent was down.
 func TestRunWaitsForTheSpoolDrain(t *testing.T) {
