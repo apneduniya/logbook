@@ -54,10 +54,14 @@ const (
 	keyUnkeyed = "crediting.unkeyed"
 
 	keyEvidenceDevice = "evidence.device"
-	keyEvidenceDay    = "evidence.last_day"
-	keyEvidenceHash   = "evidence.chain_hash"
-	keyEvidenceState  = "evidence.state"
-	keyEvidenceError  = "evidence.error"
+	// keyDevice is the device the stored credited minutes belong to, set
+	// once a replacement device's switch (retiring the previous device's
+	// minutes and restarting the chain) is complete.
+	keyDevice        = "crediting.device"
+	keyEvidenceDay   = "evidence.last_day"
+	keyEvidenceHash  = "evidence.chain_hash"
+	keyEvidenceState = "evidence.state"
+	keyEvidenceError = "evidence.error"
 	// keyEvidenceLocal is the last local failure sealing a day ("" when
 	// the last attempt worked).
 	keyEvidenceLocal = "evidence.local_error"

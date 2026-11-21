@@ -66,7 +66,7 @@ Each item is then accepted or rejected on its own. `200`:
 
 `rejected` is sorted by index and is `[]` when empty.
 
-A rejection because the minute is final also carries `stored`: every row the server holds for that device-minute once the batch is applied, sorted by project. That is the server's answer for the minute, so an agent whose earlier response was lost can adopt it instead of guessing which value won. `stored` is `[]` when the server holds no row for the minute, and `computed_at` and `snapshot` are `null` for rows stored before ADR 0017. Other rejections have no `stored` field.
+A rejection because the minute is final, or in a day this device has sealed, also carries `stored`: every row the server holds for that device-minute once the batch is applied, sorted by project. That is the server's answer for the minute, so an agent whose earlier response was lost can adopt it instead of guessing which value won. `stored` is `[]` when the server holds no row for the minute, and `computed_at` and `snapshot` are `null` for rows stored before ADR 0017. Other rejections have no `stored` field.
 
 ```json
 { "index": 0, "error": "minute is final: stored minutes can only be changed for 30 minutes",
@@ -97,7 +97,7 @@ The agent replaces its rows for the minute with exactly the `stored` rows and tr
 | One minute has at most 8 projects on one device, whatever their credit. | `a minute can have at most 8 projects per device` |
 | Across all projects of one minute on this device, `credited` adds up to at most 60. Removals are applied first, then items that lower a minute's credit, then the rest in request order, so replacing a project or moving a minute between projects works in one request. | `credited seconds for this minute would exceed 60 across projects` |
 
-**Removals.** An item labelled `idle` with `credited` 0 and empty `cuts` and `flags` is a removal: it deletes the stored `(minute, project)` row instead of storing one, freeing that project's slot and credit. The engine never emits a row of that shape (its idle rows always carry a cut), and a missing row already means idle. A removal follows the rules above (a final minute can't lose a row; re-sending a removal is always accepted), and a removal of a row that isn't stored is accepted and changes nothing. When the engine's top 8 projects of an open minute change, the agent sends the displaced project's removal and its replacement in one request, removal first.
+**Removals.** An item labelled `idle` with `credited` 0 and empty `cuts` and `flags` is a removal: it deletes the stored `(minute, project)` row instead of storing one, freeing that project's slot and credit. The engine never emits a row of that shape (its idle rows always carry a cut), and a missing row already means idle. A removal follows the rules above (a final minute can't lose a row; re-sending a removal is always accepted), and a removal of a row that isn't stored is accepted and changes nothing, except in a final or sealed minute for which the server holds other rows: then it is refused with `stored`, because the device's view of the minute is wrong. When the engine's top 8 projects of an open minute change, the agent sends the displaced project's removal and its replacement in one request, removal first.
 
 - Writes are idempotent upserts keyed by `(device, minute, project)`, storing the item's `computed_at` and `snapshot`; removals are idempotent deletes.
 - Uploads for one device are serialised, so two concurrent batches can't break the 60-second rule.

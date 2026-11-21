@@ -419,7 +419,16 @@ func (r *Runner) upload(ctx context.Context, now time.Time, st settleState) {
 		r.fail(ctx, t, err)
 		return
 	}
-	if dev.Replaced {
+	// The device the stored minutes belong to is recorded (keyDevice) only
+	// once the switch to it is complete, so a crash after the identity
+	// persisted a replacement but before its minutes were retired is
+	// caught on the next run, when Ensure no longer reports Replaced.
+	owner, err := r.opt.Store.Get(ctx, keyDevice)
+	if err != nil {
+		r.opt.Logger.ErrorContext(ctx, "reading the device credited minutes belong to", "err", err)
+		return
+	}
+	if dev.Replaced || (owner != "" && owner != dev.ID) {
 		// A new device starts clean: minutes from before it registered
 		// belong to the previous device and are not sent again.
 		if err := r.opt.Store.RetireMinutesBefore(ctx, dev.RegisteredAt.Truncate(time.Minute)); err != nil {
@@ -428,9 +437,20 @@ func (r *Runner) upload(ctx context.Context, now time.Time, st settleState) {
 		}
 		// Its evidence chain starts over too, from the oldest retained row,
 		// and until it seals a block no row counts as sealed.
-		r.persist(ctx, localdb.KV{Key: keyEvidenceDevice, Value: dev.ID}, localdb.KV{Key: keyEvidenceDay, Value: ""},
+		if err := r.opt.Store.SetMany(ctx, localdb.KV{Key: keyEvidenceDevice, Value: dev.ID}, localdb.KV{Key: keyEvidenceDay, Value: ""},
 			localdb.KV{Key: keyEvidenceHash, Value: ""}, localdb.KV{Key: keyEvidenceState, Value: ""},
-			localdb.KV{Key: keyEvidenceError, Value: ""}, localdb.KV{Key: localdb.KeySealed, Value: "0"})
+			localdb.KV{Key: keyEvidenceError, Value: ""}, localdb.KV{Key: localdb.KeySealed, Value: "0"},
+			localdb.KV{Key: keyDevice, Value: dev.ID}); err != nil {
+			r.opt.Logger.ErrorContext(ctx, "starting the new device's evidence chain", "err", err)
+			return
+		}
+	} else if owner == "" {
+		// The first device, or an agent from before keyDevice: these
+		// minutes are its own.
+		if err := r.opt.Store.SetMany(ctx, localdb.KV{Key: keyDevice, Value: dev.ID}); err != nil {
+			r.opt.Logger.ErrorContext(ctx, "recording the device credited minutes belong to", "err", err)
+			return
+		}
 	}
 	// Sealing a day closes it to minutes on the server, so new days are
 	// sealed only on a run whose minute uploads went through; the per-day

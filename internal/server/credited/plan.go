@@ -121,11 +121,11 @@ type Bounds struct {
 }
 
 // Rejection says why one item of a batch was not stored. Stored is set only
-// when the item was refused because its minute is final: it holds every row
-// the server keeps for that device-minute once the batch is applied, sorted
-// by project, so the agent can adopt the server's answer (ADR 0017). A
-// final refusal always sends "stored", as [] when the server holds no row;
-// other refusals leave it out (nil).
+// when the item was refused because its minute is final or in a sealed
+// day: it holds every row the server keeps for that device-minute once the
+// batch is applied, sorted by project, so the agent can adopt the server's
+// answer (ADR 0017). Such a refusal always sends "stored", as [] when the
+// server holds no row; other refusals leave it out (nil).
 type Rejection struct {
 	Index  int         `json:"index"`
 	Error  string      `json:"error"`
@@ -363,10 +363,16 @@ func Plan(items []Indexed, stored []Stored, b Bounds) (write, remove []Item, rej
 		seen[k] = true
 		cur, ok := existing[k]
 		removal := IsRemoval(it.Item)
-		if removal && !ok {
-			continue // nothing stored, nothing to remove
-		}
 		err := writable(it.Item, ok, minutes[k.minute], sealed, b)
+		if removal && !ok {
+			if err == nil || minutes[k.minute].projects == 0 {
+				continue // nothing stored, nothing to remove
+			}
+			// The device asks to remove a row the server doesn't hold, in a
+			// minute it can no longer change but holds other rows for: the
+			// device's view of the minute is wrong, so it gets the minute's
+			// rows back below instead of a silent success.
+		}
 		if ok && cur.RulesVersion == b.RulesVersion && sameItem(cur.Item, it.Item) && (!removal || err != nil) {
 			// An exact repeat, typically a retry. A row stored in the shape
 			// of a removal (by a server before removals) is still removed
@@ -375,7 +381,7 @@ func Plan(items []Indexed, stored []Stored, b Bounds) (write, remove []Item, rej
 		}
 		if err != nil {
 			rejected = append(rejected, Rejection{Index: it.Index, Error: err.Error()})
-			if errors.Is(err, errFinal) {
+			if errors.Is(err, errFinal) || errors.Is(err, errSealed) {
 				finalAt[it.Index] = k.minute
 			}
 			continue
@@ -432,11 +438,16 @@ func Plan(items []Indexed, stored []Stored, b Bounds) (write, remove []Item, rej
 		}
 		// A device-minute is one unit that a single key reproduces (ADR
 		// 0017): the agent replaces a changed minute whole, so every row it
-		// keeps afterwards carries the same key. A batch that would leave
-		// rows of two computations (two keys in the request, or a new key
-		// next to untouched rows of an older one) changes nothing in the
-		// minute.
-		if !oneKey(held(m, stored, mw, mr)) {
+		// keeps afterwards, and every removal it sends with them, carries
+		// the same key. A batch that would leave rows of two computations
+		// (two keys in the request, a new key next to untouched rows of an
+		// older one, or a removal from another computation than the rows
+		// it leaves) changes nothing in the minute.
+		after := held(m, stored, mw, mr)
+		for _, it := range mr {
+			after = append(after, storedRow(it))
+		}
+		if !oneKey(after) {
 			for _, c := range changes {
 				rejected = append(rejected, Rejection{Index: c.Index, Error: errMixedKeys.Error()})
 			}
