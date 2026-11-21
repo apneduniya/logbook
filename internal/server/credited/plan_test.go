@@ -1,6 +1,7 @@
 package credited
 
 import (
+	"encoding/json"
 	"fmt"
 	"slices"
 	"strings"
@@ -587,5 +588,26 @@ func BenchmarkPlan(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		Plan(in, nil, bounds())
+	}
+}
+
+// A final refusal always carries "stored", even when the server holds no
+// row for the minute ([]); other refusals have none. The agent tells the
+// two apart (ADR 0017).
+func TestRejectionStoredJSON(t *testing.T) {
+	row := storedRow(Item{Project: "p", Label: "idle", Cuts: []string{}, Flags: []string{}})
+	for _, c := range []struct {
+		r    Rejection
+		want string
+	}{
+		{Rejection{Index: 1, Error: "bad"}, `{"index":1,"error":"bad"}`},
+		{Rejection{Index: 1, Error: "final", Stored: []StoredRow{}}, `{"index":1,"error":"final","stored":[]}`},
+		{Rejection{Index: 1, Error: "final", Stored: []StoredRow{row}},
+			`{"index":1,"error":"final","stored":[{"project":"p","label":"idle","credited":0,"cuts":[],"flags":[],"computed_at":null,"snapshot":null}]}`},
+	} {
+		b, err := json.Marshal(c.r)
+		if err != nil || string(b) != c.want {
+			t.Errorf("%+v = %s, %v; want %s", c.r, b, err, c.want)
+		}
 	}
 }

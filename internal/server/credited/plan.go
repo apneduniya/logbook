@@ -122,11 +122,13 @@ type Bounds struct {
 // Rejection says why one item of a batch was not stored. Stored is set only
 // when the item was refused because its minute is final: it holds every row
 // the server keeps for that device-minute once the batch is applied, sorted
-// by project, so the agent can adopt the server's answer (ADR 0017).
+// by project, so the agent can adopt the server's answer (ADR 0017). A
+// final refusal always sends "stored", as [] when the server holds no row;
+// other refusals leave it out (nil).
 type Rejection struct {
 	Index  int         `json:"index"`
 	Error  string      `json:"error"`
-	Stored []StoredRow `json:"stored,omitempty"`
+	Stored []StoredRow `json:"stored,omitzero"`
 }
 
 // StoredRow is one stored row of a final minute, as returned in a
