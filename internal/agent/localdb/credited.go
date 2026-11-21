@@ -505,18 +505,28 @@ func (d *DB) MarkMinutesTried(ctx context.Context, ms []CreditedMinute) error {
 // keys (migration 0007), which it held as far as the agent can know. Any
 // other row is deleted: the agent can't know what, if anything, that
 // device holds for it, and it never shows a final value the server doesn't
-// hold (ADR 0017). All of
-// [0, t) becomes final, so no later run (after a clock rollback, say)
-// computes those minutes again for the new device.
+// hold (ADR 0017). Everything up to the end of the latest minute the
+// previous device stored before t becomes final, so no later run (after a
+// clock rollback, say) computes those minutes again for the new device.
+// The span stops there rather than at t: t comes from the system clock at
+// registration, and a clock running ahead would otherwise make minutes
+// final that haven't happened yet, losing their credit.
 func (d *DB) RetireMinutesBefore(ctx context.Context, t time.Time) error {
 	return d.inTx(ctx, func(tx *sql.Tx) error {
+		var last sql.NullInt64
+		if err := tx.QueryRowContext(ctx, qMinutesLastBefore, t.Unix()).Scan(&last); err != nil {
+			return fmt.Errorf("finding the previous device's last minute: %w", err)
+		}
 		if _, err := tx.ExecContext(ctx, qMinutesRetireUnheld, t.Unix()); err != nil {
 			return fmt.Errorf("retiring credited minutes: %w", err)
 		}
 		if _, err := tx.ExecContext(ctx, qMinutesRetire, t.Unix()); err != nil {
 			return fmt.Errorf("retiring credited minutes: %w", err)
 		}
-		return addSpan(ctx, tx, time.Unix(0, 0), t)
+		if !last.Valid {
+			return nil
+		}
+		return addSpan(ctx, tx, time.Unix(0, 0), time.Unix(last.Int64+60, 0))
 	})
 }
 

@@ -232,8 +232,9 @@ const (
 	// (RetireMinutesBefore).
 	qMinutesRetireUnheld = `DELETE FROM credited_minutes WHERE minute < ? AND sent_digest <> ` + heldAs + `
 		AND NOT (state = 'final' AND acknowledged = 1 AND computed_at IS NULL)`
-	qMinutesRetire  = `UPDATE credited_minutes SET state = 'final', acknowledged = 1 WHERE minute < ?`
-	qMinutesUnacked = `SELECT COUNT(*) FROM credited_minutes WHERE acknowledged = 0`
+	qMinutesRetire     = `UPDATE credited_minutes SET state = 'final', acknowledged = 1 WHERE minute < ?`
+	qMinutesLastBefore = `SELECT MAX(minute) FROM credited_minutes WHERE minute < ?`
+	qMinutesUnacked    = `SELECT COUNT(*) FROM credited_minutes WHERE acknowledged = 0`
 	// qMinutesPendingBefore counts rows before a minute that are open or
 	// the server hasn't answered for yet.
 	qMinutesPendingBefore = `SELECT COUNT(*) FROM credited_minutes

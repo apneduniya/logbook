@@ -278,3 +278,18 @@ func TestClockAheadMakesNoFutureMinuteFinal(t *testing.T) {
 		t.Fatalf("13:30 = %+v, %v; want final and acknowledged", rows, err)
 	}
 }
+
+func TestFinalityOffsetIgnoresLatency(t *testing.T) {
+	for _, tc := range []struct{ ahead, want time.Duration }{
+		{-time.Hour, 0},
+		{0, 0},
+		{300 * time.Millisecond, 0}, // request latency, not a clock ahead
+		{aheadSlack, 0},
+		{aheadSlack + time.Second, aheadSlack + time.Second},
+		{2 * time.Hour, 2 * time.Hour},
+	} {
+		if got := finalityOffset(tc.ahead); got != tc.want {
+			t.Errorf("finalityOffset(%v) = %v, want %v", tc.ahead, got, tc.want)
+		}
+	}
+}

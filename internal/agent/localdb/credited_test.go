@@ -310,6 +310,18 @@ func TestMinutesPendingAndRetire(t *testing.T) {
 	if n, _ := d.UnsentMinuteCount(ctx); n != 0 {
 		t.Fatalf("unsent after retiring = %d", n)
 	}
+	// Registration was stamped by a clock running ahead (t = +30): only
+	// minutes up to the previous device's last stored one become final, so
+	// minutes still to come keep their credit.
+	if err := d.RetireMinutesBefore(ctx, minute(30)); err != nil {
+		t.Fatal(err)
+	}
+	if ok, _ := d.IsFinal(ctx, minute(-4)); !ok {
+		t.Fatal("the previous device's last stored minute is not final")
+	}
+	if ok, _ := d.IsFinal(ctx, minute(10)); ok {
+		t.Fatal("a minute after the previous device's last stored one became final")
+	}
 }
 
 // A row refused for good is deleted, and its minute is final: it is never

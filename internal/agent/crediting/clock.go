@@ -146,8 +146,8 @@ func (c serverClock) message() string {
 func (r *Runner) observeServer(ctx context.Context, server time.Time) {
 	r.server = serverClock{seen: true, at: server, local: r.opt.Now()}
 	r.ahead, r.aheadKnown = 0, !server.IsZero()
-	if d := r.server.local.Sub(server); r.aheadKnown && d > 0 {
-		r.ahead = d
+	if r.aheadKnown {
+		r.ahead = finalityOffset(r.server.local.Sub(server))
 	}
 	msg := r.server.message()
 	if old := r.shown[keyClock]; old != msg && msg != "" {
@@ -155,6 +155,24 @@ func (r *Runner) observeServer(ctx context.Context, server time.Time) {
 			"local", r.server.local.UTC().Format(time.RFC3339), "server", server.UTC().Format(time.RFC3339))
 	}
 	r.show(ctx, keyClock, msg)
+}
+
+// aheadSlack is the clock offset finality ignores. Every reading looks a
+// little ahead (the server stamps server_time when it starts handling the
+// request, the agent reads its clock when the answer arrives), and
+// subtracting that would push each minute's finality a whole minute later,
+// past the server's 30-minute freeze. Finalizing up to aheadSlack early
+// still leaves FinalLead's minute of margin before the server freezes.
+const aheadSlack = 30 * time.Second
+
+// finalityOffset is how far finality runs behind the system clock, given
+// how far the system clock reads ahead of the server's (negative when
+// behind).
+func finalityOffset(ahead time.Duration) time.Duration {
+	if ahead <= aheadSlack {
+		return 0
+	}
+	return ahead
 }
 
 // sealingClock returns the clock days are sealed by: the earlier of now and
