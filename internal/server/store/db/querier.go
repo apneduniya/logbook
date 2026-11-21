@@ -35,11 +35,14 @@ type Querier interface {
 	// of objects with minute (RFC 3339) and project.
 	CreditedMinutesDelete(ctx context.Context, arg CreditedMinutesDeleteParams) error
 	// The device's stored rows for the given minutes, for the rewrite-window,
-	// project-count and 60-second checks.
+	// project-count and 60-second checks and the rows returned with a "final"
+	// rejection. computed_at and snapshot are null for rows stored before
+	// ADR 0017.
 	CreditedMinutesForDevice(ctx context.Context, arg CreditedMinutesForDeviceParams) ([]CreditedMinutesForDeviceRow, error)
 	// Writes a checked batch in one round trip. rows is a JSON array of objects
-	// with minute (RFC 3339), project, label, credited, cuts and flags. Unchanged
-	// rows are skipped so retries produce no dead tuples.
+	// with minute and computed_at (RFC 3339), project, label, credited, cuts,
+	// flags and snapshot. Unchanged rows (key included) are skipped so retries
+	// produce no dead tuples.
 	CreditedMinutesUpsert(ctx context.Context, arg CreditedMinutesUpsertParams) error
 	DeleteExpiredSessions(ctx context.Context, expiresAt time.Time) (int64, error)
 	DeleteHackatimeImport(ctx context.Context, userID uuid.UUID) error

@@ -35,7 +35,8 @@ func (q *Queries) CreditedMinutesDelete(ctx context.Context, arg CreditedMinutes
 }
 
 const creditedMinutesForDevice = `-- name: CreditedMinutesForDevice :many
-SELECT minute, project, label, credited, cuts, flags, rules_version, updated_at
+SELECT minute, project, label, credited, cuts, flags, rules_version, updated_at,
+       computed_at, snapshot
 FROM credited_minutes
 WHERE device_id = $1
   AND minute = ANY($2::timestamptz[])
@@ -56,10 +57,14 @@ type CreditedMinutesForDeviceRow struct {
 	Flags        []string
 	RulesVersion string
 	UpdatedAt    time.Time
+	ComputedAt   *time.Time
+	Snapshot     pgtype.Int8
 }
 
 // The device's stored rows for the given minutes, for the rewrite-window,
-// project-count and 60-second checks.
+// project-count and 60-second checks and the rows returned with a "final"
+// rejection. computed_at and snapshot are null for rows stored before
+// ADR 0017.
 func (q *Queries) CreditedMinutesForDevice(ctx context.Context, arg CreditedMinutesForDeviceParams) ([]CreditedMinutesForDeviceRow, error) {
 	rows, err := q.db.Query(ctx, creditedMinutesForDevice, arg.DeviceID, arg.Minutes)
 	if err != nil {
@@ -78,6 +83,8 @@ func (q *Queries) CreditedMinutesForDevice(ctx context.Context, arg CreditedMinu
 			&i.Flags,
 			&i.RulesVersion,
 			&i.UpdatedAt,
+			&i.ComputedAt,
+			&i.Snapshot,
 		); err != nil {
 			return nil, err
 		}
@@ -91,13 +98,16 @@ func (q *Queries) CreditedMinutesForDevice(ctx context.Context, arg CreditedMinu
 
 const creditedMinutesUpsert = `-- name: CreditedMinutesUpsert :exec
 INSERT INTO credited_minutes (
-    device_id, user_id, minute, project, label, credited, cuts, flags, rules_version, updated_at
+    device_id, user_id, minute, project, label, credited, cuts, flags, rules_version, updated_at,
+    computed_at, snapshot
 )
 SELECT $1::uuid, $2::uuid, r.minute, r.project, r.label,
        r.credited, coalesce(r.cuts, '{}'), coalesce(r.flags, '{}'),
-       $3::text, $4::timestamptz
+       $3::text, $4::timestamptz,
+       r.computed_at, r.snapshot
 FROM jsonb_to_recordset($5::jsonb) AS r(
-    minute timestamptz, project text, label text, credited smallint, cuts text[], flags text[]
+    minute timestamptz, project text, label text, credited smallint, cuts text[], flags text[],
+    computed_at timestamptz, snapshot bigint
 )
 ON CONFLICT (device_id, minute, project) DO UPDATE SET
     label         = EXCLUDED.label,
@@ -105,11 +115,15 @@ ON CONFLICT (device_id, minute, project) DO UPDATE SET
     cuts          = EXCLUDED.cuts,
     flags         = EXCLUDED.flags,
     rules_version = EXCLUDED.rules_version,
-    updated_at    = EXCLUDED.updated_at
+    updated_at    = EXCLUDED.updated_at,
+    computed_at   = EXCLUDED.computed_at,
+    snapshot      = EXCLUDED.snapshot
 WHERE (credited_minutes.label, credited_minutes.credited, credited_minutes.cuts,
-       credited_minutes.flags, credited_minutes.rules_version)
+       credited_minutes.flags, credited_minutes.rules_version,
+       credited_minutes.computed_at, credited_minutes.snapshot)
       IS DISTINCT FROM
-      (EXCLUDED.label, EXCLUDED.credited, EXCLUDED.cuts, EXCLUDED.flags, EXCLUDED.rules_version)
+      (EXCLUDED.label, EXCLUDED.credited, EXCLUDED.cuts, EXCLUDED.flags, EXCLUDED.rules_version,
+       EXCLUDED.computed_at, EXCLUDED.snapshot)
 `
 
 type CreditedMinutesUpsertParams struct {
@@ -121,8 +135,9 @@ type CreditedMinutesUpsertParams struct {
 }
 
 // Writes a checked batch in one round trip. rows is a JSON array of objects
-// with minute (RFC 3339), project, label, credited, cuts and flags. Unchanged
-// rows are skipped so retries produce no dead tuples.
+// with minute and computed_at (RFC 3339), project, label, credited, cuts,
+// flags and snapshot. Unchanged rows (key included) are skipped so retries
+// produce no dead tuples.
 func (q *Queries) CreditedMinutesUpsert(ctx context.Context, arg CreditedMinutesUpsertParams) error {
 	_, err := q.db.Exec(ctx, creditedMinutesUpsert,
 		arg.DeviceID,

@@ -45,12 +45,15 @@ Auth: API key. Uploads labelled minutes from `pkg/struggle`.
   "rules_version": "v1",
   "minutes": [
     { "minute": "2026-11-20T10:31:00Z", "project": "logbook", "label": "you",
-      "credited": 45, "cuts": [], "flags": ["low_signal"] }
+      "credited": 45, "cuts": [], "flags": ["low_signal"],
+      "computed_at": "2026-11-20T11:00:00Z", "snapshot": 18234 }
   ]
 }
 ```
 
-Whole-request errors (`400`): invalid JSON, more than 1000 minutes, or a `rules_version` the server doesn't know (currently only `v1`). An empty `minutes` array is valid and changes nothing; the agent sends one to read the server's clock (`server_time`) before it seals a day.
+`computed_at` and `snapshot` are the minute's computation key (ADR 0017): the end `T` of the agent run's window and the high-water mark `H` of the agent's event log that the run read. Both are required on every item, removals included. The server stores them with the row so a reviewer can re-run the minute at exactly that key. All rows of one device-minute carry the same key; the agent sends them together.
+
+Whole-request errors (`400`): invalid JSON (including a field of the wrong type, such as a `snapshot` that isn't an integer), more than 1000 minutes, or a `rules_version` the server doesn't know (currently only `v1`). An empty `minutes` array is valid and changes nothing; the agent sends one to read the server's clock (`server_time`) before it seals a day.
 
 Each item is then accepted or rejected on its own. `200`:
 
@@ -61,7 +64,17 @@ Each item is then accepted or rejected on its own. `200`:
 
 `server_time` is the server's clock when it checked the batch, RFC 3339 in UTC (fractional seconds optional). The agent seals an evidence day only when this is within 5 minutes of its own clock, and reads it from the body rather than the `Date` header, which a proxy may drop or rewrite. An agent that gets no `server_time`, or one it can't parse, keeps uploading minutes but seals nothing.
 
-`rejected` is sorted by index and is `[]` when empty. Rejected items should be dropped, not retried. The rules:
+`rejected` is sorted by index and is `[]` when empty. Rejected items should be dropped, not retried.
+
+A rejection because the minute is final also carries `stored`: every row the server holds for that device-minute once the batch is applied, sorted by project. That is the server's answer for the minute, so an agent whose earlier response was lost can adopt it instead of guessing which value won. `computed_at` and `snapshot` are `null` for rows stored before ADR 0017. Other rejections have no `stored` field.
+
+```json
+{ "index": 0, "error": "minute is final: stored minutes can only be changed for 30 minutes",
+  "stored": [{ "project": "logbook", "label": "you", "credited": 45, "cuts": [], "flags": [],
+               "computed_at": "2026-11-20T11:00:00Z", "snapshot": 18234 }] }
+```
+
+The rules:
 
 | Rule | Error |
 |---|---|
@@ -73,16 +86,19 @@ Each item is then accepted or rejected on its own. `200`:
 | `credited` is 0–60, and 0 unless `label` is `you` | `credited must be ...` |
 | `cuts` and `flags` have at most 16 codes each, matching `[a-z][a-z0-9_]{0,31}` (duplicates are dropped) | `cuts and flags must be ...` |
 | `flags` never contains `multi_device`; the server works that out | `the multi_device flag is set by the server only` |
+| `computed_at` is RFC 3339 in UTC on a whole minute | `computed_at must be an RFC 3339 UTC time on a whole minute` |
+| `minute` is in `[computed_at − 60 min, computed_at)`: a run covers the hour before the end of its window | `minute must be in the 60 minutes before computed_at` |
+| `snapshot` is present and an integer ≥ 0 | `snapshot must be an integer >= 0` |
 | The same `(minute, project)` appears only once per request; later copies are rejected | `the same minute and project appear earlier in this batch` |
 | `minute` is on or after the UTC day the device was registered. A new key can't write history from before it existed. | `minute is before the UTC day the device was registered` |
 | `minute` is not in a UTC day for which this device has stored an evidence record. A sealed day takes no new minutes. | `minute is in a UTC day this device has already sealed ...` |
-| A minute is final once it is 30 minutes old by the server clock. A stored `(minute, project)` can only change while the minute is open. A final minute takes no new projects either, once the device has stored any row for it. Re-sending exactly the stored values is always accepted. A minute that was never sent can be sent at any time, so an agent that was offline can catch up. If its catch-up splits one minute across batches, more projects of that minute are accepted for 5 minutes after its first upload, but only if all of its rows were first uploaded after it was final. | `minute is final: ...` |
+| A minute is final once it is 30 minutes old by the server clock. A stored `(minute, project)` can only change while the minute is open; a different `computed_at` or `snapshot` is a change like a different value. A final minute takes no new projects either, once the device has stored any row for it. Re-sending exactly the stored row, key included, is always accepted. A minute that was never sent can be sent at any time, so an agent that was offline can catch up. If its catch-up splits one minute across batches, more projects of that minute are accepted for 5 minutes after its first upload, but only if all of its rows were first uploaded after it was final. | `minute is final: ...` |
 | One minute has at most 8 projects on one device, whatever their credit. | `a minute can have at most 8 projects per device` |
 | Across all projects of one minute on this device, `credited` adds up to at most 60. Removals are applied first, then items that lower a minute's credit, then the rest in request order, so replacing a project or moving a minute between projects works in one request. | `credited seconds for this minute would exceed 60 across projects` |
 
 **Removals.** An item labelled `idle` with `credited` 0 and empty `cuts` and `flags` is a removal: it deletes the stored `(minute, project)` row instead of storing one, freeing that project's slot and credit. The engine never emits a row of that shape (its idle rows always carry a cut), and a missing row already means idle. A removal follows the rules above (a final minute can't lose a row; re-sending a removal is always accepted), and a removal of a row that isn't stored is accepted and changes nothing. When the engine's top 8 projects of an open minute change, the agent sends the displaced project's removal and its replacement in one request, removal first.
 
-- Writes are idempotent upserts keyed by `(device, minute, project)`; removals are idempotent deletes.
+- Writes are idempotent upserts keyed by `(device, minute, project)`, storing the item's `computed_at` and `snapshot`; removals are idempotent deletes.
 - Uploads for one device are serialised, so two concurrent batches can't break the 60-second rule.
 - Accepted changes send a `minutes` event on `/api/v1/me/live`.
 
