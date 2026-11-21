@@ -123,7 +123,7 @@ func insertEach(ctx context.Context, tx *sql.Tx, w *logWriter, query string, evs
 	}
 	defer func() { _ = stmt.Close() }()
 	for _, e := range evs {
-		if _, err := w.insert(ctx, stmt, eventArgs(e)...); err != nil {
+		if err := w.insert(ctx, stmt, eventArgs(e)...); err != nil {
 			return fmt.Errorf("storing %s event: %w", e.Type, err)
 		}
 	}

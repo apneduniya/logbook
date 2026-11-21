@@ -41,7 +41,7 @@ func (d *DB) RecordRepos(ctx context.Context, at time.Time, repos []struggle.Rep
 			if err == nil && latest == r.Project {
 				continue
 			}
-			if _, err := w.insert(ctx, stmt, at.UnixMilli(), r.Path, r.Project); err != nil {
+			if err := w.insert(ctx, stmt, at.UnixMilli(), r.Path, r.Project); err != nil {
 				return fmt.Errorf("recording repo mapping: %w", err)
 			}
 		}

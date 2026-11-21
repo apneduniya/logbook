@@ -52,8 +52,8 @@ ALTER TABLE active_time DROP COLUMN arrived_at;
 -- mark), and whether the minute is open or final. A device-minute is one
 -- unit: all of its rows carry the same key and state. acknowledged is 1
 -- once the server has answered for the row as it now is (accepted it, sent
--- back its own rows, or refused it for good); sent_digest stays the digest
--- the server last accepted for (minute, project), '' if none. A row with no
+-- back its own rows, or refused it); sent_digest becomes what the server
+-- last accepted for (minute, project), digest and key ('' if none). A row with no
 -- key (both NULL) was stored before this migration or adopted from a server
 -- row stored before it; it is never recomputed.
 --

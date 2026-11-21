@@ -122,7 +122,7 @@ func (d *DB) logHeartbeats(ctx context.Context, tx *sql.Tx, hbs []wire.Heartbeat
 	}
 	defer func() { _ = stmt.Close() }()
 	for i, h := range hbs {
-		if _, err := w.insert(ctx, stmt, h.Timestamp().UnixMilli(), h.FieldsHash(), payloads[i]); err != nil {
+		if err := w.insert(ctx, stmt, h.Timestamp().UnixMilli(), h.FieldsHash(), payloads[i]); err != nil {
 			return fmt.Errorf("keeping heartbeats: %w", err)
 		}
 	}

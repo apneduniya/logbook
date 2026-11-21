@@ -184,7 +184,7 @@ func TestEventsCountsAndPrune(t *testing.T) {
 		t.Fatalf("RecentDirs = %+v, %v", dirs, err)
 	}
 	// Old events go once the evidence chain has sealed them.
-	seal(t, d, high(t, d))
+	seal(t, d, high(ctx, t, d))
 	r, err := d.Prune(ctx)
 	if err != nil || r.AIEvents != 1 {
 		t.Fatalf("Prune = %+v, %v", r, err)

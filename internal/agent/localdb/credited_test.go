@@ -138,7 +138,7 @@ func TestRemovalsAndAcknowledgement(t *testing.T) {
 	ctx := context.Background()
 	d, _ := openTest(t)
 	run(t, d, 0, 1, false, cm(-5, "a", 30), cm(-5, "b", 30))
-	rows, err := d.UnsentMinutes(ctx, time.Time{}, 100)
+	rows, err := d.UnsentMinutes(ctx, time.Time{}, time.Time{}, 100)
 	if err != nil || len(rows) != 2 {
 		t.Fatalf("UnsentMinutes = %+v, %v", rows, err)
 	}
@@ -155,7 +155,7 @@ func TestRemovalsAndAcknowledgement(t *testing.T) {
 	}
 	// b drops out: a removal replaces it, with the minute's new key.
 	run(t, d, 2, 3, false, cm(-5, "a", 60))
-	rows, _ = d.UnsentMinutes(ctx, time.Time{}, 100)
+	rows, _ = d.UnsentMinutes(ctx, time.Time{}, time.Time{}, 100)
 	if len(rows) != 2 || rows[0].Project != "b" || rows[0].Label != "idle" || rows[0].Key.H != 3 || rows[1].Credited != 60 {
 		t.Fatalf("rows after b dropped = %+v", rows)
 	}
@@ -177,7 +177,7 @@ func TestRemovalsAndAcknowledgement(t *testing.T) {
 	}
 	// A row rewritten since it was read is not marked sent.
 	run(t, d, 6, 7, false, cm(-4, "a", 10))
-	stale, _ := d.UnsentMinutes(ctx, time.Time{}, 100)
+	stale, _ := d.UnsentMinutes(ctx, time.Time{}, time.Time{}, 100)
 	run(t, d, 7, 8, false, cm(-4, "a", 20))
 	if err := d.MarkMinutesSent(ctx, stale, nil); err != nil {
 		t.Fatal(err)
@@ -186,7 +186,7 @@ func TestRemovalsAndAcknowledgement(t *testing.T) {
 		t.Fatalf("stale answer acknowledged the new row: %+v", m)
 	}
 	// A refusal for good is answered, not accepted.
-	cur, _ := d.UnsentMinutes(ctx, time.Time{}, 100)
+	cur, _ := d.UnsentMinutes(ctx, time.Time{}, time.Time{}, 100)
 	if err := d.MarkMinutesSent(ctx, nil, cur); err != nil {
 		t.Fatal(err)
 	}
@@ -249,7 +249,7 @@ func TestUnsentMinutesHoldAndWholeMinutes(t *testing.T) {
 		return fmt.Sprint(got)
 	}
 	for _, tt := range tests {
-		ms, err := d.UnsentMinutes(ctx, time.Time{}, tt.limit)
+		ms, err := d.UnsentMinutes(ctx, time.Time{}, time.Time{}, tt.limit)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -257,12 +257,16 @@ func TestUnsentMinutesHoldAndWholeMinutes(t *testing.T) {
 			t.Errorf("UnsentMinutes(limit %d) = %v, want %v", tt.limit, names(ms), tt.want)
 		}
 	}
-	held, _ := d.UnsentMinutes(ctx, minute(-9), 100)
+	held, _ := d.UnsentMinutes(ctx, time.Time{}, minute(-9), 100)
 	if names(held) != fmt.Sprint([]string{"-9/a", "-8/x", "-8/y", "-8/z"}) {
 		t.Fatalf("held before -9: %s", names(held))
 	}
+	next, _ := d.UnsentMinutes(ctx, minute(-9), time.Time{}, 1)
+	if names(next) != fmt.Sprint([]string{"-8/x", "-8/y", "-8/z"}) {
+		t.Fatalf("after -9: %s", names(next))
+	}
 	run(t, d, 60, 2, true) // makes -10 .. -8 final, outside its window
-	all, _ := d.UnsentMinutes(ctx, minute(0), 100)
+	all, _ := d.UnsentMinutes(ctx, time.Time{}, minute(0), 100)
 	if len(all) != 6 {
 		t.Fatalf("final minutes held: %s", names(all))
 	}
@@ -351,5 +355,57 @@ func TestPruneCrediting(t *testing.T) {
 	}
 	if ok, _ := d.IsFinal(ctx, oldMinute); ok {
 		t.Fatal("final span of a pruned minute kept")
+	}
+}
+
+// A row sent whose answer was lost may be held by the server: when the
+// project later drops out of the minute, a removal is sent for it.
+func TestTriedRowGetsARemoval(t *testing.T) {
+	ctx := context.Background()
+	d, _ := openTest(t)
+	run(t, d, 0, 1, false, cm(-5, "a", 30), cm(-5, "b", 30))
+	rows, _ := d.UnsentMinutes(ctx, time.Time{}, time.Time{}, 100)
+	if err := d.MarkMinutesTried(ctx, rows); err != nil {
+		t.Fatal(err)
+	}
+	run(t, d, 1, 2, false, cm(-5, "a", 60))
+	m := stored(t, d, -5)
+	if len(m) != 2 || m[0].Project != "a" || m[1].Project != "b" || m[1].Label != "idle" || m[1].Acknowledged {
+		t.Fatalf("minute after b dropped = %+v, want a removal for b", m)
+	}
+}
+
+// When a minute becomes final, only rows the server holds exactly as
+// stored (content and key) stay acknowledged: a row refused while open is
+// sent again, and so is one the server holds under an older key.
+func TestFinalizationResendsRowsTheServerDoesNotHold(t *testing.T) {
+	ctx := context.Background()
+	d, _ := openTest(t)
+	run(t, d, 0, 1, false, cm(-10, "a", 30), cm(-10, "b", 30), cm(-9, "c", 60), cm(-8, "d", 60))
+	rows, _ := d.UnsentMinutes(ctx, time.Time{}, time.Time{}, 100)
+	var accepted, refused []CreditedMinute
+	for _, m := range rows {
+		if m.Project == "c" {
+			refused = append(refused, m)
+		} else {
+			accepted = append(accepted, m)
+		}
+	}
+	if err := d.MarkMinutesSent(ctx, accepted, refused); err != nil {
+		t.Fatal(err)
+	}
+	// b changes: the whole minute -10 moves to the new key, a included.
+	run(t, d, 1, 2, false, cm(-10, "a", 30), cm(-10, "b", 20), cm(-9, "c", 60), cm(-8, "d", 60))
+	if n, _ := d.UnsentMinuteCount(ctx); n != 2 {
+		t.Fatalf("unsent before finalizing = %d, want minute -10's 2 rows", n)
+	}
+	run(t, d, 60, 3, true)
+	got, _ := d.UnsentMinutes(ctx, time.Time{}, time.Time{}, 100)
+	var names []string
+	for _, m := range got {
+		names = append(names, fmt.Sprintf("%d/%s", int(m.Minute.Sub(testNow)/time.Minute), m.Project))
+	}
+	if fmt.Sprint(names) != "[-10/b -10/a -9/c]" {
+		t.Fatalf("unsent final rows = %v, want -10 (new key) and the refused -9", names)
 	}
 }

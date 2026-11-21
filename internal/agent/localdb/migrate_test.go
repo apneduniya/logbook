@@ -103,7 +103,7 @@ func TestMigration0007(t *testing.T) {
 			t.Errorf("%s seq = %v, want %v", table, got, want)
 		}
 	}
-	if h := high(t, d); h != 7 {
+	if h := high(ctx, t, d); h != 7 {
 		t.Fatalf("log.seq = %d, want 7", h)
 	}
 	if _, err := d.sql.ExecContext(ctx, "SELECT arrived_at FROM heartbeats"); err == nil {
@@ -140,7 +140,7 @@ func TestMigration0007(t *testing.T) {
 	if err := d.RecordActivity(ctx, *activity(minute(-1)).Activity); err != nil {
 		t.Fatal(err)
 	}
-	if h := high(t, d); h != 8 {
+	if h := high(ctx, t, d); h != 8 {
 		t.Fatalf("next row took %d, want 8", h)
 	}
 }

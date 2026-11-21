@@ -73,7 +73,7 @@ func (d *DB) InsertActiveTime(ctx context.Context, pts []ActiveTimePoint) error 
 		}
 		defer func() { _ = stmt.Close() }()
 		for _, p := range pts {
-			if _, err := w.insert(ctx, stmt, p.From.UnixMilli(), p.To.UnixMilli(), p.SessionID,
+			if err := w.insert(ctx, stmt, p.From.UnixMilli(), p.To.UnixMilli(), p.SessionID,
 				p.Type, p.Secs, p.Repository, seriesMillis(p.SeriesStart), p.Cumulative); err != nil {
 				return fmt.Errorf("storing active time: %w", err)
 			}

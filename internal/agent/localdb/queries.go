@@ -194,27 +194,39 @@ const (
 	qMinuteClear    = `DELETE FROM credited_minutes WHERE minute = ?`
 	// qMinutesOpenBefore lists the minutes with open rows before a minute.
 	qMinutesOpenBefore = `SELECT DISTINCT minute FROM credited_minutes WHERE state = 'open' AND minute < ? ORDER BY minute`
-	qMinutesFinalize   = `UPDATE credited_minutes SET state = 'final' WHERE state = 'open' AND minute < ?`
-	// qMinutesUnsent returns unacknowledged rows up to and including the
-	// minute of the (OFFSET+1)-th one, so that minute comes whole. Open
-	// minutes before the first parameter (held while settling) are left
-	// out (it is given twice).
-	qMinutesUnsent = `SELECT ` + minuteColumns + ` FROM credited_minutes
-		WHERE acknowledged = 0 AND NOT (state = 'open' AND minute < ?)
-		AND minute <= COALESCE((SELECT minute FROM credited_minutes WHERE acknowledged = 0
-			AND NOT (state = 'open' AND minute < ?)
-			ORDER BY minute, credited, project LIMIT 1 OFFSET ?), 9223372036854775807)
+	// heldAs is what sent_digest holds once the server has a row exactly as
+	// stored: its content and its key.
+	heldAs = `digest || '@' || IFNULL(computed_at, '') || '/' || IFNULL(snapshot, '')`
+	// qMinutesFinalize makes open rows final. A row the server refused
+	// while open is sent again now: only a row the server holds as is
+	// stays acknowledged.
+	qMinutesFinalize = `UPDATE credited_minutes SET state = 'final', acknowledged = (sent_digest = ` + heldAs + `)
+		WHERE state = 'open' AND minute < ?`
+	qMinuteHeld = `UPDATE credited_minutes SET sent_digest = ` + heldAs + ` WHERE minute = ?`
+	// qMinutesUnsent returns unacknowledged rows of minutes after ?1, up to
+	// and including the minute of the (?3+1)-th one, so that minute comes
+	// whole. Open minutes before ?2 (held while settling) are left out.
+	unsentRows     = `acknowledged = 0 AND minute > ?1 AND NOT (state = 'open' AND minute < ?2)`
+	qMinutesUnsent = `SELECT ` + minuteColumns + ` FROM credited_minutes WHERE ` + unsentRows + `
+		AND minute <= COALESCE((SELECT minute FROM credited_minutes WHERE ` + unsentRows + `
+			ORDER BY minute, credited, project LIMIT 1 OFFSET ?3), 9223372036854775807)
 		ORDER BY minute, credited, project`
 	// rowIs matches a row exactly as it was read: content and key.
 	rowIs = ` WHERE minute = ? AND project = ? AND digest = ? AND computed_at IS ? AND snapshot IS ?`
 	// qMinuteAccepted records that the server holds the row; qMinuteRemoved
 	// then deletes it if it was a removal (idle, no credit, cuts or flags:
 	// the server deleted its row, so there is nothing left to hold).
-	qMinuteAccepted = `UPDATE credited_minutes SET acknowledged = 1, sent_digest = digest` + rowIs
+	qMinuteAccepted = `UPDATE credited_minutes SET acknowledged = 1, sent_digest = ` + heldAs + rowIs
 	qMinuteRemoved  = `DELETE FROM credited_minutes` + rowIs +
 		` AND acknowledged = 1 AND label = 'idle' AND credited = 0 AND cuts = '[]' AND flags = '[]'`
 	qMinuteAnswered = `UPDATE credited_minutes SET acknowledged = 1` + rowIs
-	qMinutesRetire  = `UPDATE credited_minutes SET acknowledged = 1 WHERE acknowledged = 0 AND minute < ?`
+	// qMinuteTried notes that a row was sent and the server may hold it,
+	// before the answer is known ('?' never equals heldAs).
+	qMinuteTried = `UPDATE credited_minutes SET sent_digest = '?' WHERE minute = ? AND project = ? AND sent_digest = ''`
+	// qMinutesRetire treats rows before a minute as held by the server, so
+	// they are never sent (also not once final).
+	qMinutesRetire = `UPDATE credited_minutes SET acknowledged = 1, sent_digest = ` + heldAs + `
+		WHERE minute < ? AND (acknowledged = 0 OR state = 'open')`
 	qMinutesUnacked = `SELECT COUNT(*) FROM credited_minutes WHERE acknowledged = 0`
 	// qMinutesPendingBefore counts rows before a minute that are open or
 	// the server hasn't answered for yet.

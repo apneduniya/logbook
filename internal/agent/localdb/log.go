@@ -69,23 +69,21 @@ func openLog(ctx context.Context, tx *sql.Tx) (*logWriter, error) {
 }
 
 // insert runs a prepared logged insert whose first parameter is the row's
-// sequence number. A row ignored as a duplicate takes no number. It
-// reports whether a row was stored.
-func (w *logWriter) insert(ctx context.Context, stmt *sql.Stmt, args ...any) (bool, error) {
+// sequence number. A row ignored as a duplicate takes no number.
+func (w *logWriter) insert(ctx context.Context, stmt *sql.Stmt, args ...any) error {
 	res, err := stmt.ExecContext(ctx, append([]any{w.seq + 1}, args...)...)
 	if err != nil {
-		return false, err
+		return err
 	}
 	n, err := res.RowsAffected()
 	if err != nil {
-		return false, err
+		return err
 	}
-	if n == 0 {
-		return false, nil
+	if n > 0 {
+		w.seq++
+		w.changed = true
 	}
-	w.seq++
-	w.changed = true
-	return true, nil
+	return nil
 }
 
 // close stores the counter, in the same transaction.

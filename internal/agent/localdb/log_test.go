@@ -21,10 +21,10 @@ func seal(t *testing.T, d *DB, seq int64) {
 }
 
 // high returns the log's current high-water mark.
-func high(t *testing.T, d *DB) int64 {
+func high(ctx context.Context, t *testing.T, d *DB) int64 {
 	t.Helper()
 	var h int64
-	if err := d.View(context.Background(), func(s *Snapshot) error { h = s.H; return nil }); err != nil {
+	if err := d.View(ctx, func(s *Snapshot) error { h = s.H; return nil }); err != nil {
 		t.Fatal(err)
 	}
 	return h
@@ -63,7 +63,7 @@ func TestLogSequenceNumbers(t *testing.T) {
 		if err := s.store(); err != nil {
 			t.Fatalf("%s: %v", s.name, err)
 		}
-		if h := high(t, d); h != s.want {
+		if h := high(ctx, t, d); h != s.want {
 			t.Fatalf("after %s: H = %d, want %d", s.name, h, s.want)
 		}
 	}
@@ -111,7 +111,7 @@ func TestReadWindowAtHighWater(t *testing.T) {
 	if err := d.RecordRepos(ctx, testNow, []struggle.Repo{{Path: "/src/app", Project: "old"}}); err != nil {
 		t.Fatal(err)
 	}
-	h := high(t, d)
+	h := high(ctx, t, d)
 	// Rows logged later, for the same times, and a changed mapping.
 	if err := d.InsertEvents(ctx, evs[:3]); err != nil {
 		t.Fatal(err)
@@ -187,10 +187,10 @@ func TestUncommittedWriteIsOutsideSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := w.insert(ctx, stmt, eventArgs(activity(minute(-2)))...); err != nil {
+	defer func() { _ = stmt.Close() }()
+	if err := w.insert(ctx, stmt, eventArgs(activity(minute(-2)))...); err != nil {
 		t.Fatal(err)
 	}
-	_ = stmt.Close()
 	if err := w.close(ctx, tx, testNow); err != nil {
 		t.Fatal(err)
 	}
@@ -264,7 +264,7 @@ func TestRetentionDeletesOnlySealedRows(t *testing.T) {
 	if n, _ := d.Counter(ctx, KeyDroppedSamples); n != 2 {
 		t.Fatalf("dropped samples = %d, want 2", n)
 	}
-	if h := high(t, d); h != 3 {
+	if h := high(ctx, t, d); h != 3 {
 		t.Fatalf("H = %d: a dropped sample took a sequence number", h)
 	}
 	for i := range 5 {
@@ -281,7 +281,7 @@ func TestRetentionDeletesOnlySealedRows(t *testing.T) {
 	}
 
 	// Once sealed, the oldest rows over the cap go, and new samples fit.
-	seal(t, d, high(t, d))
+	seal(t, d, high(ctx, t, d))
 	if err := d.RecordActivity(ctx, *activity(minute(-1)).Activity); err != nil {
 		t.Fatal(err)
 	}
@@ -317,7 +317,7 @@ func TestPruneOnlySealedRows(t *testing.T) {
 	if r, err := d.PruneCrediting(ctx); err != nil || r.Heartbeats != 0 {
 		t.Fatalf("PruneCrediting before sealing = %+v, %v", r, err)
 	}
-	seal(t, d, high(t, d))
+	seal(t, d, high(ctx, t, d))
 	if r, err := d.Prune(ctx); err != nil || r.ActivitySamples != 1 || r.ActiveTime != 1 {
 		t.Fatalf("Prune after sealing = %+v, %v", r, err)
 	}
@@ -339,7 +339,7 @@ func TestRepoMappingAtHighWater(t *testing.T) {
 		if err := d.RecordRepos(ctx, at, repos); err != nil {
 			t.Fatal(err)
 		}
-		return high(t, d)
+		return high(ctx, t, d)
 	}
 	reposAt := func(h int64) []struggle.Repo {
 		t.Helper()
