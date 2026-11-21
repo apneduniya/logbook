@@ -3,6 +3,7 @@ package credited
 import (
 	"cmp"
 	"errors"
+	"maps"
 	"regexp"
 	"slices"
 	"time"
@@ -27,8 +28,11 @@ const (
 	// CatchUpWindow is how long after a final minute's first upload more
 	// of its projects may still arrive, for an offline agent whose catch-up
 	// splits a minute across batches.
-	CatchUpWindow     = 5 * time.Minute
-	MaxFutureSkew     = 2 * time.Minute
+	CatchUpWindow = 5 * time.Minute
+	MaxFutureSkew = 2 * time.Minute
+	// KeyWindow is the length of an agent run's window: a minute computed
+	// at T lies in [T - KeyWindow, T) (ADR 0017).
+	KeyWindow         = 60 * time.Minute
 	maxRulesVersionSz = 32
 )
 
@@ -51,7 +55,27 @@ type RawItem struct {
 	Credited int      `json:"credited"`
 	Cuts     []string `json:"cuts"`
 	Flags    []string `json:"flags"`
+	// ComputedAt and Snapshot are the computation key (ADR 0017). Both are
+	// required; Snapshot is a pointer so a missing one is told apart from 0.
+	ComputedAt string `json:"computed_at"`
+	Snapshot   *int64 `json:"snapshot"`
 }
+
+// Key is the computation key of a minute (ADR 0017): the end of the agent
+// run's window (ComputedAt, a whole minute in UTC) and the high-water mark
+// of the agent's event log it read (Snapshot). The zero Key marks a row
+// stored before ADR 0017, which has none; an uploaded key is never zero,
+// because its ComputedAt is after 2024.
+type Key struct {
+	ComputedAt time.Time
+	Snapshot   int64
+}
+
+// IsZero reports whether k is the zero Key (a row stored without a key).
+func (k Key) IsZero() bool { return k.ComputedAt.IsZero() && k.Snapshot == 0 }
+
+// Equal reports whether k and o are the same key.
+func (k Key) Equal(o Key) bool { return k.ComputedAt.Equal(o.ComputedAt) && k.Snapshot == o.Snapshot }
 
 // Item is a validated minute. Project is normalised with
 // projectname.Normalize; Cuts and Flags are sorted, without duplicates and
@@ -63,6 +87,7 @@ type Item struct {
 	Credited int
 	Cuts     []string
 	Flags    []string
+	Key      Key
 }
 
 // Indexed is a validated item with its position in the request.
@@ -94,10 +119,36 @@ type Bounds struct {
 	Sealed []time.Time
 }
 
-// Rejection says why one item of a batch was not stored.
+// Rejection says why one item of a batch was not stored. Stored is set only
+// when the item was refused because its minute is final: it holds every row
+// the server keeps for that device-minute once the batch is applied, sorted
+// by project, so the agent can adopt the server's answer (ADR 0017).
 type Rejection struct {
-	Index int    `json:"index"`
-	Error string `json:"error"`
+	Index  int         `json:"index"`
+	Error  string      `json:"error"`
+	Stored []StoredRow `json:"stored,omitempty"`
+}
+
+// StoredRow is one stored row of a final minute, as returned in a
+// rejection. ComputedAt and Snapshot are null for a row stored before
+// ADR 0017.
+type StoredRow struct {
+	Project    string     `json:"project"`
+	Label      string     `json:"label"`
+	Credited   int        `json:"credited"`
+	Cuts       []string   `json:"cuts"`
+	Flags      []string   `json:"flags"`
+	ComputedAt *time.Time `json:"computed_at"`
+	Snapshot   *int64     `json:"snapshot"`
+}
+
+func storedRow(it Item) StoredRow {
+	r := StoredRow{Project: it.Project, Label: it.Label, Credited: it.Credited, Cuts: it.Cuts, Flags: it.Flags}
+	if !it.Key.IsZero() {
+		at, snap := it.Key.ComputedAt.UTC(), it.Key.Snapshot
+		r.ComputedAt, r.Snapshot = &at, &snap
+	}
+	return r
 }
 
 // Item rejection reasons. They are sent to the agent, which drops rejected
@@ -106,6 +157,9 @@ var (
 	errMinuteFormat    = errors.New("minute must be an RFC 3339 UTC time on a whole minute")
 	errMinuteFuture    = errors.New("minute is in the future")
 	errMinuteTooOld    = errors.New("minute is before 2024")
+	errComputedAt      = errors.New("computed_at must be an RFC 3339 UTC time on a whole minute")
+	errKeyWindow       = errors.New("minute must be in the 60 minutes before computed_at")
+	errSnapshot        = errors.New("snapshot must be an integer >= 0")
 	errProject         = errors.New("project must be at most 256 bytes of UTF-8")
 	errLabel           = errors.New(`label must be "you", "agent" or "idle"`)
 	errCredited        = errors.New("credited must be 0..60, and 0 unless label is \"you\"")
@@ -142,14 +196,10 @@ func Parse(raw []RawItem, now time.Time) ([]Indexed, []Rejection) {
 }
 
 func parseItem(r RawItem, now time.Time) (Item, error) {
-	m, err := time.Parse(time.RFC3339, r.Minute)
-	if err != nil {
+	m, ok := parseMinute(r.Minute)
+	if !ok {
 		return Item{}, errMinuteFormat
 	}
-	if _, offset := m.Zone(); offset != 0 || !m.Equal(m.Truncate(time.Minute)) {
-		return Item{}, errMinuteFormat
-	}
-	m = m.UTC()
 	if m.After(now.Add(MaxFutureSkew)) {
 		return Item{}, errMinuteFuture
 	}
@@ -184,7 +234,39 @@ func parseItem(r RawItem, now time.Time) (Item, error) {
 	if slices.Contains(flags, struggle.FlagMultiDevice) {
 		return Item{}, errServerFlag
 	}
-	return Item{Minute: m, Project: project, Label: r.Label, Credited: r.Credited, Cuts: cuts, Flags: flags}, nil
+	key, err := parseKey(r, m)
+	if err != nil {
+		return Item{}, err
+	}
+	return Item{Minute: m, Project: project, Label: r.Label, Credited: r.Credited, Cuts: cuts, Flags: flags, Key: key}, nil
+}
+
+// parseMinute parses an RFC 3339 time in UTC on a whole minute.
+func parseMinute(s string) (time.Time, bool) {
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return time.Time{}, false
+	}
+	if _, offset := t.Zone(); offset != 0 || !t.Equal(t.Truncate(time.Minute)) {
+		return time.Time{}, false
+	}
+	return t.UTC(), true
+}
+
+// parseKey checks the computation key of minute m: a run whose window ends
+// at computed_at covers the KeyWindow before it (ADR 0017).
+func parseKey(r RawItem, m time.Time) (Key, error) {
+	at, ok := parseMinute(r.ComputedAt)
+	if !ok {
+		return Key{}, errComputedAt
+	}
+	if !m.Before(at) || m.Before(at.Add(-KeyWindow)) {
+		return Key{}, errKeyWindow
+	}
+	if r.Snapshot == nil || *r.Snapshot < 0 {
+		return Key{}, errSnapshot
+	}
+	return Key{ComputedAt: at, Snapshot: *r.Snapshot}, nil
 }
 
 // normalizeCodes checks codes and returns them sorted and deduplicated.
@@ -260,6 +342,7 @@ func Plan(items []Indexed, stored []Stored, b Bounds) (write, remove []Item, rej
 	}
 	seen := make(map[key]bool, len(items))
 	byMinute := map[time.Time][]change{}
+	finalAt := map[int]time.Time{} // minute of each item refused as final, by index
 	for _, it := range items {
 		k := key{it.Item.Minute, it.Item.Project}
 		if seen[k] {
@@ -281,6 +364,9 @@ func Plan(items []Indexed, stored []Stored, b Bounds) (write, remove []Item, rej
 		}
 		if err != nil {
 			rejected = append(rejected, Rejection{Index: it.Index, Error: err.Error()})
+			if errors.Is(err, errFinal) {
+				finalAt[it.Index] = k.minute
+			}
 			continue
 		}
 		byMinute[k.minute] = append(byMinute[k.minute], change{Indexed: it, delta: it.Item.Credited - cur.Credited,
@@ -340,7 +426,40 @@ func Plan(items []Indexed, stored []Stored, b Bounds) (write, remove []Item, rej
 	slices.SortFunc(write, byKey)
 	slices.SortFunc(remove, byKey)
 	slices.SortFunc(rejected, func(a, b Rejection) int { return cmp.Compare(a.Index, b.Index) })
+	for i, r := range rejected {
+		if m, ok := finalAt[r.Index]; ok {
+			rejected[i].Stored = held(m, stored, write, remove)
+		}
+	}
 	return write, remove, rejected
+}
+
+// held returns the rows the device holds for minute m once the batch's
+// writes and removals are applied, sorted by project. A final minute can
+// still gain a project in the same batch during an offline catch-up, so the
+// stored rows alone may be out of date.
+func held(m time.Time, stored []Stored, write, remove []Item) []StoredRow {
+	rows := map[string]Item{}
+	for _, s := range stored {
+		if s.Minute.Equal(m) {
+			rows[s.Project] = s.Item
+		}
+	}
+	for _, it := range remove {
+		if it.Minute.Equal(m) {
+			delete(rows, it.Project)
+		}
+	}
+	for _, it := range write {
+		if it.Minute.Equal(m) {
+			rows[it.Project] = it
+		}
+	}
+	out := make([]StoredRow, 0, len(rows))
+	for _, p := range slices.Sorted(maps.Keys(rows)) {
+		out = append(out, storedRow(rows[p]))
+	}
+	return out
 }
 
 // writable reports why the device may not write minute m (nil if it may).
@@ -376,7 +495,8 @@ func utcDay(t time.Time) time.Time {
 	return time.Date(y, mo, d, 0, 0, 0, 0, time.UTC)
 }
 
+// sameItem reports whether a and b store the same row, key included.
 func sameItem(a, b Item) bool {
 	return a.Label == b.Label && a.Credited == b.Credited &&
-		slices.Equal(a.Cuts, b.Cuts) && slices.Equal(a.Flags, b.Flags)
+		slices.Equal(a.Cuts, b.Cuts) && slices.Equal(a.Flags, b.Flags) && a.Key.Equal(b.Key)
 }

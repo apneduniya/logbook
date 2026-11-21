@@ -66,31 +66,60 @@ func newEnv(t *testing.T) *env {
 func at(h, m int) string { return fmt.Sprintf("2026-11-20T%02d:%02d:00Z", h, m) }
 
 type item struct {
-	Minute   string   `json:"minute"`
-	Project  string   `json:"project"`
-	Label    string   `json:"label"`
-	Credited int      `json:"credited"`
-	Cuts     []string `json:"cuts,omitempty"`
-	Flags    []string `json:"flags,omitempty"`
+	Minute     string   `json:"minute"`
+	Project    string   `json:"project"`
+	Label      string   `json:"label"`
+	Credited   int      `json:"credited"`
+	Cuts       []string `json:"cuts,omitempty"`
+	Flags      []string `json:"flags,omitempty"`
+	ComputedAt string   `json:"computed_at"`
+	Snapshot   *int64   `json:"snapshot"`
 }
 
 func you(minute, project string, credited int) item {
 	return item{Minute: minute, Project: project, Label: "you", Credited: credited}
 }
 
+// computedAt returns it with the key (computed_at, snapshot).
+func (it item) computedAt(computedAt string, snapshot int64) item {
+	it.ComputedAt, it.Snapshot = computedAt, &snapshot
+	return it
+}
+
+// withDefaultKey gives it the key of a run that ended a minute after its
+// minute, at snapshot 1, unless it has a key already.
+func (it item) withDefaultKey(t *testing.T) item {
+	t.Helper()
+	if it.ComputedAt != "" || it.Snapshot != nil {
+		return it
+	}
+	m, err := time.Parse(time.RFC3339, it.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return it.computedAt(m.Add(time.Minute).Format(time.RFC3339), 1)
+}
+
 type response struct {
 	Accepted int `json:"accepted"`
 	Rejected []struct {
-		Index int    `json:"index"`
-		Error string `json:"error"`
+		Index  int             `json:"index"`
+		Error  string          `json:"error"`
+		Stored json.RawMessage `json:"stored"`
 	} `json:"rejected"`
 	ServerTime string `json:"server_time"`
 	Err        string `json:"error"`
 }
 
+// upload sends items as one batch, giving each item without a key the
+// default key (withDefaultKey).
 func (e *env) upload(user, device uuid.UUID, items ...item) (int, response) {
 	e.t.Helper()
-	body, err := json.Marshal(map[string]any{"rules_version": "v1", "minutes": items})
+	keyed := make([]item, len(items))
+	for i, it := range items {
+		keyed[i] = it.withDefaultKey(e.t)
+	}
+	body, err := json.Marshal(map[string]any{"rules_version": "v1", "minutes": keyed})
 	if err != nil {
 		e.t.Fatal(err)
 	}
@@ -290,7 +319,8 @@ func TestUploadDeviceChecks(t *testing.T) {
 		{"revoked device", alice, "/api/v1/devices/" + revoked.String() + "/minutes", http.StatusForbidden},
 		{"no auth", uuid.Nil, "/api/v1/devices/" + aliceDevice.String() + "/minutes", http.StatusUnauthorized},
 	}
-	body := `{"rules_version":"v1","minutes":[{"minute":"` + at(11, 0) + `","project":"x","label":"you","credited":10}]}`
+	body := `{"rules_version":"v1","minutes":[{"minute":"` + at(11, 0) + `","project":"x","label":"you","credited":10,` +
+		`"computed_at":"` + at(11, 1) + `","snapshot":1}]}`
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			if code, res := e.post(tc.user, tc.target, body); code != tc.want {
@@ -503,6 +533,201 @@ func TestUploadEmptyBatch(t *testing.T) {
 	}
 	if len(e.rows(d)) != 0 || len(e.pub.calls) != 0 {
 		t.Fatal("an empty batch changed something")
+	}
+}
+
+// keys returns the stored "hh:mm project computed_at/snapshot" of device's
+// rows, with "null" for a missing key.
+func (e *env) keys(device uuid.UUID) []string {
+	e.t.Helper()
+	rows, err := e.st.Pool.Query(context.Background(), `
+		SELECT minute, project, computed_at, snapshot FROM credited_minutes
+		WHERE device_id = $1 ORDER BY minute, project`, device)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var m time.Time
+		var p string
+		var computedAt *time.Time
+		var snapshot *int64
+		if err := rows.Scan(&m, &p, &computedAt, &snapshot); err != nil {
+			e.t.Fatal(err)
+		}
+		key := "null"
+		if computedAt != nil && snapshot != nil {
+			key = fmt.Sprintf("%s/%d", computedAt.UTC().Format("15:04"), *snapshot)
+		}
+		out = append(out, fmt.Sprintf("%s %s %s", m.UTC().Format("15:04"), p, key))
+	}
+	if err := rows.Err(); err != nil {
+		e.t.Fatal(err)
+	}
+	return out
+}
+
+// Each row stores the key it was uploaded with, and a new key rewrites the
+// row while its minute is open (ADR 0017).
+func TestUploadStoresKeys(t *testing.T) {
+	e := newEnv(t)
+	u := seedtest.User(t, e.st, "alice", "UTC", true)
+	d := seedtest.Device(t, e.st, u, "laptop")
+	code, res := e.upload(u, d,
+		you(at(11, 50), "a", 30).computedAt(at(11, 51), 40),
+		you(at(11, 50), "b", 30).computedAt(at(11, 51), 40),
+		you(at(11, 0), "a", 60).computedAt(at(11, 59), 0),
+	)
+	if code != http.StatusOK || res.Accepted != 3 {
+		t.Fatalf("status %d, %+v", code, res)
+	}
+	want := "[11:00 a 11:59/0 11:50 a 11:51/40 11:50 b 11:51/40]"
+	if got := fmt.Sprint(e.keys(d)); got != want {
+		t.Fatalf("keys = %s, want %s", got, want)
+	}
+	// Same values at a later key: a rewrite of the open minute.
+	code, res = e.upload(u, d,
+		you(at(11, 50), "a", 30).computedAt(at(11, 52), 41),
+		you(at(11, 50), "b", 30).computedAt(at(11, 52), 41),
+	)
+	if code != http.StatusOK || res.Accepted != 2 {
+		t.Fatalf("rewrite: %d %+v", code, res)
+	}
+	want = "[11:00 a 11:59/0 11:50 a 11:52/41 11:50 b 11:52/41]"
+	if got := fmt.Sprint(e.keys(d)); got != want {
+		t.Fatalf("keys after rewrite = %s, want %s", got, want)
+	}
+	if len(e.pub.calls) != 2 {
+		t.Fatalf("a key change should publish: %+v", e.pub.calls)
+	}
+}
+
+// Once a minute is final, a changed key is refused like a changed value,
+// and the rejection carries the rows the server holds for the minute. The
+// exact stored row, key included, is still accepted.
+func TestUploadKeyChangeOnceFinal(t *testing.T) {
+	e := newEnv(t)
+	u := seedtest.User(t, e.st, "alice", "UTC", true)
+	d := seedtest.Device(t, e.st, u, "laptop")
+	a := you(at(11, 50), "a", 40).computedAt(at(12, 0), 41)
+	b := item{Minute: at(11, 50), Project: "b", Label: "idle", Cuts: []string{"idle"}}.computedAt(at(12, 0), 41)
+	if code, res := e.upload(u, d, b, a); code != 200 || res.Accepted != 2 {
+		t.Fatalf("seed upload: %d %+v", code, res)
+	}
+	e.clock.Advance(30 * time.Minute)
+
+	// Same value, later key; and a removal of b carrying its key.
+	code, res := e.upload(u, d, you(at(11, 50), "a", 40).computedAt(at(12, 1), 42),
+		removal(at(11, 50), "b").computedAt(at(12, 1), 42))
+	if code != http.StatusOK || res.Accepted != 0 || fmt.Sprint(rejectedIndexes(res)) != "[0 1]" {
+		t.Fatalf("status %d, %+v", code, res)
+	}
+	wantStored := `[{"project":"a","label":"you","credited":40,"cuts":[],"flags":[],"computed_at":"2026-11-20T12:00:00Z","snapshot":41},` +
+		`{"project":"b","label":"idle","credited":0,"cuts":["idle"],"flags":[],"computed_at":"2026-11-20T12:00:00Z","snapshot":41}]`
+	for _, r := range res.Rejected {
+		if !strings.Contains(r.Error, "final") || string(r.Stored) != wantStored {
+			t.Errorf("rejected[%d] = %q stored %s, want %s", r.Index, r.Error, r.Stored, wantStored)
+		}
+	}
+	if got := fmt.Sprint(e.keys(d)); got != "[11:50 a 12:00/41 11:50 b 12:00/41]" {
+		t.Fatalf("keys = %s", got)
+	}
+
+	// The exact stored rows are a repeat and accepted.
+	if code, res := e.upload(u, d, a, b); code != 200 || res.Accepted != 2 || len(res.Rejected) != 0 {
+		t.Fatalf("repeat: %d %+v", code, res)
+	}
+}
+
+// A row stored before ADR 0017 has no key; once final, it is returned with
+// null computed_at and snapshot.
+func TestUploadFinalLegacyRow(t *testing.T) {
+	e := newEnv(t)
+	u := seedtest.User(t, e.st, "alice", "UTC", true)
+	d := seedtest.Device(t, e.st, u, "laptop")
+	seedtest.CreditedSpan(t, e.st, u, d, time.Date(2026, 11, 20, 11, 0, 0, 0, time.UTC), 1,
+		seedtest.Credited{Project: "a", Label: "you", Seconds: 60})
+	code, res := e.upload(u, d, you(at(11, 0), "a", 60))
+	if code != http.StatusOK || len(res.Rejected) != 1 {
+		t.Fatalf("status %d, %+v", code, res)
+	}
+	want := `[{"project":"a","label":"you","credited":60,"cuts":[],"flags":[],"computed_at":null,"snapshot":null}]`
+	if string(res.Rejected[0].Stored) != want {
+		t.Fatalf("stored = %s, want %s", res.Rejected[0].Stored, want)
+	}
+}
+
+// Malformed keys are rejected per item; a snapshot that isn't an integer
+// fails the whole request like any other wrongly typed field.
+func TestUploadKeyValidation(t *testing.T) {
+	e := newEnv(t)
+	u := seedtest.User(t, e.st, "alice", "UTC", true)
+	d := seedtest.Device(t, e.st, u, "laptop")
+	target := "/api/v1/devices/" + d.String() + "/minutes"
+	minute := func(extra string) string {
+		return `{"minute":"` + at(11, 50) + `","project":"a","label":"you","credited":10` + extra + `}`
+	}
+	body := `{"rules_version":"v1","minutes":[` + strings.Join([]string{
+		minute(`,"snapshot":1`),
+		minute(`,"computed_at":"` + at(11, 51) + `"`),
+		minute(`,"computed_at":"` + at(11, 50) + `","snapshot":1`),
+		minute(`,"computed_at":"` + at(12, 51) + `","snapshot":1`),
+		minute(`,"computed_at":"2026-11-20T11:51:30Z","snapshot":1`),
+		minute(`,"computed_at":"` + at(11, 51) + `","snapshot":-1`),
+		minute(`,"computed_at":"` + at(11, 51) + `","snapshot":null`),
+	}, ",") + `]}`
+	code, res := e.post(u, target, body)
+	if code != http.StatusOK || res.Accepted != 0 || len(res.Rejected) != 7 {
+		t.Fatalf("status %d, %+v", code, res)
+	}
+	wantErr := []string{"computed_at", "snapshot", "60 minutes before", "60 minutes before", "computed_at", "snapshot", "snapshot"}
+	for i, r := range res.Rejected {
+		if !strings.Contains(r.Error, wantErr[i]) || r.Stored != nil {
+			t.Errorf("rejected[%d] = %+v, want an error about %s", i, r, wantErr[i])
+		}
+	}
+	for _, bad := range []string{`1.5`, `"1"`, `1e30`} {
+		body := `{"rules_version":"v1","minutes":[` + minute(`,"computed_at":"`+at(11, 51)+`","snapshot":`+bad) + `]}`
+		if code, res := e.post(u, target, body); code != http.StatusBadRequest {
+			t.Errorf("snapshot %s: status %d %+v, want 400", bad, code, res)
+		}
+	}
+	if len(e.rows(d)) != 0 {
+		t.Fatal("invalid items were stored")
+	}
+}
+
+// Another user can neither write a device's minutes nor read its stored
+// rows: their upload is a 404, and a "final" rejection on their own device
+// returns only that device's rows.
+func TestUploadKeysAreScopedToTheDevice(t *testing.T) {
+	e := newEnv(t)
+	alice := seedtest.User(t, e.st, "alice", "UTC", true)
+	bob := seedtest.User(t, e.st, "bob", "UTC", true)
+	aliceDevice := seedtest.Device(t, e.st, alice, "laptop")
+	bobDevice := seedtest.Device(t, e.st, bob, "laptop")
+	if code, res := e.upload(alice, aliceDevice, you(at(11, 50), "secret", 40)); code != 200 || res.Accepted != 1 {
+		t.Fatalf("alice: %d %+v", code, res)
+	}
+	if code, res := e.upload(bob, bobDevice, you(at(11, 50), "mine", 20)); code != 200 || res.Accepted != 1 {
+		t.Fatalf("bob: %d %+v", code, res)
+	}
+	e.clock.Advance(30 * time.Minute)
+
+	code, res := e.upload(bob, aliceDevice, you(at(11, 50), "secret", 40).computedAt(at(11, 52), 9))
+	if code != http.StatusNotFound || len(res.Rejected) != 0 {
+		t.Fatalf("bob on alice's device: %d %+v", code, res)
+	}
+	code, res = e.upload(bob, bobDevice, you(at(11, 50), "secret", 40).computedAt(at(11, 52), 9))
+	if code != http.StatusOK || len(res.Rejected) != 1 {
+		t.Fatalf("bob on his device: %d %+v", code, res)
+	}
+	if s := string(res.Rejected[0].Stored); strings.Contains(s, "secret") || !strings.Contains(s, `"mine"`) {
+		t.Fatalf("bob's stored rows = %s", s)
+	}
+	if got := fmt.Sprint(e.keys(aliceDevice)); got != "[11:50 secret 11:51/1]" {
+		t.Fatalf("alice's rows = %s", got)
 	}
 }
 

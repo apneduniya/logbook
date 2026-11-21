@@ -166,11 +166,14 @@ func minutesOf(items []Indexed) []time.Time {
 func toStored(rows []db.CreditedMinutesForDeviceRow) []Stored {
 	out := make([]Stored, len(rows))
 	for i, r := range rows {
-		cuts, flags := slices.Sorted(slices.Values(r.Cuts)), slices.Sorted(slices.Values(r.Flags))
+		var key Key
+		if r.ComputedAt != nil && r.Snapshot.Valid {
+			key = Key{ComputedAt: r.ComputedAt.UTC(), Snapshot: r.Snapshot.Int64}
+		}
 		out[i] = Stored{
 			Item: Item{
 				Minute: r.Minute.UTC(), Project: r.Project, Label: r.Label, Credited: int(r.Credited),
-				Cuts: slices.Compact(cuts), Flags: slices.Compact(flags),
+				Cuts: codes(r.Cuts), Flags: codes(r.Flags), Key: key,
 			},
 			RulesVersion: r.RulesVersion,
 			UpdatedAt:    r.UpdatedAt.UTC(),
@@ -179,15 +182,24 @@ func toStored(rows []db.CreditedMinutesForDeviceRow) []Stored {
 	return out
 }
 
+// codes returns stored codes sorted, without duplicates and never nil, the
+// shape Parse gives uploaded ones.
+func codes(c []string) []string {
+	out := append([]string{}, c...)
+	slices.Sort(out)
+	return slices.Compact(out)
+}
+
 // upsertRow is one element of the JSON array CreditedMinutesUpsert reads.
-// Its fields match Item's, so an Item converts to it directly.
 type upsertRow struct {
-	Minute   time.Time `json:"minute"`
-	Project  string    `json:"project"`
-	Label    string    `json:"label"`
-	Credited int       `json:"credited"`
-	Cuts     []string  `json:"cuts"`
-	Flags    []string  `json:"flags"`
+	Minute     time.Time `json:"minute"`
+	Project    string    `json:"project"`
+	Label      string    `json:"label"`
+	Credited   int       `json:"credited"`
+	Cuts       []string  `json:"cuts"`
+	Flags      []string  `json:"flags"`
+	ComputedAt time.Time `json:"computed_at"`
+	Snapshot   int64     `json:"snapshot"`
 }
 
 // deleteRow is one element of the JSON array CreditedMinutesDelete reads.
@@ -234,7 +246,10 @@ func upsert(ctx context.Context, q *db.Queries, userID, deviceID uuid.UUID, rule
 	}
 	rows := make([]upsertRow, len(items))
 	for i, it := range items {
-		rows[i] = upsertRow(it)
+		rows[i] = upsertRow{
+			Minute: it.Minute, Project: it.Project, Label: it.Label, Credited: it.Credited,
+			Cuts: it.Cuts, Flags: it.Flags, ComputedAt: it.Key.ComputedAt, Snapshot: it.Key.Snapshot,
+		}
 	}
 	payload, err := json.Marshal(rows)
 	if err != nil {

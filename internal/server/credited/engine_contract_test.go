@@ -37,9 +37,11 @@ func uploadEngineOutput(t *testing.T, res struggle.Result) (stored int) {
 	t.Helper()
 	raw := make([]RawItem, 0, len(res.Minutes))
 	for _, m := range res.Minutes {
+		snapshot := int64(1)
 		raw = append(raw, RawItem{
 			Minute: m.Minute.Format(time.RFC3339), Project: m.Project, Label: string(m.Label),
 			Credited: m.Credited, Cuts: m.Cuts, Flags: m.Flags,
+			ComputedAt: m.Minute.Add(time.Minute).Format(time.RFC3339), Snapshot: &snapshot,
 		})
 	}
 	valid, rejected := Parse(raw, now)
