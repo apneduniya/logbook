@@ -46,8 +46,11 @@ WHERE id = sqlc.arg(id)
 
 -- name: CreditedMinutesForDevice :many
 -- The device's stored rows for the given minutes, for the rewrite-window,
--- project-count and 60-second checks.
-SELECT minute, project, label, credited, cuts, flags, rules_version, updated_at
+-- project-count and 60-second checks and the rows returned with a "final"
+-- rejection. computed_at and snapshot are null for rows stored before
+-- ADR 0017.
+SELECT minute, project, label, credited, cuts, flags, rules_version, updated_at,
+       computed_at, snapshot
 FROM credited_minutes
 WHERE device_id = sqlc.arg(device_id)
   AND minute = ANY(sqlc.arg(minutes)::timestamptz[])
@@ -55,16 +58,20 @@ ORDER BY minute, project;
 
 -- name: CreditedMinutesUpsert :exec
 -- Writes a checked batch in one round trip. rows is a JSON array of objects
--- with minute (RFC 3339), project, label, credited, cuts and flags. Unchanged
--- rows are skipped so retries produce no dead tuples.
+-- with minute and computed_at (RFC 3339), project, label, credited, cuts,
+-- flags and snapshot. Unchanged rows (key included) are skipped so retries
+-- produce no dead tuples.
 INSERT INTO credited_minutes (
-    device_id, user_id, minute, project, label, credited, cuts, flags, rules_version, updated_at
+    device_id, user_id, minute, project, label, credited, cuts, flags, rules_version, updated_at,
+    computed_at, snapshot
 )
 SELECT sqlc.arg(device_id)::uuid, sqlc.arg(user_id)::uuid, r.minute, r.project, r.label,
        r.credited, coalesce(r.cuts, '{}'), coalesce(r.flags, '{}'),
-       sqlc.arg(rules_version)::text, sqlc.arg(updated_at)::timestamptz
+       sqlc.arg(rules_version)::text, sqlc.arg(updated_at)::timestamptz,
+       r.computed_at, r.snapshot
 FROM jsonb_to_recordset(sqlc.arg(rows)::jsonb) AS r(
-    minute timestamptz, project text, label text, credited smallint, cuts text[], flags text[]
+    minute timestamptz, project text, label text, credited smallint, cuts text[], flags text[],
+    computed_at timestamptz, snapshot bigint
 )
 ON CONFLICT (device_id, minute, project) DO UPDATE SET
     label         = EXCLUDED.label,
@@ -72,11 +79,15 @@ ON CONFLICT (device_id, minute, project) DO UPDATE SET
     cuts          = EXCLUDED.cuts,
     flags         = EXCLUDED.flags,
     rules_version = EXCLUDED.rules_version,
-    updated_at    = EXCLUDED.updated_at
+    updated_at    = EXCLUDED.updated_at,
+    computed_at   = EXCLUDED.computed_at,
+    snapshot      = EXCLUDED.snapshot
 WHERE (credited_minutes.label, credited_minutes.credited, credited_minutes.cuts,
-       credited_minutes.flags, credited_minutes.rules_version)
+       credited_minutes.flags, credited_minutes.rules_version,
+       credited_minutes.computed_at, credited_minutes.snapshot)
       IS DISTINCT FROM
-      (EXCLUDED.label, EXCLUDED.credited, EXCLUDED.cuts, EXCLUDED.flags, EXCLUDED.rules_version);
+      (EXCLUDED.label, EXCLUDED.credited, EXCLUDED.cuts, EXCLUDED.flags, EXCLUDED.rules_version,
+       EXCLUDED.computed_at, EXCLUDED.snapshot);
 
 -- name: CreditedMinutesDelete :exec
 -- Deletes the device's rows for a checked list of (minute, project) pairs:

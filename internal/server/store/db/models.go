@@ -43,6 +43,8 @@ type CreditedMinute struct {
 	Flags        []string
 	RulesVersion string
 	UpdatedAt    time.Time
+	ComputedAt   *time.Time
+	Snapshot     pgtype.Int8
 }
 
 type CreditedProjectMinute struct {
