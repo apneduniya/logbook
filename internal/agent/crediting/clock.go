@@ -141,9 +141,14 @@ func (c serverClock) message() string {
 }
 
 // observeServer records the server's clock from a minutes response of this
-// run and shows in status whether it can be trusted for sealing.
+// run, notes how far the system clock is ahead of it (for finality), and
+// shows in status whether it can be trusted for sealing.
 func (r *Runner) observeServer(ctx context.Context, server time.Time) {
 	r.server = serverClock{seen: true, at: server, local: r.opt.Now()}
+	r.ahead, r.aheadKnown = 0, !server.IsZero()
+	if r.aheadKnown {
+		r.ahead = finalityOffset(r.server.local.Sub(server))
+	}
 	msg := r.server.message()
 	if old := r.shown[keyClock]; old != msg && msg != "" {
 		r.opt.Logger.WarnContext(ctx, "the server's clock is missing or differs from the system clock; not sealing evidence days",
@@ -152,20 +157,32 @@ func (r *Runner) observeServer(ctx context.Context, server time.Time) {
 	r.show(ctx, keyClock, msg)
 }
 
+// aheadSlack is the clock offset finality ignores. Every reading looks a
+// little ahead (the server stamps server_time when it starts handling the
+// request, the agent reads its clock when the answer arrives), and
+// subtracting that would push each minute's finality a whole minute later,
+// past the server's 30-minute freeze. Finalizing up to aheadSlack early
+// still leaves FinalLead's minute of margin before the server freezes.
+const aheadSlack = 30 * time.Second
+
+// finalityOffset is how far finality runs behind the system clock, given
+// how far the system clock reads ahead of the server's (negative when
+// behind).
+func finalityOffset(ahead time.Duration) time.Duration {
+	if ahead <= aheadSlack {
+		return 0
+	}
+	return ahead
+}
+
 // sealingClock returns the clock days are sealed by: the earlier of now and
 // the server's clock, read in this run (an empty minutes batch asks for it
 // if the run has sent none). ok is false, and nothing may be sealed or
 // skipped, when the server gave no usable time or the two clocks disagree
 // by more than MaxClockSkew.
 func (r *Runner) sealingClock(ctx context.Context, t serverapi.Target, dev devicekey.Device, now time.Time) (at time.Time, ok bool, err error) {
-	if !r.server.seen {
-		res, err := r.opt.Server.UploadMinutes(ctx, t, dev.ID, serverapi.MinutesRequest{
-			RulesVersion: struggle.RulesVersion, Minutes: []serverapi.Minute{},
-		})
-		if err != nil {
-			return time.Time{}, false, err
-		}
-		r.observeServer(ctx, res.ServerTime)
+	if err := r.askServerTime(ctx, t, dev); err != nil {
+		return time.Time{}, false, err
 	}
 	if !r.server.agrees() {
 		return time.Time{}, false, nil
@@ -174,4 +191,20 @@ func (r *Runner) sealingClock(ctx context.Context, t serverapi.Target, dev devic
 		return r.server.at, true, nil
 	}
 	return now, true, nil
+}
+
+// askServerTime sends an empty minutes batch, which only asks for the
+// server's clock, unless a minutes response in this run already gave it.
+func (r *Runner) askServerTime(ctx context.Context, t serverapi.Target, dev devicekey.Device) error {
+	if r.server.seen {
+		return nil
+	}
+	res, err := r.opt.Server.UploadMinutes(ctx, t, dev.ID, serverapi.MinutesRequest{
+		RulesVersion: struggle.RulesVersion, Minutes: []serverapi.Minute{},
+	})
+	if err != nil {
+		return err
+	}
+	r.observeServer(ctx, res.ServerTime)
+	return nil
 }

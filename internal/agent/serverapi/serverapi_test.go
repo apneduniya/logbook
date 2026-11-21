@@ -129,20 +129,25 @@ func TestRegisterDevice(t *testing.T) {
 }
 
 func TestUploadMinutes(t *testing.T) {
+	computed := time.Date(2026, 11, 20, 10, 30, 0, 0, time.UTC)
 	req := MinutesRequest{RulesVersion: "v1", Minutes: []Minute{
-		{Minute: time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC), Project: "app", Label: "you", Credited: 60, Cuts: []string{}, Flags: []string{}},
-		{Minute: time.Date(2026, 11, 20, 10, 1, 0, 0, time.UTC), Project: "app", Label: "idle", Cuts: []string{"idle"}, Flags: []string{}},
+		{Minute: time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC), Project: "app", Label: "you", Credited: 60, Cuts: []string{}, Flags: []string{},
+			ComputedAt: computed, Snapshot: 1234},
+		{Minute: time.Date(2026, 11, 20, 10, 1, 0, 0, time.UTC), Project: "app", Label: "idle", Cuts: []string{"idle"}, Flags: []string{},
+			ComputedAt: computed, Snapshot: 1234},
 	}}
 	srv, rec := server(t, 200, `{"accepted":1,"rejected":[{"index":1,"error":"too old"}]}`)
 	res, err := New(srv.Client(), "ua").UploadMinutes(t.Context(), Target{BaseURL: srv.URL, APIKey: "k"}, "dev/1", req)
-	if err != nil || res.Accepted != 1 || len(res.Rejected) != 1 || res.Rejected[0].Index != 1 {
+	if err != nil || res.Accepted != 1 || len(res.Rejected) != 1 || res.Rejected[0].Index != 1 || res.Rejected[0].Stored != nil {
 		t.Fatalf("UploadMinutes = %+v, %v", res, err)
 	}
 	if rec.path != "/api/v1/devices/dev%2F1/minutes" && rec.path != "/api/v1/devices/dev/1/minutes" {
 		t.Fatalf("path = %s", rec.path)
 	}
 	ms := rec.body["minutes"].([]any)
-	if ms[0].(map[string]any)["minute"] != "2026-11-20T10:00:00Z" || rec.body["rules_version"] != "v1" {
+	first := ms[0].(map[string]any)
+	if first["minute"] != "2026-11-20T10:00:00Z" || rec.body["rules_version"] != "v1" ||
+		first["computed_at"] != "2026-11-20T10:30:00Z" || first["snapshot"] != float64(1234) {
 		t.Fatalf("body = %v", rec.body)
 	}
 
@@ -151,6 +156,36 @@ func TestUploadMinutes(t *testing.T) {
 		if _, err := New(srv.Client(), "ua").UploadMinutes(t.Context(), Target{BaseURL: srv.URL}, "d", req); KindOf(err) != KindRetry || err == nil {
 			t.Fatalf("response %s: err = %v", resp, err)
 		}
+	}
+}
+
+// A refusal because the minute is final carries the rows the server holds,
+// keyed or (stored before keys) not; an empty list means it holds none.
+func TestUploadMinutesStoredRows(t *testing.T) {
+	req := MinutesRequest{RulesVersion: "v1", Minutes: []Minute{{Project: "a"}, {Project: "b"}, {Project: "c"}}}
+	srv, _ := server(t, 200, `{"accepted":0,"rejected":[
+		{"index":0,"error":"minute is final","stored":[
+			{"project":"a","label":"you","credited":45,"cuts":[],"flags":["low_signal"],"computed_at":"2026-11-20T15:59:00+05:30","snapshot":77},
+			{"project":"z","label":"idle","credited":0,"cuts":["idle"],"flags":[],"computed_at":null,"snapshot":null}]},
+		{"index":1,"error":"minute is final","stored":[]},
+		{"index":2,"error":"project refused"}]}`)
+	res, err := New(srv.Client(), "ua").UploadMinutes(t.Context(), Target{BaseURL: srv.URL}, "d", req)
+	if err != nil || len(res.Rejected) != 3 {
+		t.Fatalf("UploadMinutes = %+v, %v", res, err)
+	}
+	st := res.Rejected[0].Stored
+	if len(st) != 2 || st[0].Credited != 45 || st[0].Snapshot == nil || *st[0].Snapshot != 77 || st[0].ComputedAt == nil ||
+		!st[0].ComputedAt.Equal(time.Date(2026, 11, 20, 10, 29, 0, 0, time.UTC)) || st[0].Flags[0] != "low_signal" {
+		t.Fatalf("stored rows = %+v", st)
+	}
+	if st[1].ComputedAt != nil || st[1].Snapshot != nil || st[1].Cuts[0] != "idle" {
+		t.Fatalf("unkeyed stored row = %+v", st[1])
+	}
+	if res.Rejected[1].Stored == nil || len(res.Rejected[1].Stored) != 0 {
+		t.Fatalf("empty stored list = %#v, want empty and not nil", res.Rejected[1].Stored)
+	}
+	if res.Rejected[2].Stored != nil {
+		t.Fatalf("a refusal without stored rows has %+v", res.Rejected[2].Stored)
 	}
 }
 

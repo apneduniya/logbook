@@ -1,6 +1,7 @@
-// Package evidence defines Logbook's tamper-evident evidence chain (ADR 0010):
-// the canonical encoding of a day's raw events, the chain hash that links
-// days, and ed25519 signing and verification. Agent and server both use it,
+// Package evidence defines Logbook's tamper-evident evidence chain (ADR 0010,
+// ADR 0017): the canonical encoding of a block of the device's logged rows,
+// the chain hash that links one block per UTC day, and ed25519 signing and
+// verification. Agent and server both use it,
 // so the formats are defined exactly once. It does no I/O.
 package evidence
 
@@ -22,7 +23,7 @@ type Day struct {
 	DeviceID      string // UUID string assigned by the server
 	Day           string // UTC date, YYYY-MM-DD
 	PrevChainHash string // hex; "" for the device's first day
-	ContentHash   string // hex SHA-256 of the canonical day encoding
+	ContentHash   string // hex SHA-256 of the canonical block encoding
 	RulesVersion  string
 }
 

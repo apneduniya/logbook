@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/apneduniya/logbook/internal/agent/devicekey"
+	"github.com/apneduniya/logbook/internal/agent/localdb"
 )
 
 // Persisted state keys. The status page reads them, so they also work when
@@ -30,32 +31,46 @@ const (
 	// keyClock describes a clock problem ("" when none); see
 	// MinutesStatus.Clock.
 	keyClock = "crediting.clock"
-	// keySealedThrough is the end (UTC midnight, RFC 3339) of the latest
-	// day the evidence chain has moved past, sealed or found empty. It only
-	// grows; no minute before it is computed or stored again.
+	// keyBelowFloor says why no minute is computed when the system clock is
+	// set back below deleted history ("" when not; see
+	// MinutesStatus.BelowFloor).
+	keyBelowFloor = "crediting.below_floor"
+	// keySealedThrough is the latest UTC day (YYYY-MM-DD) the evidence
+	// chain has moved past, sealed or found empty. It only grows; no minute
+	// before that day's end is computed or stored again.
 	keySealedThrough = "crediting.sealed_through"
-	// keySettling says why no minute becomes final yet after a start ("" once
-	// settled).
+	// keySettling says why no minute becomes final yet after a start or a
+	// wake ("" once settled).
 	keySettling = "crediting.settling"
-	// keyLateIgnored counts raw events that arrived after their minute was
-	// final, and keyLateLatest is the latest such arrival. keyLateMark is
-	// how far rows have been checked ("<heartbeats> <ai> <activity> <git>"
-	// row ids).
+	// keyLateIgnored counts raw events logged after their minute was final,
+	// and keyLateLatest is the latest such event's time. keyLateMark is the
+	// log's high-water mark up to which rows have been checked.
 	keyLateIgnored = "crediting.late_ignored"
 	keyLateLatest  = "crediting.late_latest"
 	keyLateMark    = "crediting.late_mark"
+	// keyUnkeyed counts rows adopted from the server that carry no
+	// computation key (stored before keys existed): they can't be
+	// replayed.
+	keyUnkeyed = "crediting.unkeyed"
 
 	keyEvidenceDevice = "evidence.device"
-	keyEvidenceDay    = "evidence.last_day"
-	keyEvidenceHash   = "evidence.chain_hash"
-	keyEvidenceState  = "evidence.state"
-	keyEvidenceError  = "evidence.error"
+	// keyDevice is the device the stored credited minutes belong to, set
+	// once a replacement device's switch (retiring the previous device's
+	// minutes and restarting the chain) is complete.
+	keyDevice        = "crediting.device"
+	keyEvidenceDay   = "evidence.last_day"
+	keyEvidenceHash  = "evidence.chain_hash"
+	keyEvidenceState = "evidence.state"
+	keyEvidenceError = "evidence.error"
 	// keyEvidenceLocal is the last local failure sealing a day ("" when
 	// the last attempt worked).
 	keyEvidenceLocal = "evidence.local_error"
 	// keyEvidenceCursor is "<device id> <day>": every day up to and
 	// including <day> has been sealed or found empty for that device.
 	keyEvidenceCursor = "evidence.cursor"
+	// keyEvidenceProgress holds a large block's hashing progress between
+	// runs (sealProgress), "" when none.
+	keyEvidenceProgress = "evidence.progress"
 )
 
 // Status is what the status page and `logbook status` show about crediting.
@@ -91,7 +106,8 @@ type MinutesStatus struct {
 	NextAttempt time.Time `json:"next_attempt,omitzero"`
 	// Waiting counts minutes not yet accepted by the server.
 	Waiting int64 `json:"waiting"`
-	// Rejected counts minutes the server refused (never retried).
+	// Rejected counts rows the server refused for good once final (or
+	// for a sealed day): they are dropped, never retried.
 	Rejected int64 `json:"rejected"`
 	// SealedRejected counts the rejected minutes whose UTC day the server
 	// had already sealed, and SealedError describes the latest. These are
@@ -105,15 +121,24 @@ type MinutesStatus struct {
 	// MaxClockSkew, or the server gave no usable time (no day is sealed
 	// until the clocks agree; minutes are still uploaded).
 	Clock string `json:"clock,omitempty"`
+	// BelowFloor, when non-empty, says no minute is computed because the
+	// system clock is set back before history the agent has already deleted.
+	BelowFloor string `json:"below_floor,omitempty"`
 	// Settling, when non-empty, says why no minute becomes final yet: the
-	// agent has just started (or woken) and waits for late events, or for
-	// the hook spool to drain (ADR 0016).
+	// agent has just started (or woken) and waits for late events, for the
+	// hook spool to drain, or for the server's time (ADR 0017).
 	Settling string `json:"settling,omitempty"`
-	// LateIgnored counts raw events that arrived after the minute they
-	// belong to was final; they are kept as evidence but never change its
-	// credit. LateLatest is the latest such arrival.
+	// LateIgnored counts raw events logged after the minute they belong to
+	// was final; they are kept and sealed as evidence but never change its
+	// credit. LateLatest is the latest such event's time.
 	LateIgnored int64     `json:"late_ignored,omitempty"`
 	LateLatest  time.Time `json:"late_latest,omitzero"`
+	// Unkeyed counts rows adopted from the server without a computation
+	// key (stored before the server kept keys); they can't be replayed.
+	Unkeyed int64 `json:"unkeyed,omitempty"`
+	// DroppedSamples counts activity samples not stored because the local
+	// log was full of rows the evidence chain hasn't sealed yet.
+	DroppedSamples int64 `json:"dropped_samples,omitempty"`
 }
 
 // EvidenceStatus is the evidence chain's progress.
@@ -154,7 +179,7 @@ func LoadStatus(ctx context.Context, r StateReader) (Status, error) {
 	s.Minutes = MinutesStatus{
 		LastComputed: parseTime(m[keyLastComputed]), LastSuccess: parseTime(m[keyLastSuccess]),
 		LastError: m[keyLastError], LastErrorAt: parseTime(m[keyLastErrorAt]), Paused: m[keyPaused],
-		Refused: m[keyRefused], SealedError: m[keySealedError], Clock: m[keyClock],
+		Refused: m[keyRefused], SealedError: m[keySealedError], Clock: m[keyClock], BelowFloor: m[keyBelowFloor],
 		Settling: m[keySettling], LateLatest: parseTime(m[keyLateLatest]),
 	}
 	for _, c := range []struct {
@@ -163,11 +188,21 @@ func LoadStatus(ctx context.Context, r StateReader) (Status, error) {
 	}{
 		{keyRejected, &s.Minutes.Rejected}, {keyWaiting, &s.Minutes.Waiting},
 		{keySealedRejected, &s.Minutes.SealedRejected}, {keyLateIgnored, &s.Minutes.LateIgnored},
+		{keyUnkeyed, &s.Minutes.Unkeyed},
 	} {
 		if v := m[c.key]; v != "" {
 			if *c.dst, err = strconv.ParseInt(v, 10, 64); err != nil {
 				return Status{}, fmt.Errorf("reading %s: %w", c.key, err)
 			}
+		}
+	}
+	logState, err := r.Prefix(ctx, localdb.KeyDroppedSamples)
+	if err != nil {
+		return Status{}, err
+	}
+	if v := logState[localdb.KeyDroppedSamples]; v != "" {
+		if s.Minutes.DroppedSamples, err = strconv.ParseInt(v, 10, 64); err != nil {
+			return Status{}, fmt.Errorf("reading %s: %w", localdb.KeyDroppedSamples, err)
 		}
 	}
 	ev, err := r.Prefix(ctx, "evidence.")

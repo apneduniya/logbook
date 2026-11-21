@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -38,8 +39,6 @@ type env struct {
 	active  ActiveTimeSource
 	runner  *Runner
 	options func(*Options)
-	// arrived, when set, is when events stored now arrive (see arrival).
-	arrived time.Time
 }
 
 func newEnv(t *testing.T, start time.Time) *env {
@@ -60,7 +59,7 @@ func (e *env) open() {
 	if e.db != nil {
 		_ = e.db.Close()
 	}
-	db, err := localdb.Open(context.Background(), config.DBPath(e.dir), localdb.WithClock(e.arrival))
+	db, err := localdb.Open(context.Background(), config.DBPath(e.dir), localdb.WithClock(e.clock))
 	if err != nil {
 		e.t.Fatal(err)
 	}
@@ -96,18 +95,6 @@ func (e *env) clock() time.Time {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.now
-}
-
-// arrival is the database's clock, which stamps when events arrive: the
-// start of the current minute, so what a test stores before a run (a few
-// seconds past the minute) arrived by that run's cutoff.
-func (e *env) arrival() time.Time {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	if !e.arrived.IsZero() {
-		return e.arrived
-	}
-	return e.now.Truncate(time.Minute)
 }
 
 func (e *env) advance(d time.Duration) {
@@ -251,10 +238,18 @@ func TestMinutesUploadAndRewriteWindow(t *testing.T) {
 	}
 	e.wantServerMinute(at("11:58"), "web", 60)
 
-	// 40 minutes later 11:59 is final: a late change is not recomputed or sent.
+	// The run at 12:28 (11:59 + FinalLead) makes 11:59 final: a later
+	// change is never recomputed or sent.
+	for range 25 {
+		e.advance(time.Minute)
+		e.run()
+	}
+	if ok, err := e.db.IsFinal(context.Background(), at("11:59")); err != nil || !ok {
+		t.Fatalf("11:59 final at 12:28 = %v, %v", ok, err)
+	}
 	e.credit(at("11:59"), "app", 45)
-	e.advance(37 * time.Minute)
 	before := len(e.srv.batches())
+	e.advance(time.Minute)
 	e.run()
 	if n := len(e.srv.batches()); n != before {
 		t.Fatalf("final minute was sent again: %+v", e.srv.batches()[before:])
@@ -262,34 +257,78 @@ func TestMinutesUploadAndRewriteWindow(t *testing.T) {
 	e.wantServerMinute(at("11:59"), "app", 30)
 }
 
-func TestFinalMinuteSentOnceMore(t *testing.T) {
+// A final minute the server refuses (it froze an earlier value) takes the
+// server's rows, key included: the server's value is the truth. A stored
+// row without a key is adopted too, and counted.
+func TestFinalRefusalAdoptsServerRows(t *testing.T) {
+	ctx := context.Background()
 	e := newEnv(t, at("12:40").Add(5*time.Second))
+	e.credit(at("12:14"), "app", 60)
 	e.credit(at("12:15"), "app", 60)
 	e.run()
 	e.wantServerMinute(at("12:15"), "app", 60)
+	// The server kept 12:14 from before it stored keys.
+	e.srv.set(func(f *fakeServer) {
+		k := minuteKey(e.deviceID(), at("12:14")) + "app"
+		m := f.minutes[k]
+		m.ComputedAt, m.Snapshot = time.Time{}, nil
+		f.minutes[k] = m
+	})
 
-	// At 29 minutes old the minute changes while the server is down.
+	// The minutes change while the server is down, and become final here.
 	e.advance(4 * time.Minute)
+	e.credit(at("12:14"), "app", 40)
 	e.credit(at("12:15"), "app", 50)
 	e.srv.set(func(f *fakeServer) { f.status = http.StatusServiceUnavailable })
 	e.run()
-	if s := e.status(); s.Minutes.LastError == "" || s.Minutes.Waiting != 1 {
+	if s := e.status(); s.Minutes.LastError == "" || s.Minutes.Waiting != 2 {
 		t.Fatalf("status while down = %+v", s.Minutes)
 	}
-	// Back up once the minute is final: it is sent once more; this server
-	// refuses a final rewrite, which is counted and not retried.
+	// Back up: the server refuses the final rewrites and answers with its
+	// rows, which the agent adopts.
 	e.srv.set(func(f *fakeServer) { f.status = 0 })
 	e.advance(2 * time.Minute)
 	e.run()
 	e.wantServerMinute(at("12:15"), "app", 60)
-	if s := e.status(); s.Minutes.Rejected != 1 || s.Minutes.Waiting != 0 || s.Minutes.LastError != "" {
+	if s := e.status(); s.Minutes.Rejected != 0 || s.Minutes.Waiting != 0 || s.Minutes.Unkeyed != 1 || s.Minutes.LastError != "" {
 		t.Fatalf("status = %+v", s.Minutes)
+	}
+	server, _ := e.srv.minute(e.deviceID(), at("12:15"), "app")
+	local, err := e.db.StoredMinutes(ctx, at("12:14"), at("12:16"))
+	if err != nil || len(local) != 2 {
+		t.Fatalf("local rows = %+v, %v", local, err)
+	}
+	if l := local[1]; l.Credited != 60 || !l.Final || !l.Acknowledged || !l.Key.T.Equal(server.ComputedAt) || l.Key.H != *server.Snapshot {
+		t.Fatalf("adopted 12:15 = %+v, server holds %+v", l, server)
+	}
+	if l := local[0]; l.Credited != 60 || !l.Key.IsZero() || !l.Final {
+		t.Fatalf("adopted unkeyed 12:14 = %+v", l)
 	}
 	n := len(e.srv.batches())
 	e.advance(time.Minute)
 	e.run()
 	if len(e.srv.batches()) != n {
-		t.Fatal("a rejected final minute was retried")
+		t.Fatal("an adopted minute was sent again")
+	}
+}
+
+// A response lost on the way back leaves the rows unacknowledged; sending
+// them again with the same key is a repeat the server accepts, also once
+// the minute is final there.
+func TestLostResponseIsRetriedAsRepeat(t *testing.T) {
+	e := newEnv(t, at("12:40").Add(5*time.Second))
+	e.credit(at("12:11"), "app", 60)
+	e.srv.set(func(f *fakeServer) { f.dropResponse = true })
+	e.run()
+	e.wantServerMinute(at("12:11"), "app", 60)
+	if s := e.status(); s.Minutes.Waiting != 1 {
+		t.Fatalf("waiting after a lost response = %d", s.Minutes.Waiting)
+	}
+	e.srv.set(func(f *fakeServer) { f.dropResponse = false })
+	e.advance(2 * time.Minute) // 12:11 is final on both sides now
+	e.run()
+	if s := e.status(); s.Minutes.Waiting != 0 || s.Minutes.Rejected != 0 {
+		t.Fatalf("status after the retry = %+v", s.Minutes)
 	}
 }
 
@@ -315,15 +354,35 @@ func TestRejectionsAndBatchSplitting(t *testing.T) {
 	for i := range 5 {
 		e.wantServerMinute(at("11:50").Add(time.Duration(i)*time.Minute), "app", 60)
 	}
-	s := e.status()
-	if s.Minutes.Rejected != 1 || s.Minutes.Waiting != 0 {
+	// Refused while open: not sent again while open.
+	if s := e.status(); s.Minutes.Rejected != 0 || s.Minutes.Waiting != 0 {
 		t.Fatalf("status = %+v", s.Minutes)
 	}
 	n := len(e.srv.batches())
 	e.advance(time.Minute)
 	e.run()
 	if len(e.srv.batches()) != n {
-		t.Fatal("a rejected minute was retried")
+		t.Fatal("a minute refused while open was retried while open")
+	}
+	// Final: sent once more, refused for good, dropped and counted. (The
+	// first run after the gap measures the server's clock again.)
+	e.advance(30 * time.Minute)
+	e.run()
+	e.advance(time.Minute)
+	e.run()
+	if s := e.status(); s.Minutes.Rejected != 1 || s.Minutes.Waiting != 0 {
+		t.Fatalf("status once final = %+v", s.Minutes)
+	}
+	if rows, _ := e.db.StoredMinutes(context.Background(), at("11:56"), at("11:57")); len(rows) != 0 {
+		t.Fatalf("a refused final row was kept: %+v", rows)
+	}
+	n = len(e.srv.batches())
+	for range 3 {
+		e.advance(time.Minute)
+		e.run()
+	}
+	if len(e.srv.batches()) != n {
+		t.Fatal("a minute refused for good was retried")
 	}
 }
 
@@ -383,11 +442,19 @@ func TestUnknownDeviceReRegisters(t *testing.T) {
 	e.advance(time.Minute)
 	e.run() // 404: forget and back off
 	e.advance(2 * time.Second)
-	e.run() // register again and upload
-	if got := e.deviceID(); got == "" || got != id && len(got) != 36 {
-		t.Fatalf("device id = %q", got)
+	e.run() // register again, as a new device
+	if got := e.deviceID(); got == "" || got == id || len(got) != 36 {
+		t.Fatalf("device id = %q (was %s)", got, id)
 	}
-	e.wantServerMinute(at("12:00"), "app", 60)
+	// Minutes from before it registered belong to the forgotten device;
+	// the new one uploads from its registration on.
+	e.credit(at("12:01"), "app", 60)
+	e.advance(time.Minute)
+	e.run()
+	e.wantServerMinute(at("12:01"), "app", 60)
+	if _, ok := e.srv.minute(e.deviceID(), at("12:00"), "app"); ok {
+		t.Fatal("a minute of the forgotten device was sent under the new one")
+	}
 }
 
 func TestInputWindowAndOptionalSources(t *testing.T) {
@@ -452,66 +519,86 @@ func addDay(t *testing.T, db *localdb.DB, day string) {
 	}
 }
 
+// replayHash re-hashes a stored evidence day's block from the local log.
+func (e *env) replayHash(d localdb.EvidenceDay) string {
+	e.t.Helper()
+	rows, err := ReplayBlock(context.Background(), e.db, d)
+	if err != nil {
+		e.t.Fatalf("ReplayBlock(%s): %v", d.Day, err)
+	}
+	h, err := evidence.ContentHash(rows)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	return h
+}
+
+// Each day's block seals the log rows logged since the previous block,
+// whatever their time (ADR 0017): late events go into the block open when
+// they arrive, a day whose range is empty is a gap, and a sealed block's
+// range never changes.
 func TestEvidenceChainAcrossDays(t *testing.T) {
+	ctx := context.Background()
 	e := newEnv(t, time.Date(2026, 11, 17, 8, 0, 5, 0, time.UTC))
 	e.run() // registers the device on 2026-11-17
 	id := e.deviceID()
-	addDay(t, e.db, "2026-11-16") // before registration: never sealed
+	addDay(t, e.db, "2026-11-16") // before registration: still in the first block
 	addDay(t, e.db, "2026-11-17")
-	addDay(t, e.db, "2026-11-19") // 2026-11-18 has no events: a gap
+	addDay(t, e.db, "2026-11-19")
 	addDay(t, e.db, "2026-11-20")
 
-	// 00:30 on the 21st: the 20th is still in its grace hour.
-	e.mu.Lock()
-	e.now = time.Date(2026, 11, 21, 0, 30, 0, 0, time.UTC)
-	e.mu.Unlock()
+	// 00:30 on the 21st: the 20th is still in its grace hour. The 17th
+	// seals every row logged so far; the 18th and 19th have none left.
+	e.set(time.Date(2026, 11, 21, 0, 30, 0, 0, time.UTC))
 	e.run()
 	days := e.srv.storedDays(id)
-	if len(days) != 2 || days[0].Day != "2026-11-17" || days[1].Day != "2026-11-19" {
+	if len(days) != 1 || days[0].Day != "2026-11-17" || days[0].PrevChainHash != "" {
 		t.Fatalf("server days = %+v", days)
 	}
-	if days[0].PrevChainHash != "" || days[1].PrevChainHash != days[0].ChainHash {
-		t.Fatal("chain not linked")
+	first, _, _ := e.db.EvidenceDayOf(ctx, id, "2026-11-17")
+	if first.SeqFrom != 1 || first.SeqTo != 12 || first.EventCounts[evidence.TypeHeartbeat] != 4 || first.EventCounts[evidence.TypeAI] != 4 {
+		t.Fatalf("first block = %d..%d, counts %v", first.SeqFrom, first.SeqTo, first.EventCounts)
 	}
-	if days[0].EventCounts[evidence.TypeHeartbeat] != 1 || days[0].EventCounts[evidence.TypeAI] != 1 {
-		t.Fatalf("event counts = %v", days[0].EventCounts)
-	}
-	// The server could recompute the content hash from a bundle of the same events.
-	start, end, _ := evidence.DayBounds("2026-11-19")
-	ev, _ := e.db.EventsBetween(context.Background(), start, end, nil)
-	want, _ := evidence.ContentHash(evidence.DayEvents{Day: "2026-11-19", Activity: ev.Activity, Heartbeats: ev.Heartbeats, AI: ev.AI, Git: ev.Git})
-	if days[1].ContentHash != want {
-		t.Fatalf("content hash = %s, want %s", days[1].ContentHash, want)
+	// A reviewer recomputes the content hash from the same rows.
+	if got := e.replayHash(first); got != days[0].ContentHash {
+		t.Fatalf("replayed hash = %s, signed %s", got, days[0].ContentHash)
 	}
 
-	// Restart after the grace hour: the chain resumes from local state.
+	// Restart after the grace hour: the chain resumes from local state, and
+	// late events for sealed days go into the next block.
 	e.advance(time.Hour)
 	e.open()
-	addDay(t, e.db, "2026-11-19") // late events for a sealed day change nothing
+	addDay(t, e.db, "2026-11-19")
 	e.run()
 	days = e.srv.storedDays(id)
-	if len(days) != 3 || days[2].Day != "2026-11-20" || days[2].PrevChainHash != days[1].ChainHash {
+	if len(days) != 2 || days[1].Day != "2026-11-20" || days[1].PrevChainHash != days[0].ChainHash {
 		t.Fatalf("after restart, server days = %+v", days)
 	}
-	if s := e.status(); s.Evidence.LastDay != "2026-11-20" || s.Evidence.ChainHash != days[2].ChainHash || s.Evidence.State != "" {
+	second, _, _ := e.db.EvidenceDayOf(ctx, id, "2026-11-20")
+	// The late heartbeat is a resend of one already stored: it takes no number.
+	if second.SeqFrom != 13 || second.SeqTo != 14 || e.replayHash(second) != days[1].ContentHash {
+		t.Fatalf("second block = %+v", second)
+	}
+	if s := e.status(); s.Evidence.LastDay != "2026-11-20" || s.Evidence.ChainHash != days[1].ChainHash || s.Evidence.State != "" {
 		t.Fatalf("evidence status = %+v", s.Evidence)
 	}
 
-	// A day that fails transiently stays pending and is re-sent unchanged.
+	// A day that fails transiently stays pending and is re-sent unchanged;
+	// rows logged after it was sealed are not part of it.
 	addDay(t, e.db, "2026-11-21")
 	e.srv.set(func(f *fakeServer) { f.dayStatus = http.StatusServiceUnavailable })
 	e.advance(24 * time.Hour)
 	e.run()
-	pending, _, _ := e.db.LastEvidenceDay(context.Background(), id)
+	pending, _, _ := e.db.LastEvidenceDay(ctx, id)
 	if pending.Day != "2026-11-21" || pending.State != localdb.EvidencePending {
 		t.Fatalf("last local day = %+v", pending)
 	}
-	addDay(t, e.db, "2026-11-21") // arrives after sealing: not part of the hash
+	addDay(t, e.db, "2026-11-21")
 	e.srv.set(func(f *fakeServer) { f.dayStatus = 0 })
 	e.advance(5 * time.Second)
 	e.run()
 	days = e.srv.storedDays(id)
-	if len(days) != 4 || days[3].ChainHash != pending.ChainHash {
+	if len(days) != 3 || days[2].ChainHash != pending.ChainHash || e.replayHash(pending) != pending.ContentHash {
 		t.Fatalf("re-sent day = %+v, want the pending one", days[len(days)-1])
 	}
 
@@ -525,37 +612,45 @@ func TestEvidenceChainAcrossDays(t *testing.T) {
 	if s.Evidence.State != localdb.EvidenceConflict || s.Evidence.Error == "" || s.Evidence.LastDay != "2026-11-21" {
 		t.Fatalf("status after conflict = %+v", s.Evidence)
 	}
-	if days := e.srv.storedDays(id); len(days) != 4 {
+	if days := e.srv.storedDays(id); len(days) != 3 {
 		t.Fatalf("server days after conflict = %d", len(days))
 	}
 	n := e.srv.requestCount()
 	e.advance(24 * time.Hour)
 	e.run()
-	if e.srv.requestCount() != n {
-		t.Fatalf("requests after the conflict: %v", e.srv.requests[n:])
+	for _, path := range e.srv.requests[n:] {
+		if strings.HasSuffix(path, "/evidence-days") {
+			t.Fatalf("requests after the conflict: %v", e.srv.requests[n:])
+		}
 	}
-	if last, _, _ := e.db.LastEvidenceDay(context.Background(), id); last.Day != "2026-11-22" {
+	if last, _, _ := e.db.LastEvidenceDay(ctx, id); last.Day != "2026-11-22" {
 		t.Fatalf("chain advanced past a conflict to %s", last.Day)
 	}
 }
 
 func TestSpanArithmetic(t *testing.T) {
 	tests := []struct {
-		now                 string
-		from, to, final     string
-		lastSealable        string
-		finalMinuteIsNotNow bool
+		now                string
+		from, to           string
+		final, serverFinal string
+		lastSealable       string
 	}{
-		{"2026-11-20T12:00:05Z", "11:00", "12:00", "11:31", "2026-11-19", true},
-		{"2026-11-20T12:30:00Z", "11:30", "12:30", "12:01", "2026-11-19", true},
-		{"2026-11-21T00:59:59Z", "23:59", "00:59", "00:30", "2026-11-19", true},
-		{"2026-11-21T01:00:00Z", "00:00", "01:00", "00:31", "2026-11-20", true},
+		{"2026-11-20T12:00:05Z", "11:00", "12:00", "11:32", "11:31", "2026-11-19"},
+		{"2026-11-20T12:30:00Z", "11:30", "12:30", "12:02", "12:01", "2026-11-19"},
+		{"2026-11-21T00:59:59Z", "23:59", "00:59", "00:31", "00:30", "2026-11-19"},
+		{"2026-11-21T01:00:00Z", "00:00", "01:00", "00:32", "00:31", "2026-11-20"},
 	}
 	for _, tt := range tests {
 		now, _ := time.Parse(time.RFC3339, tt.now)
 		s := spanAt(now)
-		if s.from.Format("15:04") != tt.from || s.to.Format("15:04") != tt.to || s.finalBefore.Format("15:04") != tt.final {
-			t.Errorf("spanAt(%s) = %s..%s final<%s", tt.now, s.from.Format("15:04"), s.to.Format("15:04"), s.finalBefore.Format("15:04"))
+		if s.from.Format("15:04") != tt.from || s.to.Format("15:04") != tt.to {
+			t.Errorf("spanAt(%s) = %s..%s", tt.now, s.from.Format("15:04"), s.to.Format("15:04"))
+		}
+		if got := finalBefore(s.to).Format("15:04"); got != tt.final {
+			t.Errorf("finalBefore(%s) = %s, want %s", s.to.Format("15:04"), got, tt.final)
+		}
+		if got := serverFinalBefore(now).Format("15:04"); got != tt.serverFinal {
+			t.Errorf("serverFinalBefore(%s) = %s, want %s", tt.now, got, tt.serverFinal)
 		}
 		if !s.history.Equal(s.from.Add(-History)) {
 			t.Errorf("history = %v", s.history)
@@ -589,9 +684,9 @@ func TestMinuteRows(t *testing.T) {
 	if rows[0].Cuts[0] != "a" || rows[0].Digest == rows[1].Digest && rows[0].Credited != rows[1].Credited {
 		t.Fatalf("cuts not sorted or digest wrong: %+v", rows[0])
 	}
-	z := superseded(rows[0])
+	z := removal(rows[0].Minute, rows[0].Project)
 	if z.Credited != 0 || z.Label != "idle" || len(z.Cuts) != 0 || z.Flags == nil || z.Digest == rows[0].Digest {
-		t.Fatalf("superseded = %+v", z)
+		t.Fatalf("removal = %+v", z)
 	}
 }
 
@@ -710,8 +805,23 @@ func BenchmarkRunOnce(b *testing.B) {
 				session(now.Add(-time.Duration(day)*24*time.Hour-10*time.Hour), 8*time.Hour)
 			}
 			session(now.Add(-2*time.Hour), 2*time.Hour)
-			opts := Options{Store: db, Compute: bc.compute, Now: func() time.Time { return now },
+			// The first run must see the busy session: two hours of 5 s
+			// samples in its window and history.
+			var seen int
+			check := func(in struggle.Input) struggle.Result {
+				seen = len(in.Activity)
+				return bc.compute(in)
+			}
+			opts := Options{Store: db, Compute: check, Now: func() time.Time { return now },
 				Target: func() Target { return Target{Disabled: "benchmark"} }}
+			New(opts).RunOnce(ctx)
+			if seen < 1400 {
+				b.Fatalf("the run read %d activity samples, want the busy session's ~1440", seen)
+			}
+			if rows, err := db.StoredMinutes(ctx, now.Add(-Window), now); err != nil || len(rows) == 0 {
+				b.Fatalf("the busy session was not computed: %d rows, %v", len(rows), err)
+			}
+			opts.Compute = bc.compute
 			r := New(opts)
 			b.ReportAllocs()
 			for b.Loop() {
@@ -748,10 +858,11 @@ func TestEventCacheMatchesFullRead(t *testing.T) {
 		}
 		e.run()
 		in := e.inputs[len(e.inputs)-1]
-		want, err := e.db.EventsBetween(ctx, in.Window.From.Add(-History), in.Window.To, nil)
+		w, err := e.db.ReadWindow(ctx, in.Window.From.Add(-History), in.Window.To, 0)
 		if err != nil {
 			t.Fatal(err)
 		}
+		want := w.Events
 		if len(in.Activity) != len(want.Activity) || len(in.Heartbeats) != len(want.Heartbeats) {
 			t.Fatalf("step %d: cached %d/%d events, full read %d/%d", step, len(in.Activity), len(in.Heartbeats),
 				len(want.Activity), len(want.Heartbeats))

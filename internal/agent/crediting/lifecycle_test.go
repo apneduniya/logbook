@@ -2,6 +2,7 @@ package crediting
 
 import (
 	"context"
+	"crypto/ed25519"
 	"errors"
 	"net/http"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/apneduniya/logbook/internal/agent/devicekey"
+	"github.com/apneduniya/logbook/internal/agent/localdb"
 	"github.com/apneduniya/logbook/pkg/struggle"
 )
 
@@ -73,20 +75,23 @@ func TestUnknownRulesVersionHoldsMinutes(t *testing.T) {
 	}
 }
 
-// flakySource is an active-time source that fails while fail is set.
-type flakySource struct{ fail *bool }
+// flakyStore fails to store evidence days while fail is set.
+type flakyStore struct {
+	*localdb.DB
+	fail *bool
+}
 
-func (f flakySource) ActiveTimes(context.Context, time.Time, time.Time) ([]struggle.ActiveTime, error) {
-	if *f.fail {
-		return nil, errors.New("active time unreadable")
+func (s flakyStore) InsertEvidenceDay(ctx context.Context, e localdb.EvidenceDay) error {
+	if *s.fail {
+		return errors.New("disk full")
 	}
-	return nil, nil
+	return s.DB.InsertEvidenceDay(ctx, e)
 }
 
 func TestLocalSealErrorDoesNotBackOff(t *testing.T) {
 	fail := true
 	e := newEnv(t, time.Date(2026, 11, 17, 8, 0, 5, 0, time.UTC))
-	e.active = flakySource{&fail}
+	e.options = func(o *Options) { o.Store = flakyStore{e.db, &fail} }
 	e.open()
 	e.run() // registers on 2026-11-17
 	id := e.deviceID()
@@ -234,5 +239,49 @@ func TestDeviceLimitShownAndKeyKept(t *testing.T) {
 	e.wantServerMinute(at("11:59"), "app", 60)
 	if s := e.status(); s.Minutes.Paused != "" {
 		t.Fatalf("still paused: %q", s.Minutes.Paused)
+	}
+}
+
+// Minutes from before a new device registered belong to the previous
+// device. They become final and are never sent again, even when the
+// engine's value for one changes later. A row the previous device may not
+// hold as stored is dropped rather than kept as a value no server holds.
+func TestRetiredMinutesAreNeverSentAgain(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t, t0)
+	e.credit(at("11:50"), "app", 60)
+	e.run()
+	e.wantServerMinute(at("11:50"), "app", 60)
+	old := e.deviceID()
+	// The server forgets the device (e.g. a fresh database).
+	e.srv.set(func(f *fakeServer) {
+		f.keys, f.byKey = map[string]ed25519.PublicKey{}, map[string]string{}
+	})
+	e.credit(at("11:51"), "app", 60)
+	e.advance(time.Minute)
+	e.run() // 404 for 11:51: forget the device and back off
+	e.advance(2 * time.Second)
+	e.run() // registers a new device
+	id := e.deviceID()
+	if id == old {
+		t.Fatalf("device id unchanged: %s", id)
+	}
+	// The engine's value for 11:50 changes after the new device registered.
+	e.credit(at("11:50"), "app", 30)
+	for range 5 {
+		e.advance(time.Minute)
+		e.run()
+	}
+	for _, m := range []time.Time{at("11:50"), at("11:51")} {
+		if got, ok := e.srv.minute(id, m, "app"); ok {
+			t.Fatalf("minute %s of the previous device was sent under the new one: %+v", m.Format("15:04"), got)
+		}
+	}
+	rows, err := e.db.StoredMinutes(ctx, at("11:50"), at("11:52"))
+	if err != nil || len(rows) != 1 || rows[0].Credited != 60 || !rows[0].Final || !rows[0].Acknowledged {
+		t.Fatalf("local rows = %+v, %v; want 11:50 as the previous device holds it, final", rows, err)
+	}
+	if s := e.status(); s.Minutes.Waiting != 0 {
+		t.Fatalf("waiting = %d", s.Minutes.Waiting)
 	}
 }

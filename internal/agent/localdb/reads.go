@@ -93,23 +93,28 @@ func (d *DB) RecentDirs(ctx context.Context, since time.Time, limit int) ([]DirS
 type PruneResult struct{ AIEvents, ActivitySamples, GitEvents, HeartbeatLog, ActiveTime, OTLPUptime int64 }
 
 // Prune deletes raw events and Claude Code active time older than the
-// retention period, and heartbeat log entries older than two days.
+// retention period, if the evidence chain has sealed them (ADR 0017), and
+// heartbeat log entries older than two days.
 func (d *DB) Prune(ctx context.Context) (PruneResult, error) {
 	now := d.now()
 	cut := now.Add(-d.retention).UnixMilli()
 	logCut := now.Add(-d.logRetention).UnixMilli()
 	var r PruneResult
 	err := d.inTx(ctx, func(tx *sql.Tx) error {
+		sealed, err := sealedSeq(ctx, tx)
+		if err != nil {
+			return err
+		}
 		for _, p := range []struct {
 			query string
-			cut   int64
+			args  []any
 			dst   *int64
 		}{
-			{qAIPrune, cut, &r.AIEvents}, {qActivityPrune, cut, &r.ActivitySamples},
-			{qGitPrune, cut, &r.GitEvents}, {qLogPrune, logCut, &r.HeartbeatLog},
-			{qActivePrune, cut, &r.ActiveTime}, {qUptimePrune, cut, &r.OTLPUptime},
+			{qAIPrune, []any{cut, sealed}, &r.AIEvents}, {qActivityPrune, []any{cut, sealed}, &r.ActivitySamples},
+			{qGitPrune, []any{cut, sealed}, &r.GitEvents}, {qActivePrune, []any{cut, sealed}, &r.ActiveTime},
+			{qLogPrune, []any{logCut}, &r.HeartbeatLog}, {qUptimePrune, []any{cut}, &r.OTLPUptime},
 		} {
-			res, err := tx.ExecContext(ctx, p.query, p.cut)
+			res, err := tx.ExecContext(ctx, p.query, p.args...)
 			if err != nil {
 				return fmt.Errorf("pruning: %w", err)
 			}
@@ -117,49 +122,11 @@ func (d *DB) Prune(ctx context.Context) (PruneResult, error) {
 				return fmt.Errorf("pruning: %w", err)
 			}
 		}
-		return bumpGeneration(ctx, tx, r.AIEvents+r.ActivitySamples+r.GitEvents, now)
+		raw := r.AIEvents + r.ActivitySamples + r.GitEvents + r.ActiveTime
+		if err := raiseFloor(ctx, tx, raw, time.UnixMilli(cut)); err != nil {
+			return err
+		}
+		return bumpGeneration(ctx, tx, raw, now)
 	})
 	return r, err
-}
-
-// LateResult counts raw events that reached the agent after the minute they
-// belong to was final, so they never changed its credit (ADR 0016).
-type LateResult struct {
-	Count int64
-	// Latest is the latest such arrival (zero if Count is 0).
-	Latest time.Time
-}
-
-// LateSince counts the raw event rows after the ids in after that arrived
-// by cutoff and belong to a minute before finalBefore, and returns the
-// highest ids that arrived by cutoff, the after of the next call. Rows are
-// stored in arrival order, so each row is counted at most once, by the
-// first call whose cutoff it arrived by. It reads only rows after after.
-func (d *DB) LateSince(ctx context.Context, after HighWater, cutoff, finalBefore time.Time) (LateResult, HighWater, error) {
-	var res LateResult
-	next := after
-	c, fb := cutoff.UnixMilli(), finalBefore.UnixMilli()
-	for _, t := range []struct {
-		late, arrived string
-		after         int64
-		next          *int64
-	}{
-		{qLateHeartbeats, qArrivedHeartbeats, after.Heartbeats, &next.Heartbeats},
-		{qLateAI, qArrivedAI, after.AI, &next.AI},
-		{qLateActivity, qArrivedActivity, after.Activity, &next.Activity},
-		{qLateGit, qArrivedGit, after.Git, &next.Git},
-	} {
-		var n, latest int64
-		if err := d.sql.QueryRowContext(ctx, t.late, t.after, c, fb).Scan(&n, &latest); err != nil {
-			return LateResult{}, HighWater{}, fmt.Errorf("counting late events: %w", err)
-		}
-		res.Count += n
-		if n > 0 && time.UnixMilli(latest).After(res.Latest) {
-			res.Latest = time.UnixMilli(latest).UTC()
-		}
-		if err := d.sql.QueryRowContext(ctx, t.arrived, t.after, t.after, c).Scan(t.next); err != nil {
-			return LateResult{}, HighWater{}, fmt.Errorf("reading arrived events: %w", err)
-		}
-	}
-	return res, next, nil
 }

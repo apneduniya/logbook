@@ -1,6 +1,7 @@
 package credited
 
 import (
+	"encoding/json"
 	"fmt"
 	"slices"
 	"strings"
@@ -12,14 +13,44 @@ var now = time.Date(2026, 11, 20, 12, 0, 30, 0, time.UTC)
 
 func at(h, m int) time.Time { return time.Date(2026, 11, 20, h, m, 0, 0, time.UTC) }
 
+func ptr[T any](v T) *T { return &v }
+
+// keyed gives r the key of a run that ended a minute after r's minute,
+// unless r has a computed_at or a snapshot of its own.
+func keyed(r RawItem) RawItem {
+	if r.ComputedAt != "" || r.Snapshot != nil {
+		return r
+	}
+	if m, err := time.Parse(time.RFC3339, r.Minute); err == nil {
+		r.ComputedAt = m.UTC().Truncate(time.Minute).Add(time.Minute).Format(time.RFC3339)
+	}
+	r.Snapshot = ptr(int64(7))
+	return r
+}
+
 func TestParse(t *testing.T) {
 	ok := RawItem{Minute: "2026-11-20T11:59:00Z", Project: "logbook", Label: "you", Credited: 45}
 	with := func(f func(*RawItem)) RawItem { r := ok; f(&r); return r }
+	key := func(computedAt string, snapshot *int64) RawItem {
+		return with(func(r *RawItem) { r.ComputedAt, r.Snapshot = computedAt, snapshot })
+	}
 	tests := []struct {
 		name    string
 		raw     RawItem
 		wantErr error
 	}{
+		{"computed a minute later", key("2026-11-20T12:00:00Z", ptr(int64(1))), nil},
+		{"computed an hour later", key("2026-11-20T12:59:00Z", ptr(int64(1))), nil},
+		{"snapshot 0", key("2026-11-20T12:00:00Z", ptr(int64(0))), nil},
+		{"computed more than an hour later", key("2026-11-20T13:00:00Z", ptr(int64(1))), errKeyWindow},
+		{"computed at the minute", key("2026-11-20T11:59:00Z", ptr(int64(1))), errKeyWindow},
+		{"computed before the minute", key("2026-11-20T11:00:00Z", ptr(int64(1))), errKeyWindow},
+		{"computed_at with seconds", key("2026-11-20T12:00:30Z", ptr(int64(1))), errComputedAt},
+		{"computed_at with offset", key("2026-11-20T17:30:00+05:30", ptr(int64(1))), errComputedAt},
+		{"computed_at not a time", key("soon", ptr(int64(1))), errComputedAt},
+		{"no computed_at", key("", ptr(int64(1))), errComputedAt},
+		{"no snapshot", key("2026-11-20T12:00:00Z", nil), errSnapshot},
+		{"negative snapshot", key("2026-11-20T12:00:00Z", ptr(int64(-1))), errSnapshot},
 		{"valid", ok, nil},
 		{"no project", with(func(r *RawItem) { r.Project = ""; r.Label = "idle"; r.Credited = 0 }), nil},
 		{"agent minute", with(func(r *RawItem) { r.Label = "agent"; r.Credited = 0; r.Cuts = []string{"agent_alone"} }), nil},
@@ -47,7 +78,7 @@ func TestParse(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			valid, rejected := Parse([]RawItem{tc.raw}, now)
+			valid, rejected := Parse([]RawItem{keyed(tc.raw)}, now)
 			if tc.wantErr == nil {
 				if len(rejected) != 0 || len(valid) != 1 {
 					t.Fatalf("rejected = %+v", rejected)
@@ -72,7 +103,7 @@ func TestParseNormalizesProjects(t *testing.T) {
 		{"", ""},
 	}
 	for _, tc := range tests {
-		valid, rejected := Parse([]RawItem{{Minute: "2026-11-20T11:59:00Z", Project: tc.in, Label: "idle"}}, now)
+		valid, rejected := Parse([]RawItem{keyed(RawItem{Minute: "2026-11-20T11:59:00Z", Project: tc.in, Label: "idle"})}, now)
 		if len(rejected) != 0 || valid[0].Item.Project != tc.want {
 			t.Errorf("Parse(project %q) = %+v %+v, want project %q", tc.in, valid, rejected, tc.want)
 		}
@@ -80,8 +111,8 @@ func TestParseNormalizesProjects(t *testing.T) {
 	// Two spellings of one project in a batch are a duplicate after
 	// normalisation.
 	valid, _ := Parse([]RawItem{
-		{Minute: "2026-11-20T11:59:00Z", Project: "logbook", Label: "you", Credited: 10},
-		{Minute: "2026-11-20T11:59:00Z", Project: "logbook ", Label: "you", Credited: 10},
+		keyed(RawItem{Minute: "2026-11-20T11:59:00Z", Project: "logbook", Label: "you", Credited: 10}),
+		keyed(RawItem{Minute: "2026-11-20T11:59:00Z", Project: "logbook ", Label: "you", Credited: 10}),
 	}, now)
 	_, _, rejected := Plan(valid, nil, bounds())
 	if len(rejected) != 1 || rejected[0].Index != 1 || rejected[0].Error != errDuplicate.Error() {
@@ -90,18 +121,20 @@ func TestParseNormalizesProjects(t *testing.T) {
 }
 
 func TestParseNormalizesCodes(t *testing.T) {
-	valid, _ := Parse([]RawItem{{
+	valid, _ := Parse([]RawItem{keyed(RawItem{
 		Minute: "2026-11-20T11:59:00Z", Label: "you", Credited: 0,
 		Cuts: []string{"rubber_stamp", "loop", "rubber_stamp"}, Flags: nil,
-	}}, now)
+	})}, now)
 	it := valid[0].Item
 	if !slices.Equal(it.Cuts, []string{"loop", "rubber_stamp"}) || it.Flags == nil || len(it.Flags) != 0 {
 		t.Fatalf("cuts %q flags %#v", it.Cuts, it.Flags)
 	}
 }
 
+// you is a "you" item computed by a run that ended a minute after it.
 func you(minute time.Time, project string, credited int) Item {
-	return Item{Minute: minute, Project: project, Label: "you", Credited: credited, Cuts: []string{}, Flags: []string{}}
+	return Item{Minute: minute, Project: project, Label: "you", Credited: credited, Cuts: []string{}, Flags: []string{},
+		Key: Key{ComputedAt: minute.Add(time.Minute), Snapshot: 7}}
 }
 
 // stored is a row uploaded in real time: written a minute after its minute.
@@ -383,6 +416,120 @@ func TestPlanRemovals(t *testing.T) {
 	}
 }
 
+// rekey returns it computed at a later snapshot.
+func rekey(it Item, snapshot int64) Item {
+	it.Key.Snapshot = snapshot
+	return it
+}
+
+// legacy is a row stored before ADR 0017, without a key.
+func legacy(it Item) Stored {
+	it.Key = Key{}
+	return stored(it)
+}
+
+// fmtHeld writes stored rows as "project label credited computed_at/snapshot".
+func fmtHeld(rows []StoredRow) []string {
+	out := make([]string, len(rows))
+	for i, r := range rows {
+		key := "null/null"
+		if r.ComputedAt != nil && r.Snapshot != nil {
+			key = fmt.Sprintf("%s/%d", r.ComputedAt.Format("15:04"), *r.Snapshot)
+		}
+		out[i] = fmt.Sprintf("%s %s %d %s", r.Project, r.Label, r.Credited, key)
+	}
+	return out
+}
+
+// A changed key is a rewrite: accepted while the minute is open, refused
+// once it is final, with the rows the server holds (ADR 0017).
+func TestPlanKeys(t *testing.T) {
+	fresh, final, old := at(11, 50), at(11, 30), at(9, 0)
+	tests := []struct {
+		name      string
+		stored    []Stored
+		items     []Item
+		wantWrite []string
+		wantRej   map[int]error
+		wantHeld  map[int][]string // index → held rows of a "final" rejection
+	}{
+		{
+			name:      "a new key on an open minute is written",
+			stored:    []Stored{stored(you(fresh, "a", 30))},
+			items:     []Item{rekey(you(fresh, "a", 30), 9)},
+			wantWrite: []string{"11:50 a 30"},
+		},
+		{
+			name:     "a new key on a final minute is refused with the held rows",
+			stored:   []Stored{stored(you(final, "b", 20)), stored(you(final, "a", 30))},
+			items:    []Item{rekey(you(final, "a", 30), 9)},
+			wantRej:  map[int]error{0: errFinal},
+			wantHeld: map[int][]string{0: {"a you 30 11:31/7", "b you 20 11:31/7"}},
+		},
+		{
+			name:   "the exact stored row, key included, is a repeat once final",
+			stored: []Stored{stored(you(old, "a", 30))},
+			items:  []Item{you(old, "a", 30)},
+		},
+		{
+			name:     "a row stored without a key is returned with a null key",
+			stored:   []Stored{legacy(you(old, "a", 30))},
+			items:    []Item{you(old, "a", 30)},
+			wantRej:  map[int]error{0: errFinal},
+			wantHeld: map[int][]string{0: {"a you 30 null/null"}},
+		},
+		{
+			name:      "a row stored without a key gains one while open",
+			stored:    []Stored{legacy(you(fresh, "a", 30))},
+			items:     []Item{you(fresh, "a", 30)},
+			wantWrite: []string{"11:50 a 30"},
+		},
+		{
+			name:      "held rows include a project the same batch caught up",
+			stored:    []Stored{caughtUp(you(old, "a", 30), now.Add(-time.Minute))},
+			items:     []Item{rekey(you(old, "a", 30), 9), you(old, "b", 30)},
+			wantWrite: []string{"09:00 b 30"},
+			wantRej:   map[int]error{0: errFinal},
+			wantHeld:  map[int][]string{0: {"a you 30 09:01/7", "b you 30 09:01/7"}},
+		},
+		{
+			// The agent's clock is behind: m was caught up with key 7 just
+			// after it was final, then recomputed at key 9 with a second
+			// project. Taking b alone would leave rows of two computations
+			// in one device-minute, which no single key reproduces.
+			name:     "a caught-up minute refuses a project from another computation",
+			stored:   []Stored{caughtUp(you(old, "a", 20), now.Add(-time.Minute))},
+			items:    []Item{rekey(you(old, "a", 40), 9), rekey(you(old, "b", 20), 9)},
+			wantRej:  map[int]error{0: errFinal, 1: errFinal},
+			wantHeld: map[int][]string{0: {"a you 20 09:01/7"}, 1: {"a you 20 09:01/7"}},
+		},
+		{
+			name:     "a caught-up minute with rows of two keys takes no project",
+			stored:   []Stored{caughtUp(you(old, "a", 20), now.Add(-time.Minute)), caughtUp(rekey(you(old, "b", 20), 9), now.Add(-time.Minute))},
+			items:    []Item{you(old, "c", 10)},
+			wantRej:  map[int]error{0: errFinal},
+			wantHeld: map[int][]string{0: {"a you 20 09:01/7", "b you 20 09:01/9"}},
+		},
+		{
+			name:    "other rejections carry no rows",
+			stored:  []Stored{stored(you(fresh, "a", 60))},
+			items:   []Item{you(fresh, "b", 10)},
+			wantRej: map[int]error{0: errOverMinuteCap},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			write, _, rejected := Plan(indexed(tc.items...), tc.stored, bounds())
+			checkPlan(t, write, rejected, tc.wantWrite, tc.wantRej)
+			for _, r := range rejected {
+				if got, want := fmtHeld(r.Stored), tc.wantHeld[r.Index]; !slices.Equal(got, want) {
+					t.Errorf("rejected[%d].Stored = %q, want %q", r.Index, got, want)
+				}
+			}
+		})
+	}
+}
+
 // A device writes minutes from the UTC day it was registered on, and never
 // into a day it has sealed with an evidence record.
 func TestPlanBounds(t *testing.T) {
@@ -459,5 +606,26 @@ func BenchmarkPlan(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		Plan(in, nil, bounds())
+	}
+}
+
+// A final refusal always carries "stored", even when the server holds no
+// row for the minute ([]); other refusals have none. The agent tells the
+// two apart (ADR 0017).
+func TestRejectionStoredJSON(t *testing.T) {
+	row := storedRow(Item{Project: "p", Label: "idle", Cuts: []string{}, Flags: []string{}})
+	for _, c := range []struct {
+		r    Rejection
+		want string
+	}{
+		{Rejection{Index: 1, Error: "bad"}, `{"index":1,"error":"bad"}`},
+		{Rejection{Index: 1, Error: "final", Stored: []StoredRow{}}, `{"index":1,"error":"final","stored":[]}`},
+		{Rejection{Index: 1, Error: "final", Stored: []StoredRow{row}},
+			`{"index":1,"error":"final","stored":[{"project":"p","label":"idle","credited":0,"cuts":[],"flags":[],"computed_at":null,"snapshot":null}]}`},
+	} {
+		b, err := json.Marshal(c.r)
+		if err != nil || string(b) != c.want {
+			t.Errorf("%+v = %s, %v; want %s", c.r, b, err, c.want)
+		}
 	}
 }

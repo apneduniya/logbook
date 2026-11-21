@@ -31,6 +31,7 @@ const (
 	qLogTimes  = `SELECT time FROM heartbeat_log WHERE time >= ? ORDER BY time`
 	qLogPrune  = `DELETE FROM heartbeat_log WHERE time < ?`
 	qLogCount  = `SELECT COUNT(*) FROM heartbeat_log WHERE time >= ?`
+	qLogTrim   = `DELETE FROM heartbeat_log WHERE id <= (SELECT MAX(id) FROM heartbeat_log) - ?`
 	// qRecentDirs lists distinct directories seen in heartbeats and AI events
 	// since a time, newest first, with the project name they were seen with.
 	qRecentDirs = `SELECT dir, project, MAX(t) AS last FROM (
@@ -40,32 +41,52 @@ const (
 		) GROUP BY dir ORDER BY last DESC LIMIT ?`
 )
 
+// Logged inserts (migration 0007): the first parameter is always the row's
+// sequence number.
 const (
-	qAIInsert = `INSERT INTO ai_events (time, harness, kind, session_id, project, cwd, model, tool,
-		prompt_chars, decision, prompt_hash, arrived_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-	qActivityInsert = `INSERT INTO activity_samples (time, idle_seconds, focus_app, focus_kind, arrived_at)
+	qHeartbeatInsert = `INSERT OR IGNORE INTO heartbeats (seq, time, fields_hash, payload) VALUES (?, ?, ?, ?)`
+	qAIInsert        = `INSERT INTO ai_events (seq, time, harness, kind, session_id, project, cwd, model, tool,
+		prompt_chars, decision, prompt_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	qActivityInsert = `INSERT INTO activity_samples (seq, time, idle_seconds, focus_app, focus_kind)
 		VALUES (?, ?, ?, ?, ?)`
-	qGitInsert = `INSERT OR IGNORE INTO git_events (time, project, kind, commit_hash, files_changed,
-		insertions, deletions, arrived_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+	qGitInsert = `INSERT OR IGNORE INTO git_events (seq, time, project, kind, commit_hash, files_changed,
+		insertions, deletions) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+	qActiveInsert = `INSERT OR IGNORE INTO active_time (seq, from_ms, to_ms, session_id, type, secs, repository,
+		series_start, cumulative) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	qRepoInsert = `INSERT INTO repo_map (seq, since, path, project) VALUES (?, ?, ?, ?)`
+)
 
+const (
 	qAICount       = `SELECT COUNT(*) FROM ai_events WHERE time >= ?`
 	qActivityCount = `SELECT COUNT(*) FROM activity_samples WHERE time >= ?`
 	qGitCount      = `SELECT COUNT(*) FROM git_events WHERE time >= ?`
+)
 
-	qAIPrune       = `DELETE FROM ai_events WHERE time < ?`
-	qActivityPrune = `DELETE FROM activity_samples WHERE time < ?`
-	qGitPrune      = `DELETE FROM git_events WHERE time < ?`
+// Retention (ADR 0017): only rows sealed by the device's evidence chain
+// (seq at or below the second parameter) are ever deleted.
+const (
+	qHeartbeatPrune = `DELETE FROM heartbeats WHERE time < ? AND seq <= ?`
+	qAIPrune        = `DELETE FROM ai_events WHERE time < ? AND seq <= ?`
+	qActivityPrune  = `DELETE FROM activity_samples WHERE time < ? AND seq <= ?`
+	qGitPrune       = `DELETE FROM git_events WHERE time < ? AND seq <= ?`
+	qActivePrune    = `DELETE FROM active_time WHERE to_ms < ? AND seq <= ?`
+	// qRepoPrune drops sealed rows replaced by a newer row for the same
+	// path before a time: they apply only to computations older than that.
+	qRepoPrune = `DELETE FROM repo_map WHERE seq <= ? AND EXISTS (SELECT 1 FROM repo_map n
+		WHERE n.path = repo_map.path AND n.seq > repo_map.seq AND n.since < ?)`
 
-	qAITrim       = `DELETE FROM ai_events WHERE id <= (SELECT MAX(id) FROM ai_events) - ?`
-	qActivityTrim = `DELETE FROM activity_samples WHERE id <= (SELECT MAX(id) FROM activity_samples) - ?`
-	qGitTrim      = `DELETE FROM git_events WHERE id <= (SELECT MAX(id) FROM git_events) - ?`
-	qLogTrim      = `DELETE FROM heartbeat_log WHERE id <= (SELECT MAX(id) FROM heartbeat_log) - ?`
+	qHeartbeatTrim = `DELETE FROM heartbeats WHERE id <= (SELECT MAX(id) FROM heartbeats) - ? AND seq <= ? AND time < ?`
+	qAITrim        = `DELETE FROM ai_events WHERE id <= (SELECT MAX(id) FROM ai_events) - ? AND seq <= ? AND time < ?`
+	qActivityTrim  = `DELETE FROM activity_samples WHERE id <= (SELECT MAX(id) FROM activity_samples) - ? AND seq <= ? AND time < ?`
+	qGitTrim       = `DELETE FROM git_events WHERE id <= (SELECT MAX(id) FROM git_events) - ? AND seq <= ? AND time < ?`
+	qActiveTrim    = `DELETE FROM active_time WHERE id <= (SELECT MAX(id) FROM active_time) - ? AND seq <= ? AND to_ms < ?`
+	// qActivitySpan bounds the activity table's row count from above: ids
+	// grow and rows leave from the oldest end.
+	qActivitySpan = `SELECT COALESCE(MAX(id) - MIN(id) + 1, 0) FROM activity_samples`
 )
 
 // Claude Code active time (migration 0003).
 const (
-	qActiveInsert = `INSERT OR IGNORE INTO active_time (from_ms, to_ms, session_id, type, secs, repository,
-		series_start, cumulative, arrived_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	// qActiveLastCumulative is a cumulative series' latest stored point.
 	qActiveLastCumulative = `SELECT to_ms, cumulative FROM active_time
 		WHERE session_id = ? AND type = ? AND series_start = ? AND cumulative IS NOT NULL
@@ -81,7 +102,6 @@ const (
 	qSessionCwd = `SELECT cwd FROM ai_events
 		WHERE session_id = ? AND harness = 'claude-code' AND cwd <> '' AND time < ?
 		ORDER BY time DESC LIMIT 1`
-	qActivePrune = `DELETE FROM active_time WHERE to_ms < ?`
 	// qSessionSpan is the first and last Claude Code hook event of a session
 	// in [from, to) (NULLs when there is none).
 	qSessionSpan = `SELECT MIN(time), MAX(time) FROM ai_events
@@ -93,7 +113,6 @@ const (
 	// qUptimeRange lists receiver runs overlapping [from, to].
 	qUptimeRange = `SELECT from_ms, to_ms FROM otlp_uptime WHERE to_ms >= ? AND from_ms <= ? ORDER BY from_ms, to_ms`
 	qUptimePrune = `DELETE FROM otlp_uptime WHERE to_ms < ?`
-	qActiveTrim  = `DELETE FROM active_time WHERE id <= (SELECT MAX(id) FROM active_time) - ?`
 )
 
 const (
@@ -106,133 +125,142 @@ const (
 	qKVPrefix = `SELECT key, value FROM kv WHERE key >= ? AND key < ? ORDER BY key`
 )
 
-// Full heartbeats (migration 0002).
+// Log reads for a time range and a range of sequence numbers (after, upto].
+// The "ByTime" forms walk the time index (a whole window); the "BySeq"
+// forms put "+" before time so SQLite walks the short sequence range of
+// rows logged since a previous read instead.
 const (
-	qHeartbeatInsert = `INSERT OR IGNORE INTO heartbeats (time, fields_hash, payload, arrived_at) VALUES (?, ?, ?, ?)`
-	qHeartbeatTrim   = `DELETE FROM heartbeats WHERE id <= (SELECT MAX(id) FROM heartbeats) - ?`
-	qHeartbeatPrune  = `DELETE FROM heartbeats WHERE time < ?`
+	qHeartbeatsByTime = `SELECT seq, payload FROM heartbeats
+		WHERE time >= ? AND time < ? AND seq > ? AND seq <= ? ORDER BY time, seq`
+	qAIByTime = `SELECT seq, time, harness, kind, session_id, project, cwd, model, tool, prompt_chars, decision, prompt_hash
+		FROM ai_events WHERE time >= ? AND time < ? AND seq > ? AND seq <= ? ORDER BY time, seq`
+	qActivityByTime = `SELECT seq, time, idle_seconds, focus_app, focus_kind
+		FROM activity_samples WHERE time >= ? AND time < ? AND seq > ? AND seq <= ? ORDER BY time, seq`
+	qGitByTime = `SELECT seq, time, project, kind, commit_hash, files_changed, insertions, deletions
+		FROM git_events WHERE time >= ? AND time < ? AND seq > ? AND seq <= ? ORDER BY time, seq`
+
+	qHeartbeatsBySeq = `SELECT seq, payload FROM heartbeats
+		WHERE +time >= ? AND +time < ? AND seq > ? AND seq <= ? ORDER BY time, seq`
+	qAIBySeq = `SELECT seq, time, harness, kind, session_id, project, cwd, model, tool, prompt_chars, decision, prompt_hash
+		FROM ai_events WHERE +time >= ? AND +time < ? AND seq > ? AND seq <= ? ORDER BY time, seq`
+	qActivityBySeq = `SELECT seq, time, idle_seconds, focus_app, focus_kind
+		FROM activity_samples WHERE +time >= ? AND +time < ? AND seq > ? AND seq <= ? ORDER BY time, seq`
+	qGitBySeq = `SELECT seq, time, project, kind, commit_hash, files_changed, insertions, deletions
+		FROM git_events WHERE +time >= ? AND +time < ? AND seq > ? AND seq <= ? ORDER BY time, seq`
+
+	// qReposAt is each path's latest mapping row at or below a sequence
+	// number.
+	qReposAt = `SELECT path, project FROM repo_map r WHERE seq = (SELECT MAX(seq) FROM repo_map n
+		WHERE n.path = r.path AND n.seq <= ?) ORDER BY path`
+	qRepoLatest = `SELECT project FROM repo_map WHERE path = ? ORDER BY seq DESC LIMIT 1`
 )
 
-// Event reads for a time range and a range of row ids (migration 0002).
+// Whole log rows by sequence range (after, upto], for evidence blocks.
 const (
-	qHighWater = `SELECT
-		(SELECT COALESCE(MAX(id), 0) FROM heartbeats),
-		(SELECT COALESCE(MAX(id), 0) FROM ai_events),
-		(SELECT COALESCE(MAX(id), 0) FROM activity_samples),
-		(SELECT COALESCE(MAX(id), 0) FROM git_events)`
-	qHeartbeatsRange = `SELECT payload, arrived_at FROM heartbeats WHERE time >= ? AND time < ? AND id > ? AND id <= ? ORDER BY time, id`
-	qAIRange         = `SELECT time, harness, kind, session_id, project, cwd, model, tool, prompt_chars, decision, prompt_hash, arrived_at
-		FROM ai_events WHERE time >= ? AND time < ? AND id > ? AND id <= ? ORDER BY time, id`
-	qActivityRange = `SELECT time, idle_seconds, focus_app, focus_kind, arrived_at
-		FROM activity_samples WHERE time >= ? AND time < ? AND id > ? AND id <= ? ORDER BY time, id`
-	qGitRange = `SELECT time, project, kind, commit_hash, files_changed, insertions, deletions, arrived_at
-		FROM git_events WHERE time >= ? AND time < ? AND id > ? AND id <= ? ORDER BY time, id`
+	qHeartbeatRows = `SELECT seq, payload FROM heartbeats WHERE seq > ? AND seq <= ?`
+	qAIRows        = `SELECT seq, time, harness, kind, session_id, project, cwd, model, tool, prompt_chars, decision, prompt_hash
+		FROM ai_events WHERE seq > ? AND seq <= ?`
+	qActivityRows = `SELECT seq, time, idle_seconds, focus_app, focus_kind FROM activity_samples WHERE seq > ? AND seq <= ?`
+	qGitRows      = `SELECT seq, time, project, kind, commit_hash, files_changed, insertions, deletions
+		FROM git_events WHERE seq > ? AND seq <= ?`
+	qActiveRows = `SELECT seq, from_ms, to_ms, session_id, type, secs FROM active_time WHERE seq > ? AND seq <= ?`
+	qRepoRows   = `SELECT seq, since, path, project FROM repo_map WHERE seq > ? AND seq <= ?`
+	// qOldestSeq is the smallest sequence number still stored above a mark.
+	qOldestSeq = `SELECT MIN(s) FROM (
+		SELECT MIN(seq) AS s FROM heartbeats WHERE seq > ?1 UNION ALL
+		SELECT MIN(seq) FROM ai_events WHERE seq > ?1 UNION ALL
+		SELECT MIN(seq) FROM activity_samples WHERE seq > ?1 UNION ALL
+		SELECT MIN(seq) FROM git_events WHERE seq > ?1 UNION ALL
+		SELECT MIN(seq) FROM active_time WHERE seq > ?1 UNION ALL
+		SELECT MIN(seq) FROM repo_map WHERE seq > ?1)`
 )
 
-// Credited minutes (migrations 0002 and 0006).
+// Late rows (ADR 0017): rows logged in (after, upto] whose event minute is
+// final. One query per raw event table; the table names are constants.
 const (
-	qMinutesInRange = `SELECT minute, project, digest, sent_digest, cutoff FROM credited_minutes
-		WHERE minute >= ? AND minute < ?`
-	qMinuteInsert = `INSERT INTO credited_minutes (minute, project, label, credited, cuts, flags,
-		rules_version, digest, cutoff) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-	qMinuteUpdate = `UPDATE credited_minutes SET label = ?, credited = ?, cuts = ?, flags = ?,
-		rules_version = ?, digest = ?, cutoff = ? WHERE minute = ? AND project = ?`
-	// qMinuteCutoff records that a run recomputed a row without changing it.
-	qMinuteCutoff = `UPDATE credited_minutes SET cutoff = ? WHERE minute = ? AND project = ?`
-	qMinuteDelete = `DELETE FROM credited_minutes WHERE minute = ? AND project = ?`
-	// qMinutesSettleFinal marks final minutes whose content the server
-	// already has as done, without sending them again.
-	qMinutesSettleFinal = `UPDATE credited_minutes SET sent_final = 1
-		WHERE sent_final = 0 AND minute < ? AND digest = sent_digest`
-	// qMinutesUnsent returns unsent rows up to and including the minute of
-	// the (OFFSET+1)-th unsent row, so that minute comes whole. Minutes in a
-	// held range [?, ?) are left out (both parameter pairs).
-	qMinutesUnsent = `SELECT minute, project, label, credited, cuts, flags, rules_version, digest
-		FROM credited_minutes WHERE sent_final = 0 AND digest <> sent_digest AND NOT (minute >= ? AND minute < ?)
-		AND minute <= COALESCE((SELECT minute FROM credited_minutes WHERE sent_final = 0 AND digest <> sent_digest
-			AND NOT (minute >= ? AND minute < ?)
-			ORDER BY minute, credited, project LIMIT 1 OFFSET ?), 9223372036854775807)
+	finalAt = `EXISTS (SELECT 1 FROM final_spans f
+		WHERE f.from_minute <= (t.time / 60000) * 60 AND f.to_minute > (t.time / 60000) * 60)`
+	qLateHeartbeats = `SELECT COUNT(*), COALESCE(MAX(time), 0) FROM heartbeats t WHERE seq > ? AND seq <= ? AND ` + finalAt
+	qLateAI         = `SELECT COUNT(*), COALESCE(MAX(time), 0) FROM ai_events t WHERE seq > ? AND seq <= ? AND ` + finalAt
+	qLateActivity   = `SELECT COUNT(*), COALESCE(MAX(time), 0) FROM activity_samples t WHERE seq > ? AND seq <= ? AND ` + finalAt
+	qLateGit        = `SELECT COUNT(*), COALESCE(MAX(time), 0) FROM git_events t WHERE seq > ? AND seq <= ? AND ` + finalAt
+)
+
+// Credited minutes (migrations 0002 and 0007).
+const (
+	minuteColumns   = `minute, project, label, credited, cuts, flags, rules_version, digest, sent_digest, computed_at, snapshot, state, acknowledged`
+	qMinutesInRange = `SELECT ` + minuteColumns + ` FROM credited_minutes WHERE minute >= ? AND minute < ? ORDER BY minute, project`
+	qMinuteInsert   = `INSERT INTO credited_minutes (` + minuteColumns + `) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	qMinuteClear    = `DELETE FROM credited_minutes WHERE minute = ?`
+	// qMinutesOpenBefore lists the minutes with open rows before a minute.
+	qMinutesOpenBefore = `SELECT DISTINCT minute FROM credited_minutes WHERE state = 'open' AND minute < ? ORDER BY minute`
+	// heldAs is what sent_digest holds once the server has a row exactly as
+	// stored: its content and its key.
+	heldAs = `digest || '@' || IFNULL(computed_at, '') || '/' || IFNULL(snapshot, '')`
+	// qMinutesFinalize makes open rows final. A row the server refused
+	// while open is sent again now: only a row the server holds as is
+	// stays acknowledged.
+	qMinutesFinalize = `UPDATE credited_minutes SET state = 'final', acknowledged = (sent_digest = ` + heldAs + `)
+		WHERE state = 'open' AND minute < ?`
+	qMinuteHeld = `UPDATE credited_minutes SET sent_digest = ` + heldAs + ` WHERE minute = ?`
+	// qMinutesUnsent returns unacknowledged rows of minutes after ?1, up to
+	// and including the minute of the (?3+1)-th one, so that minute comes
+	// whole. Open minutes before ?2 (held while settling) are left out.
+	unsentRows     = `acknowledged = 0 AND minute > ?1 AND NOT (state = 'open' AND minute < ?2)`
+	qMinutesUnsent = `SELECT ` + minuteColumns + ` FROM credited_minutes WHERE ` + unsentRows + `
+		AND minute <= COALESCE((SELECT minute FROM credited_minutes WHERE ` + unsentRows + `
+			ORDER BY minute, credited, project LIMIT 1 OFFSET ?3), 9223372036854775807)
 		ORDER BY minute, credited, project`
-	qMinuteMarkSent = `UPDATE credited_minutes SET sent_digest = digest, sent_final = ?
-		WHERE minute = ? AND project = ? AND digest = ?`
-	qMinutesRetire      = `UPDATE credited_minutes SET sent_final = 1 WHERE sent_final = 0 AND minute < ?`
-	qMinutesUnsentCount = `SELECT COUNT(*) FROM credited_minutes WHERE sent_final = 0 AND digest <> sent_digest`
-	// qMinutesUnsentBefore counts rows before a minute the server hasn't
-	// answered for yet.
-	qMinutesUnsentBefore = `SELECT COUNT(*) FROM credited_minutes
-		WHERE sent_final = 0 AND digest <> sent_digest AND minute < ?`
+	// rowIs matches a row exactly as it was read: content and key.
+	rowIs = ` WHERE minute = ? AND project = ? AND digest = ? AND computed_at IS ? AND snapshot IS ?`
+	// qMinuteAccepted records that the server holds the row; qMinuteRemoved
+	// then deletes it if it was a removal (idle, no credit, cuts or flags:
+	// the server deleted its row, so there is nothing left to hold).
+	qMinuteAccepted = `UPDATE credited_minutes SET acknowledged = 1, sent_digest = ` + heldAs + rowIs
+	qMinuteRemoved  = `DELETE FROM credited_minutes` + rowIs +
+		` AND acknowledged = 1 AND label = 'idle' AND credited = 0 AND cuts = '[]' AND flags = '[]'`
+	qMinuteAnswered = `UPDATE credited_minutes SET acknowledged = 1` + rowIs
+	// qMinuteDropped deletes a row the server refused for good.
+	qMinuteDropped = `DELETE FROM credited_minutes` + rowIs
+	// qMinuteTried notes that a row was sent and the server may hold it,
+	// before the answer is known ('?' never equals heldAs).
+	qMinuteTried = `UPDATE credited_minutes SET sent_digest = '?' WHERE minute = ? AND project = ? AND sent_digest = ''`
+	// qMinutesRetireUnheld deletes rows before a minute that the server
+	// doesn't hold exactly as stored, except rows from before keys
+	// (migration 0007), which it holds as far as the agent can know;
+	// qMinutesRetire then makes the rest final and acknowledged
+	// (RetireMinutesBefore).
+	qMinutesRetireUnheld = `DELETE FROM credited_minutes WHERE minute < ? AND sent_digest <> ` + heldAs + `
+		AND NOT (state = 'final' AND acknowledged = 1 AND computed_at IS NULL)`
+	qMinutesRetire     = `UPDATE credited_minutes SET state = 'final', acknowledged = 1 WHERE minute < ?`
+	qMinutesLastBefore = `SELECT MAX(minute) FROM credited_minutes WHERE minute < ?`
+	qMinutesUnacked    = `SELECT COUNT(*) FROM credited_minutes WHERE acknowledged = 0`
+	// qMinutesPendingBefore counts rows before a minute that are open or
+	// the server hasn't answered for yet.
+	qMinutesPendingBefore = `SELECT COUNT(*) FROM credited_minutes
+		WHERE minute < ? AND (acknowledged = 0 OR state = 'open')`
 	qMinutesPrune = `DELETE FROM credited_minutes WHERE minute < ?`
-	// qMinutesStored lists stored rows of [?, ?) with their cutoff, for
-	// replays and tests.
-	qMinutesStored = `SELECT minute, project, label, credited, cuts, flags, rules_version, digest, cutoff
-		FROM credited_minutes WHERE minute >= ? AND minute < ? ORDER BY minute, project`
 )
 
-// Cutoff exceptions of final minutes (migration 0006).
+// Final spans (migration 0007).
 const (
-	qCutoffLast   = `SELECT from_minute, to_minute, cutoff FROM credit_cutoffs ORDER BY from_minute DESC LIMIT 1`
-	qCutoffInsert = `INSERT INTO credit_cutoffs (from_minute, to_minute, cutoff) VALUES (?, ?, ?)`
-	qCutoffExtend = `UPDATE credit_cutoffs SET to_minute = ? WHERE from_minute = ?`
-	qCutoffRange  = `SELECT from_minute, to_minute, cutoff FROM credit_cutoffs
-		WHERE to_minute > ? AND from_minute < ? ORDER BY from_minute`
-	qCutoffPrune = `DELETE FROM credit_cutoffs WHERE to_minute <= ?`
-	// qCutoffForget and qCutoffClip drop the cutoffs of minutes at or after
-	// a minute (the clock was set back before the final watermark).
-	qCutoffForget = `DELETE FROM credit_cutoffs WHERE from_minute >= ?`
-	qCutoffClip   = `UPDATE credit_cutoffs SET to_minute = ? WHERE from_minute < ? AND to_minute > ?`
+	// qSpansTouching lists spans overlapping or adjacent to [?, ?].
+	qSpansTouching = `SELECT from_minute, to_minute FROM final_spans WHERE to_minute >= ? AND from_minute <= ?`
+	qSpansOverlap  = `SELECT from_minute, to_minute FROM final_spans WHERE to_minute > ? AND from_minute < ? ORDER BY from_minute`
+	qSpanDelete    = `DELETE FROM final_spans WHERE from_minute = ?`
+	qSpanInsert    = `INSERT INTO final_spans (from_minute, to_minute) VALUES (?, ?)`
+	qSpansPrune    = `DELETE FROM final_spans WHERE to_minute <= ?`
 )
 
-// Late events (migration 0006): rows after an id that arrived by a cutoff,
-// with a time before a minute; and the highest such id. One pair per raw
-// event table; the table names are constants.
-const (
-	qLateHeartbeats = `SELECT COUNT(*), COALESCE(MAX(arrived_at), 0) FROM heartbeats WHERE id > ? AND arrived_at <= ? AND time < ?`
-	qLateAI         = `SELECT COUNT(*), COALESCE(MAX(arrived_at), 0) FROM ai_events WHERE id > ? AND arrived_at <= ? AND time < ?`
-	qLateActivity   = `SELECT COUNT(*), COALESCE(MAX(arrived_at), 0) FROM activity_samples WHERE id > ? AND arrived_at <= ? AND time < ?`
-	qLateGit        = `SELECT COUNT(*), COALESCE(MAX(arrived_at), 0) FROM git_events WHERE id > ? AND arrived_at <= ? AND time < ?`
-
-	qArrivedHeartbeats = `SELECT COALESCE(MAX(id), ?) FROM heartbeats WHERE id > ? AND arrived_at <= ?`
-	qArrivedAI         = `SELECT COALESCE(MAX(id), ?) FROM ai_events WHERE id > ? AND arrived_at <= ?`
-	qArrivedActivity   = `SELECT COALESCE(MAX(id), ?) FROM activity_samples WHERE id > ? AND arrived_at <= ?`
-	qArrivedGit        = `SELECT COALESCE(MAX(id), ?) FROM git_events WHERE id > ? AND arrived_at <= ?`
-)
-
-// Repo mapping journal (migration 0005).
-const (
-	qRepoLatest = `SELECT project FROM repo_map WHERE path = ? ORDER BY id DESC LIMIT 1`
-	qRepoInsert = `INSERT INTO repo_map (since, path, project) VALUES (?, ?, ?)`
-	qRepoAll    = `SELECT since, path, project FROM repo_map ORDER BY id`
-	// qRepoPrune drops rows replaced by a newer row for the same path before
-	// a time: they apply only to minutes older than that.
-	qRepoPrune = `DELETE FROM repo_map WHERE EXISTS (SELECT 1 FROM repo_map n
-		WHERE n.path = repo_map.path AND n.id > repo_map.id AND n.since < ?)`
-)
-
-// Evidence days (migrations 0002, 0004 and 0006).
+// Evidence days (migrations 0002 and 0007).
 const (
 	qEvidenceInsert = `INSERT INTO evidence_days (device_id, day, prev_chain_hash, content_hash, chain_hash,
-		signature, rules_version, event_counts, hw_heartbeats, hw_ai, hw_activity, hw_git, active_time, cutoffs, state, error,
-		created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+		signature, rules_version, event_counts, seq_from, seq_to, legacy, state, error,
+		created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	qEvidenceColumns = `SELECT device_id, day, prev_chain_hash, content_hash, chain_hash, signature,
-		rules_version, event_counts, hw_heartbeats, hw_ai, hw_activity, hw_git, active_time, cutoffs, state, error,
+		rules_version, event_counts, seq_from, seq_to, legacy, state, error,
 		created_at, updated_at FROM evidence_days`
 	qEvidenceLast     = qEvidenceColumns + ` WHERE device_id = ? ORDER BY day DESC LIMIT 1`
 	qEvidenceDay      = qEvidenceColumns + ` WHERE device_id = ? AND day = ?`
 	qEvidenceSetState = `UPDATE evidence_days SET state = ?, error = ?, updated_at = ? WHERE device_id = ? AND day = ?`
-	// qEvidenceForget drops the kept active-time records of days before a
-	// day (YYYY-MM-DD), once their raw events are pruned too.
-	qEvidenceForget = `UPDATE evidence_days SET active_time = NULL, cutoffs = NULL WHERE day < ? AND (active_time IS NOT NULL OR cutoffs IS NOT NULL)`
-)
-
-// The same event reads for new rows only: "+time" stops SQLite from using
-// the time index, so it walks the short id range instead of the whole time
-// range.
-const (
-	qHeartbeatsAfter = `SELECT payload, arrived_at FROM heartbeats WHERE +time >= ? AND +time < ? AND id > ? AND id <= ? ORDER BY time, id`
-	qAIAfter         = `SELECT time, harness, kind, session_id, project, cwd, model, tool, prompt_chars, decision, prompt_hash, arrived_at
-		FROM ai_events WHERE +time >= ? AND +time < ? AND id > ? AND id <= ? ORDER BY time, id`
-	qActivityAfter = `SELECT time, idle_seconds, focus_app, focus_kind, arrived_at
-		FROM activity_samples WHERE +time >= ? AND +time < ? AND id > ? AND id <= ? ORDER BY time, id`
-	qGitAfter = `SELECT time, project, kind, commit_hash, files_changed, insertions, deletions, arrived_at
-		FROM git_events WHERE +time >= ? AND +time < ? AND id > ? AND id <= ? ORDER BY time, id`
 )

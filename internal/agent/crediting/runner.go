@@ -38,21 +38,16 @@ const (
 
 // Store is the local storage the Runner needs. *localdb.DB satisfies it.
 type Store interface {
-	EventsBetween(ctx context.Context, from, to time.Time, upto *localdb.HighWater) (localdb.Events, error)
-	EventsAfter(ctx context.Context, after, upto localdb.HighWater, from, to time.Time) (localdb.Events, error)
-	HighWater(ctx context.Context) (localdb.HighWater, error)
-	EventGeneration(ctx context.Context) (int64, error)
-	LateSince(ctx context.Context, after localdb.HighWater, cutoff, finalBefore time.Time) (localdb.LateResult, localdb.HighWater, error)
-	SaveMinutes(ctx context.Context, u localdb.MinuteUpdate) (localdb.SaveResult, error)
-	FinalThrough(ctx context.Context) (time.Time, error)
-	CutoffsBetween(ctx context.Context, from, to time.Time) ([]localdb.CutoffRange, error)
-	UnsentMinutes(ctx context.Context, finalBefore time.Time, held localdb.Span, limit int) ([]localdb.CreditedMinute, error)
-	MarkMinutesSent(ctx context.Context, ms []localdb.CreditedMinute, finalBefore time.Time) error
+	View(ctx context.Context, fn func(*localdb.Snapshot) error) error
+	RecordRepos(ctx context.Context, at time.Time, repos []struggle.Repo) error
+	SaveRun(ctx context.Context, r localdb.Run) (localdb.RunResult, error)
+	AdoptMinute(ctx context.Context, minute time.Time, rows []localdb.CreditedMinute) error
+	UnsentMinutes(ctx context.Context, after, holdOpenBefore time.Time, limit int) ([]localdb.CreditedMinute, error)
+	MarkMinutesTried(ctx context.Context, ms []localdb.CreditedMinute) error
+	MarkMinutesSent(ctx context.Context, a localdb.MinutesAnswer) error
 	RetireMinutesBefore(ctx context.Context, t time.Time) error
 	UnsentMinuteCount(ctx context.Context) (int64, error)
-	UnsentMinutesBefore(ctx context.Context, t time.Time) (int64, error)
-	RecordRepos(ctx context.Context, at time.Time, repos []struggle.Repo) error
-	RepoMap(ctx context.Context) ([]localdb.RepoMapping, error)
+	MinutesPendingBefore(ctx context.Context, t time.Time) (int64, error)
 	PruneCrediting(ctx context.Context) (localdb.CreditPruneResult, error)
 	InsertEvidenceDay(ctx context.Context, e localdb.EvidenceDay) error
 	LastEvidenceDay(ctx context.Context, deviceID string) (localdb.EvidenceDay, bool, error)
@@ -86,8 +81,8 @@ type ActiveTimeSource interface {
 }
 
 // RepoSource lists recently active repositories. It is optional. Its answers
-// are recorded in the local repo mapping journal, which is what the engine
-// reads (ReposAt).
+// are logged as repo mapping rows (ADR 0017), and each run reads the
+// mapping from its own snapshot of the log.
 type RepoSource interface {
 	ActiveRepos(ctx context.Context) ([]struggle.Repo, error)
 }
@@ -114,8 +109,8 @@ type Options struct {
 	TZ     *time.Location
 	Logger *slog.Logger
 	Now    func() time.Time
-	// Settle is how long after the Runner starts, or after a gap in its
-	// runs (a sleep), it waits before making minutes final (DefaultSettle).
+	// Settle is how long after the Runner starts, or after a wake or a gap
+	// in its runs, it waits before making minutes final (DefaultSettle).
 	// Negative means no wait (tests).
 	Settle time.Duration
 	// Drained is closed once the daemon's startup spool drain has finished.
@@ -130,6 +125,13 @@ type Options struct {
 	// Jitter returns a value in [0, 1).
 	Jitter func() float64
 }
+
+// Evidence blocks are read and hashed in chunks of sealChunk sequence
+// numbers, at most sealChunks per run (sealDay).
+const (
+	defaultSealChunk  = 20_000
+	defaultSealChunks = 25
+)
 
 // Runner computes, stores and uploads credited minutes and evidence days.
 type Runner struct {
@@ -148,14 +150,26 @@ type Runner struct {
 	// clock from this run's latest minutes response.
 	clockBehind, clockChecked bool
 	server                    serverClock
+	// ahead is how far the system clock was ahead of the server's at the
+	// latest server time seen since the agent started or woke (0 when
+	// behind); aheadKnown is set once one was seen. No minute becomes
+	// final without it, and finality goes by the system clock minus ahead,
+	// so a clock running ahead never makes future minutes final.
+	ahead      time.Duration
+	aheadKnown bool
 	// upSince is when this run of the agent began receiving events: the
-	// Runner's first run, or the first run after a gap. lastRun is the
-	// previous run's clock.
+	// Runner's first run, or the first run after a wake or a gap. lastRun
+	// is the previous run's clock, with its monotonic reading.
 	upSince, lastRun time.Time
-	// late is the high-water mark of rows already checked for lateness
-	// (lateKnown once read or set).
-	late      localdb.HighWater
+	// late is the log's high-water mark up to which rows have been checked
+	// for lateness (lateKnown once read or set).
+	late      int64
 	lateKnown bool
+
+	// sealChunk and sealChunks bound one run's evidence hashing (tests
+	// make them small).
+	sealChunk  int64
+	sealChunks int
 
 	mu    sync.Mutex
 	gate  gate
@@ -197,7 +211,7 @@ func New(o Options) *Runner {
 	if o.Settle == 0 {
 		o.Settle = DefaultSettle
 	}
-	return &Runner{opt: o, batch: o.Batch}
+	return &Runner{opt: o, batch: o.Batch, sealChunk: defaultSealChunk, sealChunks: defaultSealChunks}
 }
 
 // Run runs the pipeline every Interval (a few seconds past each minute with
@@ -293,117 +307,100 @@ func (r *Runner) RunOnce(ctx context.Context) {
 	}
 }
 
-// compute runs the engine over the window, with the events that arrived by
-// the run's cutoff, and stores the result. When the agent has settled
-// (settleState), the minutes up to minute + FinalLead before the cutoff
-// become final in the same write. Minutes before through (the end of the
-// last sealed day) are never stored: the engine still reads the whole
-// window, so the rest come out the same.
+// compute runs the engine once at the run's key and stores the result
+// (ADR 0017). The key is (T, H): T is the end of the window, the whole
+// minute now is in, and H the log's high-water mark in the run's one
+// snapshot, from which it reads its events and its repo mapping. A write
+// not committed by then is outside the run entirely. When the agent has
+// settled, the minutes up to T - FinalLead become final in the same write.
+// Minutes before through (the end of the last sealed day) are never
+// stored: the engine still reads the whole window, so the rest come out
+// the same.
 func (r *Runner) compute(ctx context.Context, now, through time.Time, st settleState) error {
 	s := spanAt(now)
-	if err := r.cache.refresh(ctx, r.opt.Store, s.history, s.to); err != nil {
+	r.recordRepos(ctx, now)
+	var (
+		key   localdb.Key
+		repos []struggle.Repo
+		late  localdb.LateResult
+	)
+	below := false
+	err := r.opt.Store.View(ctx, func(snap *localdb.Snapshot) error {
+		if s.history.Before(snap.Floor) {
+			// The run would read history that pruning or the row cap has
+			// deleted, which the sealed blocks still hold: a replay at its
+			// key would see rows it didn't. Only a clock set back far can
+			// get here; wait for it to catch up.
+			below = true
+			return nil
+		}
+		key = localdb.Key{T: s.to, H: snap.H}
+		if err := r.cache.refresh(ctx, snap, s.history, s.to); err != nil {
+			return err
+		}
+		var err error
+		if repos, err = snap.Repos(ctx, snap.H); err != nil {
+			return err
+		}
+		late, err = r.lateRows(ctx, snap)
+		return err
+	})
+	if err != nil {
 		return err
 	}
-	ev := r.cache.before(s.to)
-	var err error
+	if below {
+		msg := "the system clock is set back before deleted history, so no minutes are computed until it catches up"
+		if r.shown[keyBelowFloor] != msg {
+			r.opt.Logger.WarnContext(ctx, msg, "window_start", s.history.UTC().Format(time.RFC3339))
+		}
+		r.show(ctx, keyBelowFloor, msg)
+		return nil
+	}
+	r.show(ctx, keyBelowFloor, "")
 	var active []struggle.ActiveTime
 	if r.opt.ActiveTimes != nil {
 		if active, err = r.opt.ActiveTimes.ActiveTimes(ctx, s.history, s.to); err != nil {
-			// Optional signal: credit without it rather than not at all.
+			// Optional signal, and it feeds only flags: credit without it
+			// rather than not at all.
 			r.opt.Logger.WarnContext(ctx, "reading active time; crediting without it", "err", err)
 			active = nil
 		}
 	}
-	mapping, err := r.repoMap(ctx, now)
-	if err != nil {
-		return err
-	}
-	res := computeSpan(r.opt.Compute, s, ev, active, mapping, r.opt.TZ)
+	res := r.opt.Compute(engineInput(s, r.cache.before(s.to), active, repos, r.opt.TZ))
 	keep := s
 	if keep.from.Before(through) {
 		keep.from = through
 	}
-	if !keep.to.After(keep.from) {
-		return nil
+	if keep.to.After(keep.from) {
+		run := localdb.Run{Key: key, From: keep.from, To: keep.to, Minutes: minuteRows(keep, res), Removal: removal}
+		if st.settled {
+			run.FinalBefore = finalBefore(s.to.Add(-r.ahead))
+		}
+		saved, err := r.opt.Store.SaveRun(ctx, run)
+		if err != nil {
+			return err
+		}
+		r.opt.Logger.DebugContext(ctx, "credited minutes computed", "t", key.T.Format(time.RFC3339), "h", key.H,
+			"replaced", saved.Replaced, "kept", saved.Kept, "finalized", saved.Finalized)
 	}
-	wasFinal, err := r.opt.Store.FinalThrough(ctx)
-	if err != nil {
-		return err
-	}
-	u := localdb.MinuteUpdate{
-		From: keep.from, To: keep.to, Cutoff: s.cutoff(), ServerFinalBefore: s.finalBefore,
-		Minutes: minuteRows(keep, res), Superseded: superseded, Lead: FinalLead,
-		Ceiling: finalThrough(s.cutoff()),
-	}
-	if st.settled {
-		u.FinalBefore = finalThrough(s.cutoff())
-	}
-	saved, err := r.opt.Store.SaveMinutes(ctx, u)
-	if err != nil {
-		return err
-	}
-	if saved.Rewound {
-		r.opt.Logger.WarnContext(ctx, "the system clock went back before minutes already final; computing them again",
-			"now", now.UTC().Format(time.RFC3339), "was_final_through", wasFinal.Format(time.RFC3339))
-		wasFinal = finalThrough(s.cutoff())
-	}
-	r.opt.Logger.DebugContext(ctx, "credited minutes computed", "inserted", saved.Inserted,
-		"updated", saved.Updated, "deleted", saved.Deleted, "finalized", saved.Finalized)
 	r.persist(ctx, localdb.KV{Key: keyLastComputed, Value: formatTime(now)})
-	r.countLate(ctx, s.cutoff(), wasFinal)
+	r.countLate(ctx, late, key.H)
 	return nil
 }
 
-// finalThrough is where a settled run with the given cutoff moves the final
-// watermark: every minute m with m + FinalLead <= cutoff is final.
-func finalThrough(cutoff time.Time) time.Time {
-	return cutoff.Add(-FinalLead).Add(time.Minute)
-}
-
-// repoMap records the active repos in the mapping journal and returns the
-// whole journal. If the source fails, the journal still holds the last
-// known mapping.
-func (r *Runner) repoMap(ctx context.Context, now time.Time) ([]localdb.RepoMapping, error) {
-	if r.opt.Repos != nil {
-		repos, err := r.opt.Repos.ActiveRepos(ctx)
-		if err != nil {
-			r.opt.Logger.WarnContext(ctx, "listing active repos; using the last known mapping", "err", err)
-		} else if err := r.opt.Store.RecordRepos(ctx, now, repos); err != nil {
-			return nil, err
-		}
+// recordRepos logs the active repos as repo mapping rows, before the run's
+// snapshot. If the source fails, the mapping already logged stays in force.
+func (r *Runner) recordRepos(ctx context.Context, now time.Time) {
+	if r.opt.Repos == nil {
+		return
 	}
-	return r.opt.Store.RepoMap(ctx)
-}
-
-// computeSpan runs the engine over span s with the events that arrived by
-// its cutoff, once per run of minutes that share a repo mapping (ReposAt),
-// and joins the results: each minute comes from the run computed with the
-// mapping that stood when it became final, never with one recorded after.
-// Its result depends only on its arguments, so a replay with the same
-// events, journal and cutoff gets the same minutes (ReplayMinutes).
-//
-// Only the mapping differs between those runs. Each one is over the whole
-// span, with the same events, active time and time zone, and with DataEnd at
-// the span's end: the engine reads the window's bounds as well as which
-// minutes to emit (a turn quiet for 10 minutes before the end of the data
-// has ended; long_day and otel_mismatch total the window), so cutting the
-// window per group would change a group's minutes even when the mapping
-// moves no event to another project.
-func computeSpan(compute func(struggle.Input) struggle.Result, s span, ev localdb.Events,
-	active []struggle.ActiveTime, mapping []localdb.RepoMapping, tz *time.Location) struggle.Result {
-	var out struggle.Result
-	for _, g := range repoGroups(mapping, s.from, s.to) {
-		in := engineInput(s, ev, active, g.repos, tz)
-		in.DataEnd = s.to
-		res := compute(in)
-		out.RulesVersion = res.RulesVersion
-		for _, m := range res.Minutes {
-			if at := m.Minute.UTC().Truncate(time.Minute); !at.Before(g.from) && at.Before(g.to) {
-				out.Minutes = append(out.Minutes, m)
-			}
-		}
+	repos, err := r.opt.Repos.ActiveRepos(ctx)
+	if err == nil {
+		err = r.opt.Store.RecordRepos(ctx, now, repos)
 	}
-	return out
+	if err != nil && ctx.Err() == nil {
+		r.opt.Logger.WarnContext(ctx, "recording active repos; using the last known mapping", "err", err)
+	}
 }
 
 // upload registers the device if needed, then sends minutes and evidence.
@@ -422,17 +419,38 @@ func (r *Runner) upload(ctx context.Context, now time.Time, st settleState) {
 		r.fail(ctx, t, err)
 		return
 	}
-	if dev.Replaced {
+	// The device the stored minutes belong to is recorded (keyDevice) only
+	// once the switch to it is complete, so a crash after the identity
+	// persisted a replacement but before its minutes were retired is
+	// caught on the next run, when Ensure no longer reports Replaced.
+	owner, err := r.opt.Store.Get(ctx, keyDevice)
+	if err != nil {
+		r.opt.Logger.ErrorContext(ctx, "reading the device credited minutes belong to", "err", err)
+		return
+	}
+	if dev.Replaced || (owner != "" && owner != dev.ID) {
 		// A new device starts clean: minutes from before it registered
 		// belong to the previous device and are not sent again.
 		if err := r.opt.Store.RetireMinutesBefore(ctx, dev.RegisteredAt.Truncate(time.Minute)); err != nil {
 			r.opt.Logger.ErrorContext(ctx, "retiring minutes of the previous device", "err", err)
 			return
 		}
-		// Its evidence chain starts over too.
-		r.persist(ctx, localdb.KV{Key: keyEvidenceDevice, Value: dev.ID}, localdb.KV{Key: keyEvidenceDay, Value: ""},
+		// Its evidence chain starts over too, from the oldest retained row,
+		// and until it seals a block no row counts as sealed.
+		if err := r.opt.Store.SetMany(ctx, localdb.KV{Key: keyEvidenceDevice, Value: dev.ID}, localdb.KV{Key: keyEvidenceDay, Value: ""},
 			localdb.KV{Key: keyEvidenceHash, Value: ""}, localdb.KV{Key: keyEvidenceState, Value: ""},
-			localdb.KV{Key: keyEvidenceError, Value: ""})
+			localdb.KV{Key: keyEvidenceError, Value: ""}, localdb.KV{Key: localdb.KeySealed, Value: "0"},
+			localdb.KV{Key: keyDevice, Value: dev.ID}); err != nil {
+			r.opt.Logger.ErrorContext(ctx, "starting the new device's evidence chain", "err", err)
+			return
+		}
+	} else if owner == "" {
+		// The first device, or an agent from before keyDevice: these
+		// minutes are its own.
+		if err := r.opt.Store.SetMany(ctx, localdb.KV{Key: keyDevice, Value: dev.ID}); err != nil {
+			r.opt.Logger.ErrorContext(ctx, "recording the device credited minutes belong to", "err", err)
+			return
+		}
 	}
 	// Sealing a day closes it to minutes on the server, so new days are
 	// sealed only on a run whose minute uploads went through; the per-day
@@ -461,6 +479,14 @@ func (r *Runner) upload(ctx context.Context, now time.Time, st settleState) {
 					"batches", maxBatchesPerRun)
 			}
 			r.show(ctx, keyRefused, "")
+		}
+	}
+	if mayseal && !r.aheadKnown {
+		// No minute becomes final before the server's clock has been seen
+		// since the agent started or woke: ask for it if no upload brought it.
+		if err := r.askServerTime(ctx, t.Target, dev); err != nil {
+			r.fail(ctx, t, err)
+			return
 		}
 	}
 	err = r.sealAndUploadDays(ctx, t.Target, dev, now, mayseal)

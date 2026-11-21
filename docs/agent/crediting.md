@@ -1,50 +1,58 @@
 # Agent crediting and evidence
 
-How the agent runs the struggle engine and keeps the evidence chain (ADR 0010, ADR 0013). The rules themselves are in `docs/STRUGGLE-RULES.md`.
+How the agent runs the struggle engine and keeps the evidence chain (ADR 0010, ADR 0013, ADR 0017). The rules themselves are in `docs/STRUGGLE-RULES.md`.
 
 | Package | Job |
 |---|---|
-| `pkg/evidence` | Canonical day encoding (`Encode`, `ContentHash`, `Counts`), chain hash, signing |
+| `pkg/evidence` | Canonical encoding of logged rows (`Encode`, `ContentHash`, `Counts`), chain hash, signing |
 | `internal/agent/devicekey` | The device's ed25519 key file and its registration with the server |
 | `internal/agent/serverapi` | HTTP client for `/api/v1/devices`, `/minutes`, `/evidence-days` |
-| `internal/agent/crediting` | The per-minute pipeline: engine input, local minutes, uploads, sealing days |
-| `internal/agent/localdb` | Tables `heartbeats`, `credited_minutes`, `evidence_days` (migrations 0002, 0004), `repo_map` (0005), `credit_cutoffs` and the `arrived_at`/`cutoff` columns (0006) |
+| `internal/agent/crediting` | The per-minute pipeline: engine input, local minutes and their keys, uploads, sealing blocks, replays |
+| `internal/agent/localdb` | The event log (`seq` on every raw event table and `repo_map`, migration 0007), snapshots, `credited_minutes`, `final_spans`, `evidence_days` |
 
 ## Files and tables
 
 | What | Where | Bound |
 |---|---|---|
 | Device key | `<data dir>/device.key`, PKCS#8 PEM, 0600 | one file; retired keys are kept as `device.key.retired-<unix>[-n]`, never overwritten |
-| Full heartbeats | `heartbeats` (payload as received, deduplicated) | 90 days, 3 000 000 rows |
-| Credited minutes | `credited_minutes` (minute, project, label, credit, cuts, flags, rules version, upload state, arrival cutoff) | 90 days |
-| Final minutes' cutoffs | `credit_cutoffs` (ranges of final minutes whose cutoff isn't minute + 29 min; 0 = never computed) and `kv` `crediting.final_through` | 90 days |
-| Evidence days | `evidence_days` (signed values, event counts, high-water ids, the active-time records hashed, the day's cutoffs, state) | one row per day, kept; active-time records and cutoffs cleared after 90 days |
-| Repo mapping journal | `repo_map` (since, repository path, project), append-only | a row is pruned once a newer row for its path is 90 days old |
-| State | `kv` keys `device.*`, `crediting.*`, `evidence.*` | small |
+| Event log | `heartbeats` (payload as received, deduplicated), `ai_events`, `activity_samples`, `git_events`, `active_time`, `repo_map`; every row has a unique `seq` from `kv` `log.seq` | 90 days and 3 000 000 rows per table, but only rows sealed by the device's chain (`kv` `log.sealed`) are deleted; with the table full of unsealed rows, new activity samples are dropped and counted (`log.dropped_samples`), other rows are always kept |
+| Credited minutes | `credited_minutes` (minute, project, label, credit, cuts, flags, rules version, key `computed_at`/`snapshot`, `open`/`final`, acknowledged, what the server holds) | 90 days |
+| Final minutes | `final_spans` (merged ranges, also covering final minutes with no rows) | 90 days |
+| Evidence days | `evidence_days` (signed values, event counts, sequence range `seq_from`..`seq_to`, state; days sealed before migration 0007 are `legacy`) | one row per day, kept |
+| State | `kv` keys `device.*`, `crediting.*`, `evidence.*`, `log.*` | small |
+
+## The event log
+
+Every row the engine can read, and every repo mapping row, takes the next sequence number inside its inserting transaction. SQLite serialises writers, so the committed rows are exactly `1..H` (less what retention deleted). An ignored duplicate (a resent heartbeat, a commit seen again, a retried OTLP export, an unchanged repo mapping) takes no number. Logged rows are never updated. A reader opens one read transaction and reads `H` first (`localdb.DB.View`); a write that hasn't committed by then is entirely outside it.
 
 ## Each minute
 
-1. Read new local events since the last run (by row id) into an in-memory window of the last 120 minutes, plus older rows whose time the window's end has just reached. If the window moves backward or jumps past its previous end (the clock was changed), or rows were pruned or trimmed (the deletion generation `events.generation` changed), it is read again from scratch, so it always holds exactly what a full read would.
-2. Record the active repos in the repo mapping journal (`repo_map`), then run `struggle.Compute` for `[now−60 min, now)` over the events that arrived by the run's **cutoff** (the window's end, a whole minute; ADR 0016), with optional Claude Code active time and, for each minute, the repo mapping recorded before that minute became final (`ReposAt`; one engine call over the whole window per group of minutes sharing a mapping, with `DataEnd` at the window's end, keeping that group's minutes).
-3. Store the result, each row with the run's cutoff: minutes that aren't final are rewritten when they change; final minutes are frozen whole. Minutes before the end of the last sealed day (`crediting.sealed_through`) are never stored.
-4. Make minutes final (**settled finality**, ADR 0016). Normally the run at minute + 29 minutes does it: the watermark `crediting.final_through` moves past the minute. After a start, or a gap in runs (a sleep), nothing becomes final until the agent has been up `Settle` (15 minutes) and the startup spool drain has finished; minutes are still computed for the status page. A final minute keeps the cutoff it was computed with; cutoffs other than minute + 29 minutes are recorded in `credit_cutoffs`. A minute the server already froze stays as the server has it. Events that arrive after their minute is final are kept but don't change it; status counts them ("late events ignored").
-5. If signed in: register the device if needed, upload minutes the server doesn't have (batches of 1000, at most 20 a run), except minutes held while settling (the server would freeze them before they are final here), then seal and upload ended days whose minutes are all final and answered for.
+1. Log the active repos (a `repo_map` row when a path is first seen or its project changes).
+2. Open one snapshot of the log: read `H`, the deletion generation, the events of the last 120 minutes into the in-memory window (only rows logged since the last run, by `seq`, plus older rows the window's end has just reached; refilled when the window jumps or the generation moved) and the repo mapping at `H`. Count the rows logged since the last run whose minute is already final ("late events").
+3. Run `struggle.Compute` once for the window `[T−60 min, T)`, `T` being the whole minute now is in, with 60 minutes of history, `DataEnd = T`, the mapping at `H` and optional Claude Code active time (flags only). The run's **key** is `(T, H)`.
+4. Store the result (`localdb.SaveRun`). A final minute is never touched. For an open minute, if the new rows (plus a removal for each project the server may hold that dropped out) equal the stored rows, the stored rows and their older key are kept, so it isn't sent again; otherwise all of the minute's rows are replaced under the new key. Minutes before the end of the last sealed day (`crediting.sealed_through`) are never stored.
+5. If the agent has **settled**, every open minute `m` with `T − ahead ≥ m + 29 min` becomes final in the same write (and the minutes of the window up to there, with or without rows). After a start, a wake (a gap since the last run longer than two intervals plus a minute, by the wall clock or the monotonic clock) nothing becomes final until the agent has been up `Settle` (15 minutes) and the startup spool drain has finished; this is about fairness only: late honest events still count. Nor does anything become final until a minutes response since then has carried the server's `server_time` (an empty batch asks for it): `ahead` is how far the system clock was ahead of it (0 when behind), so a clock running ahead never makes minutes final that haven't happened yet. Whatever the clock does later, a final minute is never computed again.
+6. If signed in: register the device if needed, upload every row the server hasn't answered for, with its key (batches of whole minutes, at most 1000 rows and 20 batches a run), except open minutes the server would freeze before the agent settles (held). Then seal and upload ended days.
 
-`crediting.ReplayMinutes` and `ReplayDayCredit` recompute final minutes from the raw events, the repo journal and the stored cutoffs exactly as the agent made them final.
+When a new device replaces the previous one (a new id or key), the minutes before it registered belong to the previous device (`localdb.RetireMinutesBefore`): they become final, rows that device holds exactly as stored stay, and every other row is dropped. None is ever sent again.
 
-Runs never overlap, are bounded to 2 minutes, and run a few seconds past each minute. The first run waits (at most 2 minutes) for the daemon's startup spool drain. Old heartbeats and minutes are pruned every 6 hours.
+`crediting.ReplayMinute(m, key)` runs the engine at a minute's key over the rows with `seq ≤ H` and compares on label, project, credit and cuts (flags depend on the time zone and active time). `crediting.ReplayBlock` re-reads a sealed block's rows for re-hashing.
+
+Runs never overlap, are bounded to 2 minutes, and run a few seconds past each minute. The first run waits (at most 2 minutes) for the daemon's startup spool drain. Old rows are pruned every 6 hours. On the dev VPS (`BenchmarkRunOnce`: two weeks of history plus a busy two-hour session, under load) a warm run takes about 10 ms and a cold one about 20 ms.
 
 **Clock behind a sealed day.** If the system clock is before the end of the last day the evidence chain sealed or skipped (it was set back), a run does nothing: no computing, uploading or sealing, since every minute it computed would fall in a day the server already refuses. Status shows "clock: the system clock is behind the last sealed day ..." and one log line says so; when the clock passes that day, crediting resumes by itself (one more log line).
 
 ## Uploads
 
-All requests use `Authorization: Bearer <api key>` and the agent's User-Agent, through the daemon's shared HTTP client.
+All requests use `Authorization: Bearer <api key>` and the agent's User-Agent, through the daemon's shared HTTP client. Before a batch is sent its rows are marked as possibly held by the server, so if the answer is lost, a later result without a project still sends that project's removal.
 
 | Answer | Action |
 |---|---|
-| 200/201 | done |
-| per-minute rejection | logged, counted in `crediting.rejected`, never retried unless the minute changes |
-| per-minute rejection "already sealed" | as above, and also counted in `crediting.sealed_rejected` and shown in status as an error (lost credit; should never happen) |
+| 200/201, item accepted | the row is acknowledged (the server holds it, key included); an accepted removal is deleted locally too |
+| item refused as final, with `stored` rows | the minute takes exactly the server's rows (values and keys), final and acknowledged; rows without a key are counted (`crediting.unkeyed`) |
+| any other per-item rejection of an open row | not retried while open; sent once more when final |
+| any other per-item rejection of a final row | refused for good: the row is dropped (the minute stays final) and counted in `crediting.rejected`; never retried |
+| per-item rejection "already sealed" | the row is dropped, its minute made final, and counted, also in `crediting.sealed_rejected`; shown in status as an error (lost credit; should never happen) |
 | 413, or 400 "minutes per request", on a minutes batch | split the batch (never inside a minute); a single refused minute is counted as rejected |
 | any other 400/422 with a JSON error on a minutes batch (e.g. unknown `rules_version`) | minutes kept and put on hold for 30 min; status shows "on hold" with the server's reason |
 | 400 or 409 on an evidence day | day marked `rejected`/`conflict`; the chain stops; status shows it |
@@ -53,18 +61,20 @@ All requests use `Authorization: Bearer <api key>` and the agent's User-Agent, t
 | 404 with a JSON error | device unknown: forget the id, back off, register the same key again |
 | 409 "public key is registered to another account" on registration | retire the key, make a new one, register |
 | any other 409 with a JSON error on registration (device limit) | keep the key, show the message as the pause reason, back off |
-| anything else (network, 429, 5xx, 3xx, proxy pages) | back off 5 s → 10 min with jitter; `Retry-After` wins (≤ 30 min) |
+| anything else (network, 429, 5xx, 3xx, proxy pages, a lost answer) | back off 5 s → 10 min with jitter; `Retry-After` wins (≤ 30 min); the rows are sent again with the same key, which the server takes as a repeat |
 
-A local failure while sealing a day (database, active-time source) is shown as "sealing failed" and retried next run; it does not back off uploads.
+A local failure while sealing a day (database, signing) is shown as "sealing failed" and retried next run; it does not back off uploads.
 
 ## Evidence days
 
-A UTC day is sealed once it has ended plus one hour by the earlier of the system clock and the server's, and the server has answered for every stored minute up to its end. The server's clock is the `server_time` in the body of a minutes response in the same run (an empty batch asks for it when the run sent none); the `Date` header is never used, since a proxy may strip or rewrite it. If `server_time` is missing or malformed, or differs from the system clock by more than 5 minutes, no day is sealed or skipped as empty and `crediting.sealed_through` doesn't move; status says why, minutes are still computed and uploaded, and sealing catches up in order once the clocks agree. sealing closes the day to minutes on the server. No new day is sealed on a run whose minute uploads are on hold or failed. The agent records the highest row id of each event table and keeps the day's active-time records as hashed (they can't be pinned by ids), hashes the day's events up to those ids plus those records (`evidence.ContentHash`), chains it to the last accepted day (`prev_chain_hash`, `""` for the first), signs it with the device key and stores it as `pending`. It is uploaded until the server accepts it; only then does the chain move on. Days without events are skipped. Catch-up after downtime seals up to 7 days per run, in order. `crediting.ReplayDay` rebuilds a sealed day's events from the same marks and records, so late events never change its hash (ADR 0013).
+The record for UTC day `D` seals every logged row with `seq` in `(H_prev, H_D]`: `H_prev` is where the device's previous block ended (a device's first block, or the first after a legacy day, starts at the oldest retained row), and `H_D` is the log's high-water mark read in the snapshot that seals. A block holds events of any time: a late event for an earlier day goes into whichever block is open when it arrives, so every row is sealed exactly once. A range with no rows is skipped (a gap). The rows are read and hashed in chunks of sequence numbers (`evidence.Hasher`, at most 25 chunks of 20,000 a run), so a large block, such as a device's first, is hashed over several runs without holding it in memory; the progress is kept in `kv` (`evidence.progress`) for that device and previous block. The hash is chained to the last accepted day (`prev_chain_hash`, `""` for the first), signed with the device key and stored as `pending` with `seq_from` and `seq_to`; it is uploaded until the server accepts it, and only then does the chain move on. Sealing moves `log.sealed`, which lets retention delete those rows later. A new device resets it to 0.
+
+A day is sealed once it has ended plus one hour by the earlier of the system clock and the server's, the two agree to within 5 minutes, every stored minute up to its end is final and acknowledged (so every key of its minutes is at or below `H_D`), and this run's minute uploads went through. The server's clock is the `server_time` in the body of a minutes response in the same run (an empty batch asks for it when the run sent none); the `Date` header is never used. If `server_time` is missing, malformed or disagrees, no day is sealed or skipped and `crediting.sealed_through` doesn't move; status says why, minutes are still computed and uploaded, and sealing catches up in order once the clocks agree. Catch-up after downtime seals up to 7 days per run, in order.
 
 ## Status
 
-`logbook status`, `GET /local/v1/status` (`crediting` object) and the status page show: device id and registration time, revocation, when minutes were last computed and uploaded, minutes waiting and rejected, pause reason and last error, a clock problem (behind the last sealed day, more than 5 minutes from the server's clock, or no usable server time; the last two stop sealing), whether minutes are settling after a start (`settling`), how many events arrived after their minute was final (`late_ignored`, `late_latest`; the status page and JSON), and the evidence chain's last day, chain hash and any stop reason. They never show the API key or the device's private key.
+`logbook status`, `GET /local/v1/status` (`crediting` object) and the status page show: device id and registration time, revocation, when minutes were last computed and uploaded, minutes waiting and rejected, pause reason and last error, a clock problem (behind the last sealed day, more than 5 minutes from the server's clock, or no usable server time; the last two stop sealing), whether minutes are settling after a start or wake, or waiting for the server's time (`settling`), how many events were logged after their minute was final (`late_ignored`, `late_latest`), minutes adopted from the server without a key (`unkeyed`), activity samples dropped because the log was full of unsealed rows (`dropped_samples`), and the evidence chain's last day, chain hash and any stop reason. They never show the API key or the device's private key.
 
 ## What leaves the device
 
-Only labelled minutes (minute, project, label, credited seconds, cut and flag codes, rules version) and per-day signed hashes with event counts. Raw events, prompts (or their hashes), working directories, window titles and file paths stay local unless the user submits a bundle (step 5).
+Only labelled minutes (minute, project, label, credited seconds, cut and flag codes, rules version, and the computation key: a window end and a sequence number) and per-day signed hashes with row counts. Raw events, prompts (or their hashes), working directories, window titles and file paths stay local unless the user submits a bundle (step 5).

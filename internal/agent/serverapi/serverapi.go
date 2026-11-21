@@ -167,6 +167,25 @@ type Minute struct {
 	Credited int       `json:"credited"`
 	Cuts     []string  `json:"cuts"`
 	Flags    []string  `json:"flags"`
+	// ComputedAt and Snapshot are the computation key that produced the
+	// row (ADR 0017): the end of the engine's window (a whole minute, UTC)
+	// and the high-water mark of the agent's event log. All rows of a
+	// minute carry the same key.
+	ComputedAt time.Time `json:"computed_at"`
+	Snapshot   int64     `json:"snapshot"`
+}
+
+// StoredMinute is a row the server holds, returned when it refuses a
+// write because the minute is final (ADR 0017). ComputedAt and Snapshot
+// are nil for a row stored before the server kept keys.
+type StoredMinute struct {
+	Project    string     `json:"project"`
+	Label      string     `json:"label"`
+	Credited   int        `json:"credited"`
+	Cuts       []string   `json:"cuts"`
+	Flags      []string   `json:"flags"`
+	ComputedAt *time.Time `json:"computed_at"`
+	Snapshot   *int64     `json:"snapshot"`
 }
 
 // MinutesRequest is the body of POST /api/v1/devices/{id}/minutes.
@@ -182,6 +201,11 @@ const MaxMinutes = 1000
 type ItemError struct {
 	Index int    `json:"index"`
 	Error string `json:"error"`
+	// Stored, when the server refused the row because its minute is
+	// final, is every row the server holds for that device-minute: its own
+	// answer to which value won. nil when the server sent none; an empty,
+	// non-nil slice when it holds no row for the minute.
+	Stored []StoredMinute `json:"stored,omitempty"`
 }
 
 // MinutesResult is the server's per-item answer.

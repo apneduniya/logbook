@@ -126,9 +126,11 @@ func TestInsertActiveTimeRejectsInvalid(t *testing.T) {
 func TestActiveTimePruneAndCap(t *testing.T) {
 	ctx := context.Background()
 	d, _ := openTest(t, WithEventCap(3))
+	seal(t, d, 1000) // everything this test stores counts as sealed
 	var pts []ActiveTimePoint
 	for i := range 5 {
-		pts = append(pts, ActiveTimePoint{From: at(-10 + i), To: at(-9 + i), SessionID: "s", Type: ActiveUser, Secs: 1})
+		// Over CapHorizon old, so the cap may trim them.
+		pts = append(pts, ActiveTimePoint{From: at(-300 + i), To: at(-299 + i), SessionID: "s", Type: ActiveUser, Secs: 1})
 	}
 	pts = append(pts, ActiveTimePoint{From: testNow.Add(-100 * 24 * time.Hour), To: testNow.Add(-100*24*time.Hour + time.Minute),
 		SessionID: "old", Type: ActiveCLI, Secs: 1})

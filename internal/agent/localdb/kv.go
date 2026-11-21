@@ -83,10 +83,10 @@ func (d *DB) Prefix(ctx context.Context, prefix string) (map[string]string, erro
 	return out, nil
 }
 
-// keyGeneration counts the transactions that deleted raw event rows
-// (heartbeats, AI events, activity samples, git events) by pruning or by the
-// row cap. Readers that keep events in memory compare it to notice rows
-// that are gone, which their ids alone can't show.
+// keyGeneration counts the transactions that deleted logged rows by pruning
+// or by the row cap. Readers that keep events in memory compare it to
+// notice rows that are gone, which sequence numbers alone can't show; read
+// it in the same snapshot as the rows (Snapshot.Generation).
 const keyGeneration = "events.generation"
 
 // EventGeneration returns the raw event tables' deletion generation: it

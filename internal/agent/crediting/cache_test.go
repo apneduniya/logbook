@@ -13,11 +13,41 @@ import (
 	"github.com/apneduniya/logbook/pkg/wire"
 )
 
-// The cached loader returns exactly what a cold read of the window returns,
-// in the same order, for random sequences of window moves (a minute on,
-// back by minutes, jumps of days either way) and random inserts, many of
-// them late (times well before the window's end) or ahead of it, while
-// rows are pruned by age and trimmed by a small row cap.
+// sealAll marks every row the test will store as sealed, so retention may
+// delete them (it never deletes unsealed rows).
+func sealAll(t *testing.T, db *localdb.DB) {
+	t.Helper()
+	if err := db.SetMany(context.Background(), localdb.KV{Key: localdb.KeySealed, Value: "1000000000"}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// refreshed refreshes c for span s in one snapshot of db, as a run does,
+// and returns the cached window and a cold read of the same snapshot.
+func refreshed(t *testing.T, db *localdb.DB, c *eventCache, s span) (got, want localdb.Events) {
+	t.Helper()
+	ctx := context.Background()
+	err := db.View(ctx, func(snap *localdb.Snapshot) error {
+		if err := c.refresh(ctx, snap, s.history, s.to); err != nil {
+			return err
+		}
+		got = c.before(s.to)
+		var err error
+		want, err = snap.Events(ctx, s.history, s.to, 0, snap.H)
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return got, want
+}
+
+// The cached loader returns exactly what a cold read of the same snapshot
+// returns, in the same order, for random sequences of window moves (a
+// minute on, back by minutes, jumps of days either way) and random
+// inserts, many of them late (times well before the window's end) or ahead
+// of it, while sealed rows are pruned by age and trimmed by a small row
+// cap.
 func TestEventCacheMatchesColdRead(t *testing.T) {
 	for seed := range uint64(25) {
 		t.Run(fmt.Sprint(seed), func(t *testing.T) {
@@ -31,6 +61,7 @@ func TestEventCacheMatchesColdRead(t *testing.T) {
 				t.Fatal(err)
 			}
 			t.Cleanup(func() { _ = db.Close() })
+			sealAll(t, db)
 
 			var c eventCache
 			for step := range 80 {
@@ -55,19 +86,7 @@ func TestEventCacheMatchesColdRead(t *testing.T) {
 				default:
 					now = now.Add(time.Duration(30+rng.IntN(120)) * time.Minute)
 				}
-				s := spanAt(now)
-				if err := c.refresh(ctx, db, s.history, s.to); err != nil {
-					t.Fatal(err)
-				}
-				got := c.before(s.to)
-				hw, err := db.HighWater(ctx)
-				if err != nil {
-					t.Fatal(err)
-				}
-				want, err := db.EventsBetween(ctx, s.history, s.to, &hw)
-				if err != nil {
-					t.Fatal(err)
-				}
+				got, want := refreshed(t, db, &c, spanAt(now))
 				if msg := diffEvents(got, want); msg != "" {
 					t.Fatalf("step %d at %s: cached window differs from a cold read: %s",
 						step, now.Format(time.DateTime), msg)
@@ -140,18 +159,26 @@ func diffEvents(got, want localdb.Events) string {
 	return ""
 }
 
-// With a cap of two rows, a third sample trims the oldest. The cache must
-// drop it too: a presence sample kept in memory but gone from the table
-// would credit a minute (60 s) that a cold read, or a replay, leaves idle.
+// With a cap of two rows, a third sample trims the oldest (sealed) one. The
+// cache must drop it too: a presence sample kept in memory but gone from
+// the table would credit a minute (60 s) that a cold read, or a replay,
+// leaves idle. The deletion generation it reads comes from the same
+// snapshot as the rows.
 func TestEventCacheDropsTrimmedRows(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 11, 20, 12, 0, 5, 0, time.UTC)
+	// The row cap never trims rows a run's window still covers
+	// (localdb.CapHorizon), so the database's clock runs ahead here to
+	// trim inside the cached window: the cache must still notice deletions
+	// by the generation, whatever deletes them.
+	dbNow := now.Add(localdb.CapHorizon + time.Hour)
 	db, err := localdb.Open(ctx, filepath.Join(t.TempDir(), "agent.db"),
-		localdb.WithClock(func() time.Time { return now }), localdb.WithEventCap(2))
+		localdb.WithClock(func() time.Time { return dbNow }), localdb.WithEventCap(2))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
+	sealAll(t, db)
 	store := func(at time.Time) {
 		t.Helper()
 		if err := db.InsertEvents(ctx, []wire.LocalEvent{{Type: "activity",
@@ -163,22 +190,18 @@ func TestEventCacheDropsTrimmedRows(t *testing.T) {
 	store(now.Add(-5 * time.Minute))
 	var c eventCache
 	s := spanAt(now)
-	if err := c.refresh(ctx, db, s.history, s.to); err != nil {
-		t.Fatal(err)
-	}
+	refreshed(t, db, &c, s)
 	store(now.Add(-2 * time.Minute)) // trims the sample at -10
-	if err := c.refresh(ctx, db, s.history, s.to); err != nil {
-		t.Fatal(err)
-	}
-	if got := c.before(s.to); len(got.Activity) != 2 || !got.Activity[0].Event.Time.Equal(now.Add(-5*time.Minute)) {
+	got, want := refreshed(t, db, &c, s)
+	if len(got.Activity) != 2 || !got.Activity[0].Event.Time.Equal(now.Add(-5*time.Minute)) || diffEvents(got, want) != "" {
 		t.Fatalf("cache holds %d samples (first %v), want the 2 the table keeps", len(got.Activity), got.Activity)
 	}
 }
 
 // A row stored with a time past the cached range (more than futureSlack
 // ahead) is not read when it arrives. When the window later moves over it
-// one minute at a time, it must be read then: the cache can't rely on ids
-// alone for rows it skipped by time.
+// one minute at a time, it must be read then: the cache can't rely on
+// sequence numbers alone for rows it skipped by time.
 func TestEventCacheRowAheadOfWindow(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 11, 20, 12, 0, 5, 0, time.UTC)
@@ -194,10 +217,7 @@ func TestEventCacheRowAheadOfWindow(t *testing.T) {
 	}
 	var c eventCache
 	for range 100 {
-		s := spanAt(now)
-		if err := c.refresh(ctx, db, s.history, s.to); err != nil {
-			t.Fatal(err)
-		}
+		refreshed(t, db, &c, spanAt(now))
 		now = now.Add(time.Minute)
 	}
 	if got := c.before(now); len(got.Activity) != 1 || !got.Activity[0].Event.Time.Equal(ahead) {

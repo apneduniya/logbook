@@ -7,6 +7,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/apneduniya/logbook/pkg/evidence"
 )
 
 // logCounter counts log records whose message contains a word.
@@ -59,6 +61,10 @@ func TestClockBehindSealedDayPausesCrediting(t *testing.T) {
 	e.run() // registers the device on the 19th
 	e.set(time.Date(2026, 11, 20, 1, 0, 5, 0, time.UTC))
 	e.run()
+	// The first run after the jump measures the server's clock again; the
+	// next one makes minutes final, up to 00:32.
+	e.advance(time.Minute)
+	e.run()
 	id := e.deviceID()
 	if days := e.srv.storedDays(id); len(days) != 1 || days[0].Day != "2026-11-19" {
 		t.Fatalf("server days = %+v, want the 19th sealed", days)
@@ -86,26 +92,29 @@ func TestClockBehindSealedDayPausesCrediting(t *testing.T) {
 		t.Fatalf("%d log lines about the clock, want 1", n)
 	}
 
-	// The clock catches up a little past the sealed day: crediting resumes,
-	// and minutes of the sealed day in the window are left alone.
-	e.set(time.Date(2026, 11, 20, 0, 10, 5, 0, time.UTC))
+	// The clock catches up past the sealed day: crediting resumes. Minutes
+	// of the sealed day in the window are left alone, and so are the
+	// minutes the run at 01:01 made final (up to 00:32), even empty ones.
+	e.set(time.Date(2026, 11, 20, 0, 40, 5, 0, time.UTC))
 	e.credit(time.Date(2026, 11, 19, 23, 50, 0, 0, time.UTC), "app", 60)
 	e.credit(time.Date(2026, 11, 20, 0, 5, 0, 0, time.UTC), "app", 60)
+	e.credit(time.Date(2026, 11, 20, 0, 35, 0, 0, time.UTC), "app", 60)
 	e.run()
 	s = e.status()
 	if s.Minutes.Clock != "" || s.Minutes.SealedRejected != 0 || s.Minutes.Rejected != 0 || s.Minutes.Waiting != 0 {
 		t.Fatalf("status after the clock caught up = %+v", s.Minutes)
 	}
-	e.wantServerMinute(time.Date(2026, 11, 20, 0, 5, 0, 0, time.UTC), "app", 60)
-	for _, m := range []time.Time{time.Date(2026, 11, 19, 23, 30, 0, 0, time.UTC), time.Date(2026, 11, 19, 23, 50, 0, 0, time.UTC)} {
+	e.wantServerMinute(time.Date(2026, 11, 20, 0, 35, 0, 0, time.UTC), "app", 60)
+	for _, m := range []time.Time{time.Date(2026, 11, 19, 23, 30, 0, 0, time.UTC), time.Date(2026, 11, 19, 23, 50, 0, 0, time.UTC),
+		time.Date(2026, 11, 20, 0, 5, 0, 0, time.UTC)} {
 		if _, ok := e.srv.minute(id, m, "app"); ok {
-			t.Fatalf("minute %s of the sealed day was sent", m.Format(time.RFC3339))
+			t.Fatalf("minute %s, sealed or final, was sent", m.Format(time.RFC3339))
 		}
 	}
-	// Paused, resumed, and the minutes final by the later clock computed
-	// again (ADR 0016).
-	if n := logs.count(); n != 3 {
-		t.Fatalf("%d log lines about the clock, want 3 (paused, resumed, final minutes recomputed)", n)
+	// Paused and resumed; final minutes stay final whatever the clock did
+	// (ADR 0017), so nothing else is said.
+	if n := logs.count(); n != 2 {
+		t.Fatalf("%d log lines about the clock, want 2 (paused, resumed)", n)
 	}
 }
 
@@ -153,8 +162,11 @@ func TestClockJumpAheadSealsNothing(t *testing.T) {
 		t.Fatalf("server days = %+v", days)
 	}
 
-	// When the 20th really ends, it is sealed as usual.
+	// When the 20th really ends, it is sealed as usual (the first run
+	// after the jump measures the server's clock again).
 	e.set(time.Date(2026, 11, 21, 1, 0, 5, 0, time.UTC))
+	e.run()
+	e.advance(time.Minute)
 	e.run()
 	if days := e.srv.storedDays(id); len(days) != 1 || days[0].Day != "2026-11-20" {
 		t.Fatalf("server days = %+v, want the 20th", days)
@@ -196,6 +208,10 @@ func TestSealingNeedsServerTime(t *testing.T) {
 			e.set(time.Date(2026, 11, 23, 1, 10, 5, 0, time.UTC))
 			e.credit(time.Date(2026, 11, 23, 0, 39, 0, 0, time.UTC), "app", 60)
 			e.run()
+			// The first run after the jump measures the server's clock
+			// again; minutes become final from the next one.
+			e.advance(time.Minute)
+			e.run()
 			days := e.srv.storedDays(id)
 			if !tt.seal {
 				if len(days) != 0 {
@@ -213,16 +229,67 @@ func TestSealingNeedsServerTime(t *testing.T) {
 
 				// The server's time is usable again: the days are sealed in order.
 				e.srv.set(func(f *fakeServer) { f.serverTime, f.offset = "", 0 })
-				e.advance(time.Minute)
-				e.run()
+				for range 2 {
+					e.advance(time.Minute)
+					e.run()
+				}
 				days = e.srv.storedDays(id)
 			}
-			if len(days) != 2 || days[0].Day != "2026-11-20" || days[1].Day != "2026-11-22" {
-				t.Fatalf("server days = %+v, want the 20th and the 22nd", days)
+			// The 20th's block holds every row logged so far; the 21st and
+			// the 22nd have none left and are skipped.
+			if len(days) != 1 || days[0].Day != "2026-11-20" || days[0].EventCounts[evidence.TypeHeartbeat] != 2 {
+				t.Fatalf("server days = %+v, want the 20th with both days' rows", days)
+			}
+			if v, err := e.db.Get(t.Context(), keySealedThrough); err != nil || v != "2026-11-22" {
+				t.Fatalf("sealed through %q (%v), want 2026-11-22", v, err)
 			}
 			if s := e.status(); s.Minutes.Clock != "" {
 				t.Fatalf("status clock = %q once the clocks agree", s.Minutes.Clock)
 			}
 		})
+	}
+}
+
+// A clock running two hours ahead (a dual-boot machine reading the RTC as
+// local time, say) never makes minutes final that haven't happened yet:
+// finality goes by the server's clock. When the clock is right again, real
+// work in those minutes is computed, uploaded and made final as usual.
+func TestClockAheadMakesNoFutureMinuteFinal(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t, at("12:00").Add(5*time.Second))
+	e.options = func(o *Options) { o.Settle = 15 * time.Minute }
+	e.open()
+	e.run()
+	ahead := 2 * time.Hour
+	e.srv.set(func(f *fakeServer) { f.offset = -ahead })
+	for i := range 50 {
+		e.set(at("12:01").Add(5*time.Second + time.Duration(i)*time.Minute + ahead))
+		e.run()
+	}
+	e.srv.set(func(f *fakeServer) { f.offset = 0 })
+	e.credit(at("13:30"), "app", 60)
+	for i := range 80 {
+		e.set(at("12:50").Add(5*time.Second + time.Duration(i)*time.Minute))
+		e.run()
+	}
+	e.wantServerMinute(at("13:30"), "app", 60)
+	rows, err := e.db.StoredMinutes(ctx, at("13:30"), at("13:31"))
+	if err != nil || len(rows) != 1 || !rows[0].Final || !rows[0].Acknowledged {
+		t.Fatalf("13:30 = %+v, %v; want final and acknowledged", rows, err)
+	}
+}
+
+func TestFinalityOffsetIgnoresLatency(t *testing.T) {
+	for _, tc := range []struct{ ahead, want time.Duration }{
+		{-time.Hour, 0},
+		{0, 0},
+		{300 * time.Millisecond, 0}, // request latency, not a clock ahead
+		{aheadSlack, 0},
+		{aheadSlack + time.Second, aheadSlack + time.Second},
+		{2 * time.Hour, 2 * time.Hour},
+	} {
+		if got := finalityOffset(tc.ahead); got != tc.want {
+			t.Errorf("finalityOffset(%v) = %v, want %v", tc.ahead, got, tc.want)
+		}
 	}
 }

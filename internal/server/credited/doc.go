@@ -16,8 +16,13 @@
 //     heartbeat project (pkg/projectname) and then at most 256 bytes; the
 //     label is you, agent or idle; credited is 0..60 and 0 unless the label
 //     is you; cuts and flags are short codes, and multi_device is never
-//     accepted (only the server sets it);
-//   - sending exactly the stored values again is always accepted;
+//     accepted (only the server sets it); every item, removals included,
+//     carries its computation key (ADR 0017): computed_at, RFC 3339 in UTC
+//     on a whole minute with the minute in [computed_at - 60 min,
+//     computed_at), and snapshot, an integer >= 0. The key is stored with
+//     the row; a changed key is a change like a changed value;
+//   - sending exactly the stored values again, key included, is always
+//     accepted;
 //   - the minute is on or after the UTC day the device was registered, and
 //     not in a UTC day the device has sealed with an evidence record, so a
 //     new key can't write history for closed days;
@@ -29,7 +34,13 @@
 //     sent at any time, so an offline agent can catch up; if its catch-up
 //     splits a minute across batches, more projects are accepted for
 //     CatchUpWindow after the minute's first upload, but only when every
-//     row of it was first uploaded after it was final;
+//     row of it was first uploaded after it was final and the new project
+//     carries the key of the stored rows (ADR 0017: one computation per
+//     device-minute). An item refused
+//     because its minute is final comes back with "stored": every row the
+//     device holds for that minute after the batch, sorted by project, with
+//     its key (null for rows stored before ADR 0017), so the agent can
+//     adopt the server's value;
 //   - one device stores at most MaxProjectsPerMinute projects per minute,
 //     which bounds rows per device-minute whatever their credit. The engine
 //     (pkg/struggle) never emits more, so this only stops other clients;

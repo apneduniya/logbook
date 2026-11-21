@@ -2,9 +2,8 @@ package crediting
 
 import (
 	"context"
-	"errors"
+	"encoding/json"
 	"fmt"
-	"maps"
 	"strings"
 	"time"
 
@@ -16,24 +15,27 @@ import (
 )
 
 // retentionDays is how far back a day can still be sealed: raw events are
-// kept for 90 days, so older days can't be reproduced.
+// kept for 90 days.
 const retentionDays = 89
 
 // sealAndUploadDays advances the device's evidence chain: it re-sends a day
 // that was sealed but not yet accepted, then seals and uploads each ended
-// day in order, up to maxDaysPerRun. Days without any events are skipped (a
-// gap, which the server allows). The chain moves only when the server
-// accepts a day; a conflict or rejection stops it for good and is shown in
-// status, so a chain is never forked silently.
+// day in order, up to maxDaysPerRun. A day's block seals the log rows that
+// arrived since the previous block (ADR 0017), whatever their time; a day
+// whose range holds no rows is skipped (a gap, which the server allows).
+// The chain moves only when the server accepts a day; a conflict or
+// rejection stops it for good and is shown in status, so a chain is never
+// forked silently.
 //
-// The server refuses first-time minutes in a sealed day, so a new day is
-// sealed only when mayseal (this run's minute uploads went through, not on
-// hold or refused) and the server has answered for every stored minute of
-// it. Otherwise the day waits for a later run. No day is sealed or skipped
-// unless this run read the server's clock and it agrees with the system
-// clock (sealingClock). The engine never writes
-// minutes into a sealable day again: its window is the last hour, and a day
-// becomes sealable DayGrace (an hour) after it ends.
+// The server refuses first-time minutes in a sealed day, so a day is sealed
+// only when (ADR 0013):
+//   - it has ended plus DayGrace by both the system clock and the server's,
+//     and the two agree to within MaxClockSkew (sealingClock);
+//   - every stored minute up to its end is final and acknowledged, so every
+//     key of its minutes is at or below the block's end;
+//   - this run's minute uploads went through (mayseal).
+//
+// Otherwise the day waits for a later run.
 func (r *Runner) sealAndUploadDays(ctx context.Context, t serverapi.Target, dev devicekey.Device, now time.Time, mayseal bool) error {
 	last, ok, err := r.opt.Store.LastEvidenceDay(ctx, dev.ID)
 	if err != nil {
@@ -51,10 +53,15 @@ func (r *Runner) sealAndUploadDays(ctx context.Context, t serverapi.Target, dev 
 		return nil
 	}
 
-	prev := ""
+	prev := block{}
 	day := utcDay(dev.RegisteredAt)
 	if ok {
-		prev, day = last.ChainHash, nextDay(last.Day)
+		prev, day = block{chainHash: last.ChainHash}, nextDay(last.Day)
+		if !last.Legacy {
+			// A legacy day covered rows by event time; the next block
+			// starts again at the oldest retained row.
+			prev.seqTo = last.SeqTo
+		}
 	}
 	if cursor, err := r.cursor(ctx, dev.ID); err != nil {
 		return err
@@ -79,30 +86,21 @@ func (r *Runner) sealAndUploadDays(ctx context.Context, t serverapi.Target, dev 
 		return nil
 	}
 	end := lastSealableDay(at)
-	ft, err := r.opt.Store.FinalThrough(ctx)
-	if err != nil {
-		return err
-	}
 	for sealed := 0; day <= end && sealed < maxDaysPerRun; day = nextDay(day) {
-		// A day's minutes must all be final, with their cutoffs recorded,
-		// before it is sealed: after a restart they settle first.
-		if _, dayEnd, err := evidence.DayBounds(day); err != nil || ft.Before(dayEnd) {
-			if err == nil {
-				r.opt.Logger.DebugContext(ctx, "evidence day waits for its minutes to be final", "day", day)
-			}
-			return err
-		}
 		if waiting, err := r.minutesWaiting(ctx, day); err != nil || waiting > 0 {
 			if waiting > 0 {
-				r.opt.Logger.DebugContext(ctx, "evidence day waits for its minutes", "day", day, "minutes", waiting)
+				r.opt.Logger.DebugContext(ctx, "evidence day waits for its minutes to be final and acknowledged", "day", day, "rows", waiting)
 			}
 			return err
 		}
-		e, empty, err := r.sealDay(ctx, dev, day, prev)
+		e, outcome, err := r.sealDay(ctx, dev, day, prev)
 		if err != nil {
 			return err
 		}
-		if empty {
+		if outcome == sealUnfinished {
+			return nil // the block is still being hashed; it goes on next run
+		}
+		if outcome == sealEmpty {
 			if err := r.markSealed(ctx, day, localdb.KV{Key: keyEvidenceCursor, Value: dev.ID + " " + day}); err != nil {
 				return err
 			}
@@ -119,20 +117,28 @@ func (r *Runner) sealAndUploadDays(ctx context.Context, t serverapi.Target, dev 
 		if cur.State != localdb.EvidenceAccepted {
 			return nil // conflict or rejected: the chain stops here
 		}
-		prev = cur.ChainHash
+		prev = block{chainHash: cur.ChainHash, seqTo: cur.SeqTo}
 	}
 	return nil
 }
 
-// minutesWaiting counts stored minutes up to the end of day the server
-// hasn't answered for. Earlier days count too: they must reach the server
+// block is where the device's chain stands: the previous block's chain
+// hash ("" before the first) and the last sequence number it sealed (0
+// before the first, or after a legacy day).
+type block struct {
+	chainHash string
+	seqTo     int64
+}
+
+// minutesWaiting counts stored rows up to the end of day that are open or
+// not acknowledged. Earlier days count too: they must reach the server
 // before a later day seals anything.
 func (r *Runner) minutesWaiting(ctx context.Context, day string) (int64, error) {
 	_, end, err := evidence.DayBounds(day)
 	if err != nil {
 		return 0, err
 	}
-	return r.opt.Store.UnsentMinutesBefore(ctx, end)
+	return r.opt.Store.MinutesPendingBefore(ctx, end)
 }
 
 // cursor returns the last day scanned for dev, or "".
@@ -148,115 +154,143 @@ func (r *Runner) cursor(ctx context.Context, deviceID string) (string, error) {
 	return day, nil
 }
 
-// sealDay hashes and signs one day's events and stores it as pending.
-// empty is true (and nothing is stored) when the day has no events.
-func (r *Runner) sealDay(ctx context.Context, dev devicekey.Device, day, prev string) (localdb.EvidenceDay, bool, error) {
-	start, end, err := evidence.DayBounds(day)
+// sealOutcome is what sealDay did.
+type sealOutcome int
+
+const (
+	sealDone       sealOutcome = iota // sealed and stored as pending
+	sealEmpty                         // the range has no rows: nothing stored
+	sealUnfinished                    // the block is large; hashing goes on next run
+)
+
+// sealProgress is a block being hashed over several runs: the rows after
+// `after` (the previous block's end) up to `through` are in the hash, and
+// from is the block's first sequence number (0 until a row is seen, for a
+// device's first block). It is kept (keyEvidenceProgress) only for the
+// device and the previous block it was started for.
+type sealProgress struct {
+	Device  string `json:"device"`
+	After   int64  `json:"after"`
+	From    int64  `json:"from"`
+	Through int64  `json:"through"`
+	Hash    []byte `json:"hash"`
+
+	hasher *evidence.Hasher
+}
+
+// sealDay seals the log rows after prev as day's block, signs it and
+// stores it as pending. Rows are read and hashed in chunks of sealChunk
+// sequence numbers, at most sealChunks per run: a device's first block can
+// hold 90 days of rows, more than one run should hold in memory or hash in
+// its time. Progress is kept between runs. This is sound because rows in
+// the range are never updated, and none can be deleted before they are
+// sealed. The block's end, H_D, is the high-water mark of the snapshot that
+// reads its last chunk. It returns sealEmpty (storing nothing) when the
+// range has no rows.
+func (r *Runner) sealDay(ctx context.Context, dev devicekey.Device, day string, prev block) (localdb.EvidenceDay, sealOutcome, error) {
+	p, err := r.sealProgress(ctx, dev.ID, prev.seqTo)
 	if err != nil {
-		return localdb.EvidenceDay{}, false, err
+		return localdb.EvidenceDay{}, 0, err
 	}
-	hw, err := r.opt.Store.HighWater(ctx)
-	if err != nil {
-		return localdb.EvidenceDay{}, false, err
-	}
-	var active []struggle.ActiveTime
-	if r.opt.ActiveTimes != nil {
-		// Datapoints belong to the day their To is in; read a little either
-		// side in case the source filters by From.
-		if active, err = r.opt.ActiveTimes.ActiveTimes(ctx, start.Add(-time.Hour), end.Add(time.Hour)); err != nil {
-			return localdb.EvidenceDay{}, false, fmt.Errorf("reading active time for %s: %w", day, err)
+	var high int64
+	done := false
+	for range r.sealChunks {
+		err := r.opt.Store.View(ctx, func(s *localdb.Snapshot) error {
+			high = s.H
+			// Skip to the next row: a range can have long gaps (pruning).
+			next, err := s.OldestAbove(ctx, p.Through)
+			if err != nil {
+				return err
+			}
+			if next == 0 {
+				p.Through, done = s.H, true
+				return nil
+			}
+			upto := min(s.H, next-1+r.sealChunk)
+			rows, err := s.Rows(ctx, next-1, upto)
+			if err != nil {
+				return err
+			}
+			if err := p.hasher.Add(rows); err != nil {
+				return fmt.Errorf("hashing evidence: %w", err)
+			}
+			if p.From == 0 {
+				p.From = next // a device's first block starts at the oldest retained row
+			}
+			p.Through, done = upto, upto == s.H
+			return nil
+		})
+		if err != nil {
+			return localdb.EvidenceDay{}, 0, fmt.Errorf("reading the log to seal %s: %w", day, err)
+		}
+		if done {
+			break
 		}
 	}
-	// The cutoffs of the day's minutes, which are all final by now, so
-	// ReplayDayCredit uses exactly the agent's.
-	cutoffs, err := r.opt.Store.CutoffsBetween(ctx, start, end)
-	if err != nil {
-		return localdb.EvidenceDay{}, false, err
+	if !done {
+		if err := r.saveSealProgress(ctx, p); err != nil {
+			return localdb.EvidenceDay{}, 0, err
+		}
+		r.opt.Logger.InfoContext(ctx, "hashing a large evidence block; it goes on next run", "day", day, "through", p.Through)
+		return localdb.EvidenceDay{}, sealUnfinished, nil
 	}
-	if cutoffs == nil {
-		cutoffs = []localdb.CutoffRange{}
+	if err := r.opt.Store.SetMany(ctx, localdb.KV{Key: keyEvidenceProgress, Value: ""}); err != nil {
+		return localdb.EvidenceDay{}, 0, err
 	}
-	// What is hashed is exactly what ReplayDay rebuilds from the stored day:
-	// raw event rows up to hw, and these active-time records, kept as is.
-	e := localdb.EvidenceDay{DeviceID: dev.ID, Day: day, PrevChainHash: prev, HighWater: hw,
-		ActiveTime: evidenceActiveTimes(active, start, end), Cutoffs: cutoffs, RulesVersion: struggle.RulesVersion,
-		State: localdb.EvidencePending}
-	events, err := dayEvents(ctx, r.opt.Store, e)
-	if err != nil {
-		return localdb.EvidenceDay{}, false, err
+	if p.hasher.Rows() == 0 {
+		return localdb.EvidenceDay{}, sealEmpty, nil
 	}
-	counts := evidence.Counts(events)
-	total := 0
-	for _, n := range counts {
-		total += n
-	}
-	if total == 0 {
-		return localdb.EvidenceDay{}, true, nil
-	}
-	content, err := evidence.ContentHash(events)
-	if err != nil {
-		return localdb.EvidenceDay{}, false, fmt.Errorf("hashing evidence for %s: %w", day, err)
-	}
-	d := evidence.Day{DeviceID: dev.ID, Day: day, PrevChainHash: prev, ContentHash: content, RulesVersion: e.RulesVersion}
+	d := evidence.Day{DeviceID: dev.ID, Day: day, PrevChainHash: prev.chainHash, ContentHash: p.hasher.Sum(), RulesVersion: struggle.RulesVersion}
 	chain, sig, err := dev.Key.Sign(d)
 	if err != nil {
-		return localdb.EvidenceDay{}, false, fmt.Errorf("signing evidence for %s: %w", day, err)
+		return localdb.EvidenceDay{}, 0, fmt.Errorf("signing evidence for %s: %w", day, err)
 	}
-	e.ContentHash, e.ChainHash, e.Signature, e.EventCounts = content, chain, sig, counts
+	e := localdb.EvidenceDay{DeviceID: dev.ID, Day: day, PrevChainHash: prev.chainHash, ContentHash: d.ContentHash,
+		ChainHash: chain, Signature: sig, RulesVersion: d.RulesVersion, EventCounts: p.hasher.Counts(),
+		SeqFrom: p.From, SeqTo: high, State: localdb.EvidencePending}
 	if err := r.opt.Store.InsertEvidenceDay(ctx, e); err != nil {
-		return localdb.EvidenceDay{}, false, err
+		return localdb.EvidenceDay{}, 0, err
 	}
 	if err := r.markSealed(ctx, day); err != nil {
-		return localdb.EvidenceDay{}, false, err
+		return localdb.EvidenceDay{}, 0, err
 	}
-	r.opt.Logger.InfoContext(ctx, "sealed evidence day", "day", day, "events", total)
-	return e, false, nil
+	r.opt.Logger.InfoContext(ctx, "sealed evidence day", "day", day, "rows", p.hasher.Rows(), "seq_from", p.From, "seq_to", high)
+	return e, sealDone, nil
 }
 
-// EventReader reads raw local events. *localdb.DB satisfies it.
-type EventReader interface {
-	EventsBetween(ctx context.Context, from, to time.Time, upto *localdb.HighWater) (localdb.Events, error)
+// sealProgress returns the saved progress of the block after `after` for
+// device, or a fresh start. A block that isn't a device's first starts
+// right after the previous one.
+func (r *Runner) sealProgress(ctx context.Context, device string, after int64) (sealProgress, error) {
+	fresh := sealProgress{Device: device, After: after, Through: after, hasher: evidence.NewHasher()}
+	if after > 0 {
+		fresh.From = after + 1
+	}
+	v, err := r.opt.Store.Get(ctx, keyEvidenceProgress)
+	if err != nil || v == "" {
+		return fresh, err
+	}
+	var p sealProgress
+	if json.Unmarshal([]byte(v), &p) != nil || p.Device != device || p.After != after || p.Through < after {
+		return fresh, nil // another block's, or unreadable: start over
+	}
+	p.hasher = evidence.NewHasher()
+	if p.hasher.UnmarshalBinary(p.Hash) != nil {
+		return fresh, nil
+	}
+	return p, nil
 }
 
-// ErrNotReproducible is returned by ReplayDay when a sealed day's events
-// can no longer be rebuilt locally (pruned, trimmed, or sealed before the
-// agent kept active-time records).
-var ErrNotReproducible = errors.New("sealed day can no longer be rebuilt from local data")
-
-// ReplayDay rebuilds the events a sealed day's content hash covers: every
-// raw event row of the day up to the day's high-water ids, and the
-// active-time records kept with it. Events that arrived after sealing, and
-// later changes to derived values, don't change the result, so hashing it
-// gives the sealed content hash (ADR 0013). It returns ErrNotReproducible
-// when local data no longer holds the day as sealed.
-func ReplayDay(ctx context.Context, events EventReader, e localdb.EvidenceDay) (evidence.DayEvents, error) {
-	if e.ActiveTime == nil && e.EventCounts[evidence.TypeActiveTime] > 0 {
-		return evidence.DayEvents{}, fmt.Errorf("%s: active time not kept: %w", e.Day, ErrNotReproducible)
+func (r *Runner) saveSealProgress(ctx context.Context, p sealProgress) error {
+	var err error
+	if p.Hash, err = p.hasher.MarshalBinary(); err != nil {
+		return err
 	}
-	out, err := dayEvents(ctx, events, e)
+	b, err := json.Marshal(p)
 	if err != nil {
-		return evidence.DayEvents{}, err
+		return fmt.Errorf("saving evidence progress: %w", err)
 	}
-	if got := evidence.Counts(out); !maps.Equal(got, e.EventCounts) {
-		return evidence.DayEvents{}, fmt.Errorf("%s: event counts %v, sealed %v: %w", e.Day, got, e.EventCounts, ErrNotReproducible)
-	}
-	return out, nil
-}
-
-// dayEvents is the day's content: raw rows up to e.HighWater plus
-// e.ActiveTime.
-func dayEvents(ctx context.Context, events EventReader, e localdb.EvidenceDay) (evidence.DayEvents, error) {
-	start, end, err := evidence.DayBounds(e.Day)
-	if err != nil {
-		return evidence.DayEvents{}, err
-	}
-	hw := e.HighWater
-	ev, err := events.EventsBetween(ctx, start, end, &hw)
-	if err != nil {
-		return evidence.DayEvents{}, err
-	}
-	return evidence.DayEvents{Day: e.Day, Activity: ev.Activity, Heartbeats: ev.Heartbeats, AI: ev.AI, Git: ev.Git,
-		ActiveTime: e.ActiveTime}, nil
+	return r.opt.Store.SetMany(ctx, localdb.KV{Key: keyEvidenceProgress, Value: string(b)})
 }
 
 // uploadDay sends a sealed day and records the answer. Conflicts and

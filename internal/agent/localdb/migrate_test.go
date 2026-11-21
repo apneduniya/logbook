@@ -3,16 +3,17 @@ package localdb
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"path/filepath"
 	"strconv"
 	"testing"
 	"time"
 )
 
-// Migration 0006 gives rows stored before it, whose arrival is unknown,
-// their own event time as the arrival, and credited minutes the cutoff the
-// old pipeline last rewrote them at (minute + 29 minutes).
-func TestMigration0006Backfill(t *testing.T) {
+// openAt builds a database at migration version, runs stmts on it, and then
+// opens it with Open, which applies the rest.
+func openAt(t *testing.T, version int, stmts ...string) *DB {
+	t.Helper()
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "logbook.db")
 	raw, err := sql.Open("sqlite", path)
@@ -23,41 +24,151 @@ func TestMigration0006Backfill(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	stmts := []string{qCreateMigrations}
+	all := []string{qCreateMigrations}
 	for _, m := range ms {
-		if m.version < 6 {
-			stmts = append(stmts, m.sql, "INSERT INTO schema_migrations VALUES ("+strconv.Itoa(m.version)+", 0)")
+		if m.version <= version {
+			all = append(all, m.sql, "INSERT INTO schema_migrations VALUES ("+strconv.Itoa(m.version)+", 0)")
 		}
 	}
-	at := testNow.Add(-time.Hour).UnixMilli()
-	minute := testNow.Add(-time.Hour).Unix()
-	stmts = append(stmts,
-		"INSERT INTO activity_samples (time, idle_seconds, focus_kind) VALUES ("+strconv.FormatInt(at, 10)+", 1, 'editor')",
-		"INSERT INTO heartbeats (time, fields_hash, payload) VALUES ("+strconv.FormatInt(at, 10)+", x'01', '{}')",
-		"INSERT INTO ai_events (time, harness, kind) VALUES ("+strconv.FormatInt(at, 10)+", 'codex', 'prompt_submit')",
-		"INSERT INTO credited_minutes (minute, project, label, credited, cuts, flags, rules_version, digest) VALUES ("+
-			strconv.FormatInt(minute, 10)+", 'app', 'you', 60, '[]', '[]', 'v1', 'd')",
-	)
-	for _, s := range stmts {
+	for _, s := range append(all, stmts...) {
 		if _, err := raw.ExecContext(ctx, s); err != nil {
 			t.Fatalf("%s: %v", s, err)
 		}
 	}
 	_ = raw.Close()
-
 	d, err := Open(ctx, path, WithClock(func() time.Time { return testNow }))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = d.Close() })
-	for _, table := range []string{"activity_samples", "heartbeats", "ai_events"} {
-		var arrived int64
-		if err := d.sql.QueryRowContext(ctx, "SELECT arrived_at FROM "+table).Scan(&arrived); err != nil || arrived != at {
-			t.Fatalf("%s arrived_at = %d, %v; want the event time %d", table, arrived, err, at)
+	return d
+}
+
+// Migration 0007 numbers existing rows in arrival order (arrived_at, then
+// table, then id), keeps answered credited minutes as final, acknowledged
+// and unkeyed, drops ones never sent, turns ones changed since their upload
+// into removal probes, carries the old final watermark over as a final
+// span, and marks sealed days legacy.
+func TestMigration0007(t *testing.T) {
+	ctx := context.Background()
+	ms := func(m int) string { return strconv.FormatInt(minute(m).UnixMilli(), 10) }
+	sec := func(m int) string { return strconv.FormatInt(minute(m).Unix(), 10) }
+	d := openAt(t, 6,
+		// Arrivals: activity -10 (id 1), heartbeat -10, ai -20, git -5,
+		// activity -30 (id 2), active time -10, repo -15.
+		"INSERT INTO activity_samples (time, idle_seconds, focus_kind, arrived_at) VALUES ("+ms(-11)+", 1, 'editor', "+ms(-10)+")",
+		"INSERT INTO activity_samples (time, idle_seconds, focus_kind, arrived_at) VALUES ("+ms(-31)+", 1, 'editor', "+ms(-30)+")",
+		"INSERT INTO heartbeats (time, fields_hash, payload, arrived_at) VALUES ("+ms(-11)+", x'01', '{}', "+ms(-10)+")",
+		"INSERT INTO ai_events (time, harness, kind, arrived_at) VALUES ("+ms(-21)+", 'codex', 'prompt_submit', "+ms(-20)+")",
+		"INSERT INTO git_events (time, project, kind, files_changed, insertions, deletions, arrived_at) VALUES ("+ms(-6)+", 'app', 'worktree', 1, 1, 1, "+ms(-5)+")",
+		"INSERT INTO active_time (from_ms, to_ms, session_id, type, secs, arrived_at) VALUES ("+ms(-12)+", "+ms(-11)+", 's', 'user', 3, "+ms(-10)+")",
+		"INSERT INTO repo_map (since, path, project) VALUES ("+ms(-15)+", '/src/app', 'app')",
+		// Credited minutes: answered (final), answered (open, accepted),
+		// and one the server never answered for.
+		"INSERT INTO credited_minutes (minute, project, label, credited, cuts, flags, rules_version, digest, sent_digest, sent_final, cutoff) VALUES ("+
+			sec(-50)+", 'a', 'you', 60, '[]', '[]', 'v1', 'd1', 'd0', 1, 0)",
+		"INSERT INTO credited_minutes (minute, project, label, credited, cuts, flags, rules_version, digest, sent_digest, sent_final, cutoff) VALUES ("+
+			sec(-10)+", 'a', 'you', 30, '[]', '[]', 'v1', 'd2', 'd2', 0, 0)",
+		"INSERT INTO credited_minutes (minute, project, label, credited, cuts, flags, rules_version, digest, sent_digest, sent_final, cutoff) VALUES ("+
+			sec(-9)+", 'a', 'you', 30, '[]', '[]', 'v1', 'd3', '', 0, 0)",
+		// Uploaded as d4, changed to d5 since and not sent again.
+		"INSERT INTO credited_minutes (minute, project, label, credited, cuts, flags, rules_version, digest, sent_digest, sent_final, cutoff) VALUES ("+
+			sec(-12)+", 'a', 'you', 30, '[]', '[\"low_signal\"]', 'v1', 'd5', 'd4', 0, 0)",
+		// Uploaded in a day the old chain sealed: the server takes no write
+		// there, so it stays as stored.
+		"INSERT INTO credited_minutes (minute, project, label, credited, cuts, flags, rules_version, digest, sent_digest, sent_final, cutoff) VALUES ("+
+			strconv.FormatInt(time.Date(2026, 11, 19, 23, 0, 0, 0, time.UTC).Unix(), 10)+", 'a', 'you', 60, '[]', '[]', 'v1', 'd6', 'd6', 1, 0)",
+		"INSERT INTO kv (key, value, updated_at) VALUES ('device.id', 'dev-1', 0)",
+		"INSERT INTO kv (key, value, updated_at) VALUES ('crediting.final_through', '"+minute(-40).Format(time.RFC3339)+"', 0)",
+		"INSERT INTO credit_cutoffs (from_minute, to_minute, cutoff) VALUES ("+sec(-50)+", "+sec(-45)+", 0)",
+		"INSERT INTO evidence_days (device_id, day, prev_chain_hash, content_hash, chain_hash, signature, rules_version, "+
+			"event_counts, hw_heartbeats, hw_ai, hw_activity, hw_git, state, created_at, updated_at) "+
+			"VALUES ('dev', '2026-11-19', '', 'c', 'h', x'01', 'v1', '{}', 1, 1, 1, 1, 'accepted', 0, 0)",
+	)
+	// Arrival order: activity id 2 (-30), ai (-20), repo (-15), then the
+	// ties at -10 by table name (active_time, activity_samples id 1,
+	// heartbeats), then git (-5).
+	wantSeq := map[string][]int64{
+		"activity_samples": {5, 1}, // by id
+		"ai_events":        {2},
+		"repo_map":         {3},
+		"active_time":      {4},
+		"heartbeats":       {6},
+		"git_events":       {7},
+	}
+	for table, want := range wantSeq {
+		var got []int64
+		if err := queryRows(ctx, d.sql, "SELECT seq FROM "+table+" ORDER BY id", nil, func(r *sql.Rows) error { //nolint:gosec // fixed table names
+			var s int64
+			if err := r.Scan(&s); err != nil {
+				return err
+			}
+			got = append(got, s)
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if fmt.Sprint(got) != fmt.Sprint(want) {
+			t.Errorf("%s seq = %v, want %v", table, got, want)
 		}
 	}
-	rows, err := d.StoredMinutes(ctx, time.Unix(minute, 0), time.Unix(minute+60, 0))
-	if err != nil || len(rows) != 1 || !rows[0].Cutoff.Equal(time.Unix(minute, 0).Add(29*time.Minute)) {
-		t.Fatalf("credited minute after migration = %+v, %v", rows, err)
+	if h := high(ctx, t, d); h != 7 {
+		t.Fatalf("log.seq = %d, want 7", h)
+	}
+	if _, err := d.sql.ExecContext(ctx, "SELECT arrived_at FROM heartbeats"); err == nil {
+		t.Fatal("arrived_at still exists")
+	}
+	sealedDay, err := d.StoredMinutes(ctx, time.Date(2026, 11, 19, 0, 0, 0, 0, time.UTC), time.Date(2026, 11, 20, 0, 0, 0, 0, time.UTC))
+	if err != nil || len(sealedDay) != 1 || !sealedDay[0].Final || !sealedDay[0].Acknowledged || !sealedDay[0].Key.IsZero() ||
+		sealedDay[0].Credited != 60 {
+		t.Fatalf("row in a sealed day = %+v, %v; want it kept final, acknowledged and unkeyed", sealedDay, err)
+	}
+	rows, err := d.StoredMinutes(ctx, minute(-60), minute(0))
+	if err != nil || len(rows) != 3 {
+		t.Fatalf("credited minutes = %+v, %v; want three probes (the never-sent row dropped)", rows, err)
+	}
+	// Every row that was sent outside a sealed day becomes a removal probe,
+	// final and waiting to be sent, so the server answers with what it
+	// holds: the old agent recorded refused uploads like accepted ones.
+	for i, want := range []int{-50, -12, -10} {
+		probe := rows[i]
+		if !probe.Minute.Equal(minute(want)) || probe.Label != "idle" || probe.Credited != 0 || len(probe.Flags) != 0 ||
+			!probe.Final || probe.Acknowledged || probe.Key != (Key{T: minute(want + 1), H: 0}) {
+			t.Fatalf("probe %d = %+v", want, probe)
+		}
+	}
+	unsent, err := d.UnsentMinutes(ctx, time.Time{}, minute(0), 100)
+	if err != nil || len(unsent) != 3 {
+		t.Fatalf("unsent after migrating = %+v, %v; want the three probes", unsent, err)
+	}
+	for _, c := range []struct {
+		m    int
+		want bool
+	}{{-60, true}, {-40, true}, {-10, true}, {-9, false}} {
+		if ok, _ := d.IsFinal(ctx, minute(c.m)); ok != c.want {
+			t.Errorf("minute %d final = %v, want %v", c.m, ok, c.want)
+		}
+	}
+	// The minutes belong to the device the install knew, so an account
+	// switch that crashes before retiring them is still caught.
+	if v, _ := d.Get(ctx, "crediting.device"); v != "dev-1" {
+		t.Fatalf("crediting.device = %q, want the known device", v)
+	}
+	if v, _ := d.Get(ctx, "crediting.final_through"); v != "" {
+		t.Fatalf("old watermark kept: %q", v)
+	}
+	e, ok, err := d.LastEvidenceDay(ctx, "dev")
+	if err != nil || !ok || !e.Legacy || e.SeqTo != 0 {
+		t.Fatalf("legacy day = %+v, %v, %v", e, ok, err)
+	}
+	if n, _ := d.Counter(ctx, KeySealed); n != 0 {
+		t.Fatalf("legacy days sealed rows: %d", n)
+	}
+	// New rows continue the log.
+	if err := d.RecordActivity(ctx, *activity(minute(-1)).Activity); err != nil {
+		t.Fatal(err)
+	}
+	if h := high(ctx, t, d); h != 8 {
+		t.Fatalf("next row took %d, want 8", h)
 	}
 }
