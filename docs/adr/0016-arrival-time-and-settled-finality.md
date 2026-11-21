@@ -1,6 +1,6 @@
 # 0016: Arrival time and settled finality
 
-- Status: accepted
+- Status: superseded by ADR 0017
 - Date: 2026-11-21
 
 ## Context

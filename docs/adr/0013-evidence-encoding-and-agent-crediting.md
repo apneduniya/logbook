@@ -1,6 +1,6 @@
 # 0013: Canonical evidence encoding, device identity and the agent's crediting pipeline
 
-- Status: accepted
+- Status: accepted; partly superseded by ADR 0017 (which events a day covers, minute finality, repo mapping groups, evidence days)
 - Date: 2026-11-20
 
 ## Context
