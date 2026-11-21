@@ -52,6 +52,19 @@ func TestSessionFromLogind(t *testing.T) {
 	}
 }
 
+// TestGraphicalSession: logind's Display can be a text session (an SSH
+// login on a machine with no desktop); only desktops count.
+func TestGraphicalSession(t *testing.T) {
+	for typ, want := range map[string]bool{
+		"x11": true, "wayland": true, "mir": true,
+		"tty": false, "unspecified": false, "web": false, "": false,
+	} {
+		if got := graphicalSession(typ); got != want {
+			t.Errorf("graphicalSession(%q) = %v, want %v", typ, got, want)
+		}
+	}
+}
+
 // TestSourceSelection is the Linux backend selection with fakes: the fixed
 // order, filtered by what the session allows, picks the first working source.
 func TestSourceSelection(t *testing.T) {
