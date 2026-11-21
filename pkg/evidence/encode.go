@@ -5,11 +5,14 @@ import (
 	"bytes"
 	"cmp"
 	"crypto/sha256"
+	"encoding"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
+	"maps"
 	"slices"
 	"time"
 
@@ -139,7 +142,18 @@ func Encode(w io.Writer, rows []Row) error {
 		return err
 	}
 	bw := bufio.NewWriter(w)
-	for _, r := range sorted {
+	if err := encodeSorted(bw, sorted); err != nil {
+		return err
+	}
+	if err := bw.Flush(); err != nil {
+		return fmt.Errorf("writing evidence: %w", err)
+	}
+	return nil
+}
+
+// encodeSorted writes rows, already validated and sorted, to w.
+func encodeSorted(w io.Writer, rows []Row) error {
+	for _, r := range rows {
 		v, err := marshal(r.Value)
 		if err != nil {
 			return err
@@ -148,15 +162,9 @@ func Encode(w io.Writer, rows []Row) error {
 		if err != nil {
 			return err
 		}
-		if _, err := bw.Write(b); err != nil {
+		if _, err := w.Write(append(b, '\n')); err != nil {
 			return fmt.Errorf("writing evidence: %w", err)
 		}
-		if err := bw.WriteByte('\n'); err != nil {
-			return fmt.Errorf("writing evidence: %w", err)
-		}
-	}
-	if err := bw.Flush(); err != nil {
-		return fmt.Errorf("writing evidence: %w", err)
 	}
 	return nil
 }
@@ -164,11 +172,115 @@ func Encode(w io.Writer, rows []Row) error {
 // ContentHash returns the hex SHA-256 of Encode(rows): the content_hash of
 // an evidence Day.
 func ContentHash(rows []Row) (string, error) {
-	h := sha256.New()
-	if err := Encode(h, rows); err != nil {
+	h := NewHasher()
+	if err := h.Add(rows); err != nil {
 		return "", err
 	}
-	return hex.EncodeToString(h.Sum(nil)), nil
+	return h.Sum(), nil
+}
+
+// Hasher computes ContentHash and Counts of a block without holding it in
+// memory: rows go in with Add, in chunks whose sequence numbers are all
+// above the previous chunk's, and the result is the same as for the whole
+// block at once. Its state can be saved (MarshalBinary) and restored
+// (UnmarshalBinary), so hashing one block may span several runs.
+type Hasher struct {
+	h      hash.Hash
+	last   int64
+	counts map[string]int
+}
+
+// NewHasher returns a Hasher for an empty block.
+func NewHasher() *Hasher {
+	return &Hasher{h: sha256.New(), counts: Counts(nil)}
+}
+
+// Add hashes the next rows of the block. Within the chunk rows may come in
+// any order; a sequence number at or below one already added is rejected
+// with ErrInvalidRow, like any row Encode rejects, and nothing is added.
+func (h *Hasher) Add(rows []Row) error {
+	sorted, err := sortedRows(rows)
+	if err != nil {
+		return err
+	}
+	if len(sorted) == 0 {
+		return nil
+	}
+	if sorted[0].Seq <= h.last {
+		return fmt.Errorf("%w: sequence number %d after %d", ErrInvalidRow, sorted[0].Seq, h.last)
+	}
+	if err := encodeSorted(h.h, sorted); err != nil {
+		return err
+	}
+	h.last = sorted[len(sorted)-1].Seq
+	for _, r := range sorted {
+		h.counts[r.Type]++
+	}
+	return nil
+}
+
+// Sum returns the content hash of the rows added so far.
+func (h *Hasher) Sum() string { return hex.EncodeToString(h.h.Sum(nil)) }
+
+// Counts returns how many rows of each type were added, as Counts does.
+func (h *Hasher) Counts() map[string]int { return maps.Clone(h.counts) }
+
+// Rows returns how many rows were added.
+func (h *Hasher) Rows() int {
+	n := 0
+	for _, c := range h.counts {
+		n += c
+	}
+	return n
+}
+
+// hasherState is a Hasher's saved form.
+type hasherState struct {
+	SHA256 []byte         `json:"sha256"`
+	Last   int64          `json:"last"`
+	Counts map[string]int `json:"counts"`
+}
+
+// MarshalBinary saves h's state.
+func (h *Hasher) MarshalBinary() ([]byte, error) {
+	m, ok := h.h.(encoding.BinaryMarshaler)
+	if !ok {
+		return nil, errors.New("saving evidence hash: state can't be saved")
+	}
+	st, err := m.MarshalBinary()
+	if err != nil {
+		return nil, fmt.Errorf("saving evidence hash: %w", err)
+	}
+	b, err := json.Marshal(hasherState{SHA256: st, Last: h.last, Counts: h.counts})
+	if err != nil {
+		return nil, fmt.Errorf("saving evidence hash: %w", err)
+	}
+	return b, nil
+}
+
+// UnmarshalBinary restores a state saved by MarshalBinary.
+func (h *Hasher) UnmarshalBinary(b []byte) error {
+	var st hasherState
+	if err := json.Unmarshal(b, &st); err != nil {
+		return fmt.Errorf("restoring evidence hash: %w", err)
+	}
+	d := sha256.New()
+	u, ok := d.(encoding.BinaryUnmarshaler)
+	if !ok {
+		return errors.New("restoring evidence hash: state can't be restored")
+	}
+	if err := u.UnmarshalBinary(st.SHA256); err != nil {
+		return fmt.Errorf("restoring evidence hash: %w", err)
+	}
+	counts := Counts(nil)
+	for t, n := range st.Counts {
+		if !slices.Contains(types, t) || n < 0 {
+			return fmt.Errorf("restoring evidence hash: bad count %q=%d", t, n)
+		}
+		counts[t] = n
+	}
+	*h = Hasher{h: d, last: st.Last, counts: counts}
+	return nil
 }
 
 // Counts returns how many rows of each type rows holds, keyed by the type

@@ -48,7 +48,7 @@ A run is a pure function of the log and `(T, H)`. There is one repo mapping per 
 **7. Evidence blocks seal log ranges.** The server API is unchanged: one signed record per UTC day `D`, chained, `day` in the chain hash. Its content changes.
 - The record for `D` covers every logged row with `seq` in `(H_prev, H_D]`. `H_prev` is where the previous block of this device's chain ended. `H_D` is the log's high-water mark read in the same transaction that seals.
 - A block can hold events of any time. A late event for an earlier day goes into whichever block is open when it arrives, so every row is sealed exactly once.
-- A device's first block starts at the oldest retained row.
+- A device's first block starts at the oldest retained row. A block is read and hashed in chunks of sequence numbers (`evidence.Hasher`), a bounded number per run, with the progress kept between runs, so a large first block (up to 90 days of rows) needs neither the whole block in memory nor one run's time. This is sound because rows in an unsealed range are never updated or deleted; `H_D` is the high-water mark of the snapshot that reads the last chunk.
 - Every key `(T, H)` of a minute in day `D` has `H ≤ H_D`. A minute of `D` is final and acknowledged before `D` is sealed, and its key was taken before that. So every final minute can be replayed from sealed blocks.
 - Sealing conditions are unchanged from ADR 0013. The server refuses first-time minutes in a sealed day, so a day is sealed only when:
   - it has ended plus a grace hour on both clocks;
@@ -84,4 +84,4 @@ A run is a pure function of the log and `(T, H)`. There is one repo mapping per 
 - The clock now decides only *when* things happen (window position, finality timing, settle, sealing), never *which data* a result used.
 - One new server migration (`00004`): `credited_minutes.computed_at` and `snapshot`, nullable for pre-existing rows and required on upload. Rejection bodies gain `stored`. Agents built before this ADR are rejected for the missing fields, which is acceptable before release.
 - A step-5 bundle carries the blocks covering each submitted minute's key (back to `T − 120 min`) and the minute rows with their keys. The reviewer's server re-runs each minute at its key and re-hashes each block.
-- The first block of a device hashes up to 90 days of retained rows once. That is a hash over local data, and nothing leaves the device.
+- The first block of a device hashes up to 90 days of retained rows once, in chunks over as many runs as it needs. That is a hash over local data, and nothing leaves the device.

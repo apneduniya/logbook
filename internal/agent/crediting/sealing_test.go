@@ -1,10 +1,12 @@
 package crediting
 
 import (
+	"context"
 	"net/http"
 	"testing"
 	"time"
 
+	"github.com/apneduniya/logbook/pkg/evidence"
 	"github.com/apneduniya/logbook/pkg/struggle"
 )
 
@@ -111,5 +113,39 @@ func TestNoSealingWhileMinutesOnHold(t *testing.T) {
 	e.wantServerMinute(minute, "app", 60)
 	if days := e.srv.storedDays(id); len(days) != 1 {
 		t.Fatalf("server days = %+v, want the 19th", days)
+	}
+}
+
+// A block too large for one run (a device's first, holding up to 90 days of
+// rows) is hashed in chunks over several runs, its progress kept between
+// them, and comes out as the same block a single read would seal.
+func TestLargeBlockSealedOverSeveralRuns(t *testing.T) {
+	e := newEnv(t, time.Date(2026, 11, 19, 8, 0, 5, 0, time.UTC))
+	e.run() // registers the device on the 19th
+	id := e.deviceID()
+	for _, day := range []string{"2026-11-17", "2026-11-18", "2026-11-19"} {
+		addDay(t, e.db, day)
+	}
+	e.runner.sealChunk, e.runner.sealChunks = 2, 1
+
+	e.set(time.Date(2026, 11, 20, 1, 0, 5, 0, time.UTC))
+	runs := 0
+	for ; runs < 50 && len(e.srv.storedDays(id)) == 0; runs++ {
+		e.run()
+		e.advance(time.Minute)
+	}
+	days := e.srv.storedDays(id)
+	if len(days) != 1 || days[0].Day != "2026-11-19" || runs < 5 {
+		t.Fatalf("server days = %+v after %d runs", days, runs)
+	}
+	block, _, err := e.db.EvidenceDayOf(context.Background(), id, "2026-11-19")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if block.SeqFrom != 1 || block.SeqTo != 9 || block.EventCounts[evidence.TypeActivity] != 3 || e.replayHash(block) != days[0].ContentHash {
+		t.Fatalf("block = %+v; replayed hash %s, signed %s", block, e.replayHash(block), days[0].ContentHash)
+	}
+	if v, _ := e.db.Get(context.Background(), keyEvidenceProgress); v != "" {
+		t.Fatalf("progress kept after sealing: %s", v)
 	}
 }

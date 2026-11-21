@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"flag"
+	"fmt"
 	"math/rand/v2"
 	"os"
 	"path/filepath"
@@ -232,5 +233,46 @@ func BenchmarkContentHashDay(b *testing.B) {
 		if _, err := ContentHash(rows); err != nil {
 			b.Fatal(err)
 		}
+	}
+}
+
+// Hashing a block in chunks, saving and restoring the state between them,
+// gives the same content hash and counts as hashing it at once; a chunk
+// that goes back in sequence is refused.
+func TestHasherChunks(t *testing.T) {
+	rows := fixtureBlock()
+	want, err := ContentHash(rows)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sorted, err := sortedRows(rows)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := NewHasher()
+	for i := 0; i < len(sorted); i += 2 {
+		if err := h.Add(sorted[i:min(i+2, len(sorted))]); err != nil {
+			t.Fatal(err)
+		}
+		saved, err := h.MarshalBinary()
+		if err != nil {
+			t.Fatal(err)
+		}
+		h = &Hasher{}
+		if err := h.UnmarshalBinary(saved); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := h.Sum(); got != want {
+		t.Fatalf("chunked hash = %s, want %s", got, want)
+	}
+	if got, wantCounts := h.Counts(), Counts(rows); fmt.Sprint(got) != fmt.Sprint(wantCounts) || h.Rows() != len(rows) {
+		t.Fatalf("counts = %v (%d rows), want %v", got, h.Rows(), wantCounts)
+	}
+	if err := h.Add(sorted[:1]); !errors.Is(err, ErrInvalidRow) {
+		t.Fatalf("a chunk going back in sequence: %v", err)
+	}
+	if h.Sum() != want {
+		t.Fatal("a refused chunk changed the hash")
 	}
 }
