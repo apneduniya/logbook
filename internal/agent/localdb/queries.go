@@ -220,13 +220,19 @@ const (
 	qMinuteRemoved  = `DELETE FROM credited_minutes` + rowIs +
 		` AND acknowledged = 1 AND label = 'idle' AND credited = 0 AND cuts = '[]' AND flags = '[]'`
 	qMinuteAnswered = `UPDATE credited_minutes SET acknowledged = 1` + rowIs
+	// qMinuteDropped deletes a row the server refused for good.
+	qMinuteDropped = `DELETE FROM credited_minutes` + rowIs
 	// qMinuteTried notes that a row was sent and the server may hold it,
 	// before the answer is known ('?' never equals heldAs).
 	qMinuteTried = `UPDATE credited_minutes SET sent_digest = '?' WHERE minute = ? AND project = ? AND sent_digest = ''`
-	// qMinutesRetire treats rows before a minute as held by the server, so
-	// they are never sent (also not once final).
-	qMinutesRetire = `UPDATE credited_minutes SET acknowledged = 1, sent_digest = ` + heldAs + `
-		WHERE minute < ? AND (acknowledged = 0 OR state = 'open')`
+	// qMinutesRetireUnheld deletes rows before a minute that the server
+	// doesn't hold exactly as stored, except rows from before keys
+	// (migration 0007), which it holds as far as the agent can know;
+	// qMinutesRetire then makes the rest final and acknowledged
+	// (RetireMinutesBefore).
+	qMinutesRetireUnheld = `DELETE FROM credited_minutes WHERE minute < ? AND sent_digest <> ` + heldAs + `
+		AND NOT (state = 'final' AND acknowledged = 1 AND computed_at IS NULL)`
+	qMinutesRetire  = `UPDATE credited_minutes SET state = 'final', acknowledged = 1 WHERE minute < ?`
 	qMinutesUnacked = `SELECT COUNT(*) FROM credited_minutes WHERE acknowledged = 0`
 	// qMinutesPendingBefore counts rows before a minute that are open or
 	// the server hasn't answered for yet.

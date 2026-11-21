@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/apneduniya/logbook/internal/agent/serverapi"
 	"github.com/apneduniya/logbook/pkg/evidence"
 	"github.com/apneduniya/logbook/pkg/struggle"
 )
@@ -111,8 +112,71 @@ func TestNoSealingWhileMinutesOnHold(t *testing.T) {
 	e.advance(31 * time.Minute)
 	e.run()
 	e.wantServerMinute(minute, "app", 60)
+	e.advance(time.Minute) // the server's clock is known now: minutes become final
+	e.run()
 	if days := e.srv.storedDays(id); len(days) != 1 {
 		t.Fatalf("server days = %+v, want the 19th", days)
+	}
+}
+
+// The agent computes before the user signs in, and the user signs in the
+// next UTC day, so the server refuses the earlier day's minutes for good
+// (they are before the day the device registered). Refused while open, each
+// is sent once more when final, then dropped and counted: it is never
+// retried forever, and the evidence chain moves on instead of waiting for
+// it.
+func TestRefusedFinalMinutesDoNotStopTheChain(t *testing.T) {
+	e := newEnv(t, time.Date(2026, 11, 19, 23, 46, 5, 0, time.UTC))
+	signedIn := false
+	e.options = func(o *Options) {
+		o.Target = func() Target {
+			e.mu.Lock()
+			defer e.mu.Unlock()
+			if !signedIn {
+				return Target{Disabled: "not signed in; run `logbook login`"}
+			}
+			return Target{Target: serverapi.Target{BaseURL: e.url, APIKey: e.apiKey}}
+		}
+	}
+	e.open()
+	first := time.Date(2026, 11, 19, 23, 40, 0, 0, time.UTC)
+	for i := range 5 {
+		e.credit(first.Add(time.Duration(i)*time.Minute), "app", 60)
+	}
+	e.run()
+
+	e.mu.Lock()
+	signedIn = true
+	e.mu.Unlock()
+	addDay(t, e.db, "2026-11-20")
+	e.credit(time.Date(2026, 11, 20, 0, 5, 0, 0, time.UTC), "app", 60)
+	start := time.Date(2026, 11, 20, 0, 10, 5, 0, time.UTC)
+	for i := range 40 {
+		e.set(start.Add(time.Duration(i) * time.Minute))
+		e.run()
+	}
+	e.wantServerMinute(time.Date(2026, 11, 20, 0, 5, 0, 0, time.UTC), "app", 60)
+	sent := 0
+	for _, b := range e.srv.batches() {
+		for _, m := range b {
+			if m.Minute.Equal(first) {
+				sent++
+			}
+		}
+	}
+	if sent != 2 {
+		t.Fatalf("23:40 sent %d times, want twice (open, then final)", sent)
+	}
+	if s := e.status(); s.Minutes.Rejected != 5 || s.Minutes.Waiting != 0 {
+		t.Fatalf("status = %+v, want the 5 refused minutes counted once each", s.Minutes)
+	}
+
+	e.set(time.Date(2026, 11, 21, 1, 0, 5, 0, time.UTC))
+	e.run()
+	e.advance(time.Minute)
+	e.run()
+	if days := e.srv.storedDays(e.deviceID()); len(days) != 1 || days[0].Day != "2026-11-20" {
+		t.Fatalf("server days = %+v, want the 20th sealed", days)
 	}
 }
 

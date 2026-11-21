@@ -142,7 +142,7 @@ func TestRemovalsAndAcknowledgement(t *testing.T) {
 	if err != nil || len(rows) != 2 {
 		t.Fatalf("UnsentMinutes = %+v, %v", rows, err)
 	}
-	if err := d.MarkMinutesSent(ctx, rows, nil); err != nil {
+	if err := d.MarkMinutesSent(ctx, MinutesAnswer{Accepted: rows}); err != nil {
 		t.Fatal(err)
 	}
 	if n, _ := d.UnsentMinuteCount(ctx); n != 0 {
@@ -163,7 +163,7 @@ func TestRemovalsAndAcknowledgement(t *testing.T) {
 	if res := run(t, d, 3, 4, false, cm(-5, "a", 60)); res.Kept != 1 {
 		t.Fatalf("rerun = %+v", res)
 	}
-	if err := d.MarkMinutesSent(ctx, rows, nil); err != nil {
+	if err := d.MarkMinutesSent(ctx, MinutesAnswer{Accepted: rows}); err != nil {
 		t.Fatal(err)
 	}
 	if m := stored(t, d, -5); len(m) != 1 || m[0].Project != "a" || !m[0].Acknowledged {
@@ -179,7 +179,7 @@ func TestRemovalsAndAcknowledgement(t *testing.T) {
 	run(t, d, 6, 7, false, cm(-4, "a", 10))
 	stale, _ := d.UnsentMinutes(ctx, time.Time{}, time.Time{}, 100)
 	run(t, d, 7, 8, false, cm(-4, "a", 20))
-	if err := d.MarkMinutesSent(ctx, stale, nil); err != nil {
+	if err := d.MarkMinutesSent(ctx, MinutesAnswer{Accepted: stale}); err != nil {
 		t.Fatal(err)
 	}
 	if m := stored(t, d, -4); m[0].Acknowledged {
@@ -187,7 +187,7 @@ func TestRemovalsAndAcknowledgement(t *testing.T) {
 	}
 	// A refusal for good is answered, not accepted.
 	cur, _ := d.UnsentMinutes(ctx, time.Time{}, time.Time{}, 100)
-	if err := d.MarkMinutesSent(ctx, nil, cur); err != nil {
+	if err := d.MarkMinutesSent(ctx, MinutesAnswer{Answered: cur}); err != nil {
 		t.Fatal(err)
 	}
 	if n, _ := d.UnsentMinuteCount(ctx); n != 0 {
@@ -275,19 +275,64 @@ func TestUnsentMinutesHoldAndWholeMinutes(t *testing.T) {
 func TestMinutesPendingAndRetire(t *testing.T) {
 	ctx := context.Background()
 	d, _ := openTest(t)
-	run(t, d, 0, 1, false, cm(-10, "a", 30), cm(-5, "a", 30))
+	run(t, d, 0, 1, false, cm(-10, "a", 30), cm(-5, "a", 30), cm(-4, "a", 30))
 	if n, _ := d.MinutesPendingBefore(ctx, minute(-9)); n != 1 {
 		t.Fatalf("pending before -9 = %d, want 1", n)
 	}
+	// The server holds -10 as stored and -4 under an older value; -5 was
+	// never sent.
+	rows, _ := d.UnsentMinutes(ctx, time.Time{}, time.Time{}, 100)
+	if err := d.MarkMinutesSent(ctx, MinutesAnswer{Accepted: []CreditedMinute{rows[0], rows[2]}}); err != nil {
+		t.Fatal(err)
+	}
+	run(t, d, 1, 2, false, cm(-10, "a", 30), cm(-5, "a", 30), cm(-4, "a", 20))
+
+	// A new device registers: minutes before it belong to the previous one.
 	if err := d.RetireMinutesBefore(ctx, minute(0)); err != nil {
 		t.Fatal(err)
 	}
-	if n, _ := d.MinutesPendingBefore(ctx, minute(-9)); n != 1 {
-		t.Fatalf("an acknowledged open minute counts as settled: %d", n)
+	m := stored(t, d, -10)
+	if len(m) != 1 || !m[0].Final || !m[0].Acknowledged || m[0].Credited != 30 {
+		t.Fatalf("held row after retiring = %+v, want it final and acknowledged", m)
 	}
-	run(t, d, 30, 2, true, cm(-10, "a", 30), cm(-5, "a", 30))
+	for _, i := range []int{-5, -4} {
+		if m := stored(t, d, i); len(m) != 0 {
+			t.Fatalf("minute %d after retiring = %+v; a row the server doesn't hold as stored must go", i, m)
+		}
+	}
 	if n, _ := d.MinutesPendingBefore(ctx, minute(0)); n != 0 {
-		t.Fatalf("pending after finalizing = %d", n)
+		t.Fatalf("pending after retiring = %d", n)
+	}
+	// Retired minutes are final: never recomputed, so never sent again.
+	if res := run(t, d, 2, 3, false, cm(-10, "a", 10), cm(-5, "a", 10)); res.Replaced != 0 {
+		t.Fatalf("a retired minute was recomputed: %+v", res)
+	}
+	if n, _ := d.UnsentMinuteCount(ctx); n != 0 {
+		t.Fatalf("unsent after retiring = %d", n)
+	}
+}
+
+// A row refused for good is deleted, and its minute is final: it is never
+// sent or computed again.
+func TestDroppedMinutes(t *testing.T) {
+	ctx := context.Background()
+	d, _ := openTest(t)
+	run(t, d, 0, 1, false, cm(-5, "a", 30), cm(-4, "a", 30))
+	rows, _ := d.UnsentMinutes(ctx, time.Time{}, time.Time{}, 100)
+	if err := d.MarkMinutesSent(ctx, MinutesAnswer{Dropped: rows[:1], Accepted: rows[1:]}); err != nil {
+		t.Fatal(err)
+	}
+	if m := stored(t, d, -5); len(m) != 0 {
+		t.Fatalf("dropped row kept: %+v", m)
+	}
+	if ok, _ := d.IsFinal(ctx, minute(-5)); !ok {
+		t.Fatal("a dropped row's minute is not final")
+	}
+	if res := run(t, d, 1, 2, false, cm(-5, "a", 30), cm(-4, "a", 30)); res.Replaced != 0 {
+		t.Fatalf("a dropped minute was computed again: %+v", res)
+	}
+	if n, _ := d.MinutesPendingBefore(ctx, minute(-4)); n != 0 {
+		t.Fatalf("pending before -4 = %d", n)
 	}
 }
 
@@ -391,7 +436,7 @@ func TestFinalizationResendsRowsTheServerDoesNotHold(t *testing.T) {
 			accepted = append(accepted, m)
 		}
 	}
-	if err := d.MarkMinutesSent(ctx, accepted, refused); err != nil {
+	if err := d.MarkMinutesSent(ctx, MinutesAnswer{Accepted: accepted, Answered: refused}); err != nil {
 		t.Fatal(err)
 	}
 	// b changes: the whole minute -10 moves to the new key, a included.

@@ -22,8 +22,9 @@ const maxLoggedRejections = 5
 //
 // The server's answers (applyAnswer): an accepted row is acknowledged; a
 // row refused because its minute is final comes back with the rows the
-// server holds, which replace the minute here, final and acknowledged; any
-// other refusal is counted. A batch refused for its size is split, down to
+// server holds, which replace the minute here, final and acknowledged; a
+// final row refused for any other reason is dropped and counted. A batch
+// refused for its size is split, down to
 // single minutes; one refused as a whole for any other reason returns a
 // *refusedError and nothing is marked.
 //
@@ -31,9 +32,8 @@ const maxLoggedRejections = 5
 // budget (maxBatchesPerRun) ran out first; the rest goes on the next run.
 func (r *Runner) uploadMinutes(ctx context.Context, t serverapi.Target, dev devicekey.Device, now time.Time, st settleState) (drained bool, err error) {
 	hold := holdBefore(now, st)
-	// after walks forward through the minutes, so a row the server refuses
-	// and that stays unsent (a final one) is tried once per run, not again
-	// in every batch.
+	// after walks forward through the minutes, so no minute is read twice
+	// in one run.
 	var after time.Time
 	for range maxBatchesPerRun {
 		size := r.batchSize()
@@ -119,11 +119,15 @@ func nonNil(s []string) []string {
 //     replaced with exactly those rows (values and keys), final and
 //     acknowledged. Stored rows without a key (from before keys) are
 //     counted (crediting.unkeyed).
-//   - Any other refusal is counted (crediting.rejected). An open row is
-//     not sent again while open (it is once final); a final row is sent
-//     again next run, until the server takes it or answers with its rows,
-//     except a refusal because the day is sealed, which can never succeed
-//     and is reported as lost credit.
+//   - Any other refusal of an open row marks it answered: it is not sent
+//     again while open, and once more when it becomes final (the server's
+//     reason may not hold for the final value).
+//   - Any other refusal of a final row, or of a row in a day the server
+//     has sealed, is for good: the server holds no such row, so the row is
+//     dropped and counted (crediting.rejected). The minute stays final, and
+//     the agent never keeps a final value the server doesn't hold (ADR
+//     0017). Retrying it would never succeed and would hold back sealing
+//     for good. A sealed-day refusal is also reported as lost credit.
 func (r *Runner) applyAnswer(ctx context.Context, rows []localdb.CreditedMinute, rejected []serverapi.ItemError) error {
 	refused := make(map[int]serverapi.ItemError, len(rejected))
 	for _, e := range rejected {
@@ -132,30 +136,33 @@ func (r *Runner) applyAnswer(ctx context.Context, rows []localdb.CreditedMinute,
 		}
 	}
 	stored := map[time.Time][]serverapi.StoredMinute{}
-	var accepted, answered, sealed []localdb.CreditedMinute
+	var answer localdb.MinutesAnswer
+	var sealed []localdb.CreditedMinute
 	logged := 0
 	for i, m := range rows {
 		e, ok := refused[i]
 		switch {
 		case !ok:
-			accepted = append(accepted, m)
+			answer.Accepted = append(answer.Accepted, m)
+			continue
 		case e.Stored != nil:
 			stored[m.Minute] = e.Stored
+			continue
+		case isSealedRejection(e.Error):
+			sealed = append(sealed, m)
+			answer.Dropped = append(answer.Dropped, m)
+		case m.Final:
+			answer.Dropped = append(answer.Dropped, m)
 		default:
-			if isSealedRejection(e.Error) {
-				sealed = append(sealed, m)
-				answered = append(answered, m)
-			} else if !m.Final {
-				answered = append(answered, m)
-			}
-			if logged < maxLoggedRejections {
-				logged++
-				r.opt.Logger.WarnContext(ctx, "server rejected a credited minute",
-					"minute", m.Minute.Format(time.RFC3339), "project", m.Project, "final", m.Final, "err", e.Error)
-			}
+			answer.Answered = append(answer.Answered, m)
+		}
+		if logged < maxLoggedRejections {
+			logged++
+			r.opt.Logger.WarnContext(ctx, "server rejected a credited minute",
+				"minute", m.Minute.Format(time.RFC3339), "project", m.Project, "final", m.Final, "err", e.Error)
 		}
 	}
-	if err := r.opt.Store.MarkMinutesSent(ctx, accepted, answered); err != nil {
+	if err := r.opt.Store.MarkMinutesSent(ctx, answer); err != nil {
 		return err
 	}
 	// The server keeps each row with the rules version it was uploaded
@@ -165,7 +172,7 @@ func (r *Runner) applyAnswer(ctx context.Context, rows []localdb.CreditedMinute,
 			return err
 		}
 	}
-	if n := len(rejected) - countStored(rejected); n > 0 {
+	if n := len(answer.Dropped); n > 0 {
 		if err := r.opt.Store.Add(ctx, keyRejected, int64(n)); err != nil {
 			r.opt.Logger.WarnContext(ctx, "counting rejected minutes", "err", err)
 		}
@@ -174,16 +181,6 @@ func (r *Runner) applyAnswer(ctx context.Context, rows []localdb.CreditedMinute,
 		r.reportSealed(ctx, sealed)
 	}
 	return nil
-}
-
-func countStored(rejected []serverapi.ItemError) int {
-	n := 0
-	for _, e := range rejected {
-		if e.Stored != nil {
-			n++
-		}
-	}
-	return n
 }
 
 // adopt replaces minute's rows with the rows the server holds (ADR 0017).

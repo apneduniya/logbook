@@ -19,6 +19,13 @@ import (
 // minutes are computed and stored, and those the server would freeze
 // before the agent settles are not uploaded.
 //
+// The system clock decides when a minute is final, so a clock far ahead
+// would make minutes final that haven't happened yet, and real work in them
+// would never be credited. So no minute becomes final until the server's
+// clock has been seen since the agent started or woke (a clock that jumps
+// is seen as a wake), and finality goes by the system clock minus how far
+// it was ahead of the server's (Runner.ahead).
+//
 // None of this decides whether a replay agrees: every stored minute records
 // the key it was computed at. If settling goes wrong, the worst case is an
 // honest late event that isn't credited.
@@ -30,6 +37,10 @@ type settleState struct {
 	at time.Time
 	// drained is set once the startup spool drain has finished.
 	drained bool
+	// waited is set once the settle period has passed and the drain has
+	// finished; clock once the server's clock has been seen since the
+	// agent started or woke. settled is both.
+	waited, clock bool
 }
 
 // settle notes this run's time, starting a new settle period on the first
@@ -45,13 +56,18 @@ func (r *Runner) settle(ctx context.Context, now time.Time) settleState {
 				"last_run", r.lastRun.UTC().Format(time.RFC3339))
 		}
 		r.upSince = now
+		// The clock may have jumped: how far it is ahead of the server's
+		// is measured again.
+		r.ahead, r.aheadKnown = 0, false
 	}
 	r.lastRun = now
 	st := settleState{at: r.upSince, drained: r.drained()}
 	if r.opt.Settle > 0 {
 		st.at = st.at.Add(r.opt.Settle)
 	}
-	st.settled = st.drained && !now.Round(0).Before(st.at.Round(0))
+	st.waited = st.drained && !now.Round(0).Before(st.at.Round(0))
+	st.clock = r.aheadKnown
+	st.settled = st.waited && st.clock
 	r.show(ctx, keySettling, st.message())
 	return st
 }
@@ -85,6 +101,8 @@ func (s settleState) message() string {
 		return ""
 	case !s.drained:
 		return "waiting for the hook spool to drain before making minutes final"
+	case s.waited:
+		return "waiting for the server's time before making minutes final"
 	}
 	return "waiting until " + s.at.UTC().Format(time.RFC3339) +
 		" for events that arrive late after a start or wake before making minutes final"
@@ -94,9 +112,11 @@ func (s settleState) message() string {
 // before it. They are not final here, and the server would freeze them
 // before the agent can make them final (it already holds as final every
 // minute 30 minutes old). Uploading them now would make a provisional
-// value final on the server. Zero once settled.
+// value final on the server. Zero once the settle period has passed and the
+// drain has finished, whether or not the server's clock has been seen:
+// holding is about fairness only.
 func holdBefore(now time.Time, st settleState) time.Time {
-	if st.settled {
+	if st.waited {
 		return time.Time{}
 	}
 	at := st.at

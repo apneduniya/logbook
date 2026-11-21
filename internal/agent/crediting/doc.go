@@ -9,11 +9,14 @@
 // every stored minute records the key that produced it. A minute's rows
 // are rewritten, under the new key, only when the result changes; final
 // minutes are never recomputed. A minute becomes final at the first
-// settled run with T >= minute + FinalLead; after a start or a wake the
-// agent settles first, so late honest events still count. Rows the server
-// hasn't answered for go to POST /api/v1/devices/{id}/minutes with their
-// keys; when the server refuses a minute as final it returns the rows it
-// holds, and the agent adopts them. After each UTC day ends, plus an hour's
+// settled run with T - ahead >= minute + FinalLead, ahead being how far the
+// system clock is ahead of the server's; after a start or a wake the agent
+// settles first, so late honest events still count, and measures ahead
+// again. Rows the server hasn't answered for go to POST
+// /api/v1/devices/{id}/minutes with their keys; when the server refuses a
+// minute as final it returns the rows it holds, and the agent adopts them;
+// a final row refused for any other reason is dropped. After each UTC day
+// ends, plus an hour's
 // grace, the agent seals the log rows logged since its previous block: the
 // canonical content hash, chained to the previous day and signed with the
 // device key, uploaded to POST /api/v1/devices/{id}/evidence-days.

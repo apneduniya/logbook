@@ -44,7 +44,7 @@ type Store interface {
 	AdoptMinute(ctx context.Context, minute time.Time, rows []localdb.CreditedMinute) error
 	UnsentMinutes(ctx context.Context, after, holdOpenBefore time.Time, limit int) ([]localdb.CreditedMinute, error)
 	MarkMinutesTried(ctx context.Context, ms []localdb.CreditedMinute) error
-	MarkMinutesSent(ctx context.Context, accepted, answered []localdb.CreditedMinute) error
+	MarkMinutesSent(ctx context.Context, a localdb.MinutesAnswer) error
 	RetireMinutesBefore(ctx context.Context, t time.Time) error
 	UnsentMinuteCount(ctx context.Context) (int64, error)
 	MinutesPendingBefore(ctx context.Context, t time.Time) (int64, error)
@@ -150,6 +150,13 @@ type Runner struct {
 	// clock from this run's latest minutes response.
 	clockBehind, clockChecked bool
 	server                    serverClock
+	// ahead is how far the system clock was ahead of the server's at the
+	// latest server time seen since the agent started or woke (0 when
+	// behind); aheadKnown is set once one was seen. No minute becomes
+	// final without it, and finality goes by the system clock minus ahead,
+	// so a clock running ahead never makes future minutes final.
+	ahead      time.Duration
+	aheadKnown bool
 	// upSince is when this run of the agent began receiving events: the
 	// Runner's first run, or the first run after a wake or a gap. lastRun
 	// is the previous run's clock, with its monotonic reading.
@@ -349,7 +356,7 @@ func (r *Runner) compute(ctx context.Context, now, through time.Time, st settleS
 	if keep.to.After(keep.from) {
 		run := localdb.Run{Key: key, From: keep.from, To: keep.to, Minutes: minuteRows(keep, res), Removal: removal}
 		if st.settled {
-			run.FinalBefore = finalBefore(s.to)
+			run.FinalBefore = finalBefore(s.to.Add(-r.ahead))
 		}
 		saved, err := r.opt.Store.SaveRun(ctx, run)
 		if err != nil {
@@ -434,6 +441,14 @@ func (r *Runner) upload(ctx context.Context, now time.Time, st settleState) {
 					"batches", maxBatchesPerRun)
 			}
 			r.show(ctx, keyRefused, "")
+		}
+	}
+	if mayseal && !r.aheadKnown {
+		// No minute becomes final before the server's clock has been seen
+		// since the agent started or woke: ask for it if no upload brought it.
+		if err := r.askServerTime(ctx, t.Target, dev); err != nil {
+			r.fail(ctx, t, err)
+			return
 		}
 	}
 	err = r.sealAndUploadDays(ctx, t.Target, dev, now, mayseal)

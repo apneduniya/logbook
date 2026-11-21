@@ -76,3 +76,48 @@ func TestOpenMinuteTopProjectsChurn(t *testing.T) {
 	}
 	r.finish("2026-11-20")
 }
+
+// The agent computed minutes of Nov 19 before the user signed in, and the
+// device registered on Nov 20, so the server refuses them for good (before
+// the day the device registered), without stored rows. Each is refused
+// while open, sent once more when final, then dropped and counted: it is
+// not retried forever, and Nov 20 is still sealed.
+func TestMinutesBeforeRegistrationDayDropped(t *testing.T) {
+	t.Parallel()
+	night := time.Date(2026, 11, 19, 23, 0, 0, 0, time.UTC)
+	r := newRig(t, night.Add(5*time.Second), registeredOn(minute))
+	runEvery := func(from, to time.Time) {
+		for at := from; at.Before(to); at = at.Add(time.Minute) {
+			r.set(at.Add(5 * time.Second))
+			r.runAny()
+		}
+	}
+	r.present(night.Add(-10*time.Minute), night.Add(15*time.Minute))
+	for i := range 10 {
+		r.edit(night.Add(time.Duration(i)*time.Minute+20*time.Second), "app")
+	}
+	runEvery(night.Add(time.Minute), night.Add(55*time.Minute))
+	s := r.status()
+	if s.Minutes.Rejected == 0 || s.Minutes.Waiting != 0 {
+		t.Fatalf("status after Nov 19 = %+v, want its minutes refused and dropped", s.Minutes)
+	}
+	if rows, _ := r.db.StoredMinutes(t.Context(), night, night.Add(time.Hour)); len(rows) != 0 {
+		t.Fatalf("Nov 19 rows kept: %+v", rows)
+	}
+	rejected := s.Minutes.Rejected
+
+	r.present(m(-5), m(10))
+	r.edit(m(0).Add(20*time.Second), "app")
+	runEvery(m(1), m(45))
+	if _, total := r.serverRows(m(0)); total != 60 {
+		t.Fatalf("12:00 holds %d s, want 60", total)
+	}
+	runEvery(time.Date(2026, 11, 21, 1, 0, 0, 0, time.UTC), time.Date(2026, 11, 21, 1, 5, 0, 0, time.UTC))
+	if days := r.sealedDays(); !slices.Equal(days, []string{"2026-11-20"}) {
+		t.Fatalf("server days = %v, want [2026-11-20]; status %+v", days, r.status().Minutes)
+	}
+	if s := r.status(); s.Minutes.Rejected != rejected || s.Minutes.Waiting != 0 {
+		t.Fatalf("status = %+v; refused minutes were retried (rejected was %d)", s.Minutes, rejected)
+	}
+	r.check()
+}

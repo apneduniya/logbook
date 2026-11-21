@@ -27,6 +27,8 @@ type fakeServer struct {
 	byKey    map[string]string            // public key → device id
 	owner    map[string]string            // device id → user
 	revoked  map[string]bool
+	since    map[string]time.Time    // device id → midnight UTC of the day it registered
+	devices  int                     // devices ever registered, for fresh ids
 	minutes  map[string]serverMinute // device|minute|project
 	firstAt  map[string]time.Time    // device|minute| → when its first row was written
 	days     map[string]map[string]storedDay
@@ -90,7 +92,7 @@ func newFakeServer(now func() time.Time) *fakeServer {
 		// key-1 and key-1b are two API keys of one user; key-2 is another user.
 		users: map[string]string{"key-1": "u1", "key-1b": "u1", "key-2": "u2"},
 		keys:  map[string]ed25519.PublicKey{}, byKey: map[string]string{}, owner: map[string]string{},
-		revoked: map[string]bool{}, minutes: map[string]serverMinute{}, firstAt: map[string]time.Time{},
+		revoked: map[string]bool{}, since: map[string]time.Time{}, minutes: map[string]serverMinute{}, firstAt: map[string]time.Time{},
 		days: map[string]map[string]storedDay{}}
 }
 
@@ -133,8 +135,10 @@ func (f *fakeServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusConflict, "you already have 20 active devices; revoke one first")
 			return
 		}
-		id := fmt.Sprintf("00000000-0000-4000-8000-%012d", len(f.keys)+1)
+		f.devices++
+		id := fmt.Sprintf("00000000-0000-4000-8000-%012d", f.devices)
 		f.keys[id], f.byKey[string(req.PublicKey)], f.owner[id] = req.PublicKey, id, user
+		f.since[id] = f.serverNow().UTC().Truncate(24 * time.Hour)
 		writeJSON(w, http.StatusCreated, map[string]string{"id": id})
 		return
 	}
@@ -224,12 +228,16 @@ func (f *fakeServer) handleMinutes(w http.ResponseWriter, r *http.Request, id st
 		dm := minuteKey(id, m.Minute)
 		final := now.Sub(m.Minute) >= 30*time.Minute
 		// A minute first written after it was final (an offline catch-up)
-		// takes more projects for 5 minutes, like the server.
+		// takes more projects of the same computation for 5 minutes, like
+		// the server.
 		first, written := f.firstAt[dm]
-		catchUp := written && !first.Before(m.Minute.Add(30*time.Minute)) && now.Sub(first) < 5*time.Minute
+		catchUp := written && !first.Before(m.Minute.Add(30*time.Minute)) && now.Sub(first) < 5*time.Minute &&
+			!exists && sameKey(held, m)
 		switch {
 		case isRemoval(m) && !exists:
 			accepted++ // nothing to remove
+		case m.Minute.Before(f.since[id]):
+			rejected = append(rejected, rejection{Index: i, Error: "minute is before the UTC day the device was registered"})
 		case sealed:
 			// Like the server: an evidence record seals its day.
 			rejected = append(rejected, rejection{Index: i, Error: errSealedText})
@@ -333,6 +341,16 @@ const errSealedText = "minute is in a UTC day this device has already sealed wit
 // flags (internal/server/credited.IsRemoval).
 func isRemoval(m serverMinute) bool {
 	return m.Label == "idle" && m.Credited == 0 && len(m.Cuts) == 0 && len(m.Flags) == 0
+}
+
+// sameKey reports whether every held row carries m's key.
+func sameKey(held []serverMinute, m serverMinute) bool {
+	for _, h := range held {
+		if !h.ComputedAt.Equal(m.ComputedAt) || h.Snapshot == nil || m.Snapshot == nil || *h.Snapshot != *m.Snapshot {
+			return false
+		}
+	}
+	return true
 }
 
 // equalMinute reports whether b repeats a exactly, key included.

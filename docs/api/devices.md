@@ -74,7 +74,7 @@ A rejection because the minute is final also carries `stored`: every row the ser
                "computed_at": "2026-11-20T11:00:00Z", "snapshot": 18234 }] }
 ```
 
-The agent replaces its rows for the minute with exactly the `stored` rows and treats the minute as final and acknowledged. It doesn't retry other rejected items while their minute is open; it sends a final minute again until the server accepts it or answers with `stored`. The rules:
+The agent replaces its rows for the minute with exactly the `stored` rows and treats the minute as final and acknowledged. It doesn't retry other rejected items while their minute is open; it sends each once more when final, and drops a final item refused without `stored` (the server holds no such row) instead of retrying it. The rules:
 
 | Rule | Error |
 |---|---|

@@ -65,8 +65,11 @@ func TestClockAheadBehindProxySealsNothing(t *testing.T) {
 				t.Fatalf("12:03 holds %d s after the clock was corrected, want 60", total)
 			}
 
-			// When Nov 20 has really ended, it is sealed.
+			// When Nov 20 has really ended, it is sealed (the first run
+			// after the jump measures the server's clock again).
 			r.set(time.Date(2026, 11, 21, 1, 0, 5, 0, time.UTC))
+			r.run()
+			r.set(time.Date(2026, 11, 21, 1, 1, 5, 0, time.UTC))
 			r.run()
 			if days := r.sealedDays(); !slices.Equal(days, []string{"2026-11-20"}) {
 				t.Fatalf("server days = %v, want [2026-11-20]", days)
@@ -291,13 +294,15 @@ func TestSuspendLateSave(t *testing.T) {
 	t.Run("wake missed", func(t *testing.T) {
 		r := newRig(t, m(-12).Add(5*time.Second))
 		suspended(r)
-		r.runEvery(m(40), m(41), nil)
+		// The first run after the gap measures the server's clock again;
+		// the next makes +2 final.
+		r.runEvery(m(40), m(42), nil)
 		final := r.mustStored(m(2))
 		if len(final) != 1 || !final[0].Final || final[0].Credited != 0 {
 			t.Fatalf("+2 after the wake = %+v, want one final idle row", final)
 		}
 		r.heartbeat(save, true)
-		r.runEvery(m(41), m(45), nil)
+		r.runEvery(m(42), m(45), nil)
 		if got := r.mustStored(m(2)); !slices.Equal(r.stored(m(2), m(3)), []string{localText(final[0])}) {
 			t.Fatalf("+2 changed after it was final: %+v", got)
 		}

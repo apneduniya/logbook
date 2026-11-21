@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -353,15 +354,35 @@ func TestRejectionsAndBatchSplitting(t *testing.T) {
 	for i := range 5 {
 		e.wantServerMinute(at("11:50").Add(time.Duration(i)*time.Minute), "app", 60)
 	}
-	s := e.status()
-	if s.Minutes.Rejected != 1 || s.Minutes.Waiting != 0 {
+	// Refused while open: not sent again while open.
+	if s := e.status(); s.Minutes.Rejected != 0 || s.Minutes.Waiting != 0 {
 		t.Fatalf("status = %+v", s.Minutes)
 	}
 	n := len(e.srv.batches())
 	e.advance(time.Minute)
 	e.run()
 	if len(e.srv.batches()) != n {
-		t.Fatal("a rejected minute was retried")
+		t.Fatal("a minute refused while open was retried while open")
+	}
+	// Final: sent once more, refused for good, dropped and counted. (The
+	// first run after the gap measures the server's clock again.)
+	e.advance(30 * time.Minute)
+	e.run()
+	e.advance(time.Minute)
+	e.run()
+	if s := e.status(); s.Minutes.Rejected != 1 || s.Minutes.Waiting != 0 {
+		t.Fatalf("status once final = %+v", s.Minutes)
+	}
+	if rows, _ := e.db.StoredMinutes(context.Background(), at("11:56"), at("11:57")); len(rows) != 0 {
+		t.Fatalf("a refused final row was kept: %+v", rows)
+	}
+	n = len(e.srv.batches())
+	for range 3 {
+		e.advance(time.Minute)
+		e.run()
+	}
+	if len(e.srv.batches()) != n {
+		t.Fatal("a minute refused for good was retried")
 	}
 }
 
@@ -421,11 +442,19 @@ func TestUnknownDeviceReRegisters(t *testing.T) {
 	e.advance(time.Minute)
 	e.run() // 404: forget and back off
 	e.advance(2 * time.Second)
-	e.run() // register again and upload
-	if got := e.deviceID(); got == "" || got != id && len(got) != 36 {
-		t.Fatalf("device id = %q", got)
+	e.run() // register again, as a new device
+	if got := e.deviceID(); got == "" || got == id || len(got) != 36 {
+		t.Fatalf("device id = %q (was %s)", got, id)
 	}
-	e.wantServerMinute(at("12:00"), "app", 60)
+	// Minutes from before it registered belong to the forgotten device;
+	// the new one uploads from its registration on.
+	e.credit(at("12:01"), "app", 60)
+	e.advance(time.Minute)
+	e.run()
+	e.wantServerMinute(at("12:01"), "app", 60)
+	if _, ok := e.srv.minute(e.deviceID(), at("12:00"), "app"); ok {
+		t.Fatal("a minute of the forgotten device was sent under the new one")
+	}
 }
 
 func TestInputWindowAndOptionalSources(t *testing.T) {
@@ -589,8 +618,10 @@ func TestEvidenceChainAcrossDays(t *testing.T) {
 	n := e.srv.requestCount()
 	e.advance(24 * time.Hour)
 	e.run()
-	if e.srv.requestCount() != n {
-		t.Fatalf("requests after the conflict: %v", e.srv.requests[n:])
+	for _, path := range e.srv.requests[n:] {
+		if strings.HasSuffix(path, "/evidence-days") {
+			t.Fatalf("requests after the conflict: %v", e.srv.requests[n:])
+		}
 	}
 	if last, _, _ := e.db.LastEvidenceDay(ctx, id); last.Day != "2026-11-22" {
 		t.Fatalf("chain advanced past a conflict to %s", last.Day)

@@ -98,7 +98,8 @@ type MinutesStatus struct {
 	NextAttempt time.Time `json:"next_attempt,omitzero"`
 	// Waiting counts minutes not yet accepted by the server.
 	Waiting int64 `json:"waiting"`
-	// Rejected counts minutes the server refused (never retried).
+	// Rejected counts rows the server refused for good once final (or
+	// for a sealed day): they are dropped, never retried.
 	Rejected int64 `json:"rejected"`
 	// SealedRejected counts the rejected minutes whose UTC day the server
 	// had already sealed, and SealedError describes the latest. These are
@@ -113,8 +114,8 @@ type MinutesStatus struct {
 	// until the clocks agree; minutes are still uploaded).
 	Clock string `json:"clock,omitempty"`
 	// Settling, when non-empty, says why no minute becomes final yet: the
-	// agent has just started (or woken) and waits for late events, or for
-	// the hook spool to drain (ADR 0017).
+	// agent has just started (or woken) and waits for late events, for the
+	// hook spool to drain, or for the server's time (ADR 0017).
 	Settling string `json:"settling,omitempty"`
 	// LateIgnored counts raw events logged after the minute they belong to
 	// was final; they are kept and sealed as evidence but never change its

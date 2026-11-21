@@ -438,27 +438,42 @@ func wholeMinutes(rows []CreditedMinute, limit int) []CreditedMinute {
 	return rows[:n]
 }
 
-// MarkMinutesSent records the server's answer for rows sent as read:
-// accepted rows are held by the server as they are (an accepted removal is
-// deleted here too, since the server deleted its row); answered rows were
-// refused and are not sent again, except that an open row refused is sent
-// once more when it becomes final. A row that changed since it was read
-// (content or key) is left alone.
-func (d *DB) MarkMinutesSent(ctx context.Context, accepted, answered []CreditedMinute) error {
-	if len(accepted)+len(answered) == 0 {
+// MinutesAnswer is the server's answer for rows sent as read.
+type MinutesAnswer struct {
+	// Accepted rows are held by the server as they are. An accepted
+	// removal is deleted here too, since the server deleted its row.
+	Accepted []CreditedMinute
+	// Answered rows were refused while open. They are not sent again while
+	// open, and are sent once more when they become final.
+	Answered []CreditedMinute
+	// Dropped rows were refused for good, without the server's rows: the
+	// server holds none for them, so they are deleted, and their minutes
+	// are final (they already are, unless the day was sealed there).
+	Dropped []CreditedMinute
+}
+
+// MarkMinutesSent records the server's answer for rows sent as read. A row
+// that changed since it was read (content or key) is left alone.
+func (d *DB) MarkMinutesSent(ctx context.Context, a MinutesAnswer) error {
+	if len(a.Accepted)+len(a.Answered)+len(a.Dropped) == 0 {
 		return nil
 	}
 	return d.inTx(ctx, func(tx *sql.Tx) error {
 		for _, q := range []struct {
 			query string
 			rows  []CreditedMinute
-		}{{qMinuteAccepted, accepted}, {qMinuteRemoved, accepted}, {qMinuteAnswered, answered}} {
+		}{{qMinuteAccepted, a.Accepted}, {qMinuteRemoved, a.Accepted}, {qMinuteAnswered, a.Answered}, {qMinuteDropped, a.Dropped}} {
 			if err := execEach(ctx, tx, q.query, len(q.rows), func(i int) []any {
 				m := q.rows[i]
 				t, h := m.Key.args()
 				return []any{m.Minute.Unix(), m.Project, m.Digest, t, h}
 			}); err != nil {
 				return fmt.Errorf("recording sent minutes: %w", err)
+			}
+		}
+		for _, m := range a.Dropped {
+			if err := addSpan(ctx, tx, m.Minute, m.Minute.Add(time.Minute)); err != nil {
+				return err
 			}
 		}
 		return nil
@@ -483,14 +498,26 @@ func (d *DB) MarkMinutesTried(ctx context.Context, ms []CreditedMinute) error {
 	})
 }
 
-// RetireMinutesBefore treats every row before t as held by the server, so
-// it is never sent, also not once final (used when the device identity
-// changes: those minutes belong to the previous device).
+// RetireMinutesBefore hands every minute before t to the previous device
+// (used when the device identity changes): those minutes are never sent
+// again and never recomputed. Rows the previous device holds exactly as
+// stored are kept, final and acknowledged, and so are rows from before
+// keys (migration 0007), which it held as far as the agent can know. Any
+// other row is deleted: the agent can't know what, if anything, that
+// device holds for it, and it never shows a final value the server doesn't
+// hold (ADR 0017). All of
+// [0, t) becomes final, so no later run (after a clock rollback, say)
+// computes those minutes again for the new device.
 func (d *DB) RetireMinutesBefore(ctx context.Context, t time.Time) error {
-	if _, err := d.sql.ExecContext(ctx, qMinutesRetire, t.Unix()); err != nil {
-		return fmt.Errorf("retiring credited minutes: %w", err)
-	}
-	return nil
+	return d.inTx(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, qMinutesRetireUnheld, t.Unix()); err != nil {
+			return fmt.Errorf("retiring credited minutes: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, qMinutesRetire, t.Unix()); err != nil {
+			return fmt.Errorf("retiring credited minutes: %w", err)
+		}
+		return addSpan(ctx, tx, time.Unix(0, 0), t)
+	})
 }
 
 // UnsentMinuteCount counts rows waiting for the server's answer.
