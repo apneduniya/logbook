@@ -34,7 +34,9 @@
 //     sent at any time, so an offline agent can catch up; if its catch-up
 //     splits a minute across batches, more projects are accepted for
 //     CatchUpWindow after the minute's first upload, but only when every
-//     row of it was first uploaded after it was final. An item refused
+//     row of it was first uploaded after it was final and the new project
+//     carries the key of the stored rows (ADR 0017: one computation per
+//     device-minute). An item refused
 //     because its minute is final comes back with "stored": every row the
 //     device holds for that minute after the batch, sorted by project, with
 //     its key (null for rows stored before ADR 0017), so the agent can

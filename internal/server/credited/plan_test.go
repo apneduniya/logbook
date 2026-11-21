@@ -493,6 +493,24 @@ func TestPlanKeys(t *testing.T) {
 			wantHeld:  map[int][]string{0: {"a you 30 09:01/7", "b you 30 09:01/7"}},
 		},
 		{
+			// The agent's clock is behind: m was caught up with key 7 just
+			// after it was final, then recomputed at key 9 with a second
+			// project. Taking b alone would leave rows of two computations
+			// in one device-minute, which no single key reproduces.
+			name:     "a caught-up minute refuses a project from another computation",
+			stored:   []Stored{caughtUp(you(old, "a", 20), now.Add(-time.Minute))},
+			items:    []Item{rekey(you(old, "a", 40), 9), rekey(you(old, "b", 20), 9)},
+			wantRej:  map[int]error{0: errFinal, 1: errFinal},
+			wantHeld: map[int][]string{0: {"a you 20 09:01/7"}, 1: {"a you 20 09:01/7"}},
+		},
+		{
+			name:     "a caught-up minute with rows of two keys takes no project",
+			stored:   []Stored{caughtUp(you(old, "a", 20), now.Add(-time.Minute)), caughtUp(rekey(you(old, "b", 20), 9), now.Add(-time.Minute))},
+			items:    []Item{you(old, "c", 10)},
+			wantRej:  map[int]error{0: errFinal},
+			wantHeld: map[int][]string{0: {"a you 20 09:01/7", "b you 20 09:01/9"}},
+		},
+		{
 			name:    "other rejections carry no rows",
 			stored:  []Stored{stored(you(fresh, "a", 60))},
 			items:   []Item{you(fresh, "b", 10)},

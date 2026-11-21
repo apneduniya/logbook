@@ -27,7 +27,8 @@ const (
 	FinalAfter           = 30 * time.Minute
 	// CatchUpWindow is how long after a final minute's first upload more
 	// of its projects may still arrive, for an offline agent whose catch-up
-	// splits a minute across batches.
+	// splits a minute across batches. They must carry the key the minute's
+	// rows were stored with: a device-minute is one unit (ADR 0017).
 	CatchUpWindow = 5 * time.Minute
 	MaxFutureSkew = 2 * time.Minute
 	// KeyWindow is the length of an agent run's window: a minute computed
@@ -298,6 +299,8 @@ type minuteState struct {
 	credited   int       // sum of credited seconds
 	projects   int       // number of rows
 	firstWrite time.Time // earliest updated_at
+	key        Key       // the rows' computation key, when they share one
+	oneKey     bool      // every row carries key
 }
 
 // IsRemoval reports whether it removes its (minute, project) row instead of
@@ -324,6 +327,11 @@ func Plan(items []Indexed, stored []Stored, b Bounds) (write, remove []Item, rej
 		st := minutes[k.minute]
 		if st.projects == 0 || s.UpdatedAt.Before(st.firstWrite) {
 			st.firstWrite = s.UpdatedAt
+		}
+		if st.projects == 0 {
+			st.key, st.oneKey = s.Key, true
+		} else if !st.key.Equal(s.Key) {
+			st.oneKey = false
 		}
 		st.credited += s.Credited
 		st.projects++
@@ -357,7 +365,7 @@ func Plan(items []Indexed, stored []Stored, b Bounds) (write, remove []Item, rej
 		if removal && !ok {
 			continue // nothing stored, nothing to remove
 		}
-		err := writable(k.minute, ok, minutes[k.minute], sealed, b)
+		err := writable(it.Item, ok, minutes[k.minute], sealed, b)
 		if ok && cur.RulesVersion == b.RulesVersion && sameItem(cur.Item, it.Item) && (!removal || err != nil) {
 			// An exact repeat, typically a retry. A row stored in the shape
 			// of a removal (by a server before removals) is still removed
@@ -464,10 +472,11 @@ func held(m time.Time, stored []Stored, write, remove []Item) []StoredRow {
 	return out
 }
 
-// writable reports why the device may not write minute m (nil if it may).
-// exists says whether this (minute, project) is stored; st describes all
-// of the minute's stored rows.
-func writable(m time.Time, exists bool, st minuteState, sealed map[time.Time]bool, b Bounds) error {
+// writable reports why the device may not write it (nil if it may).
+// exists says whether its (minute, project) is stored; st describes all of
+// the minute's stored rows.
+func writable(it Item, exists bool, st minuteState, sealed map[time.Time]bool, b Bounds) error {
+	m := it.Minute
 	switch {
 	case m.Before(b.Since):
 		return errBeforeDevice
@@ -484,8 +493,13 @@ func writable(m time.Time, exists bool, st minuteState, sealed map[time.Time]boo
 	// being caught up: every row was first written after the minute became
 	// final, and the first of them less than CatchUpWindow ago. A minute
 	// uploaded while open is closed for good, so idle or agent time can't
-	// turn into "you" time later under another project.
-	if !st.firstWrite.Before(m.Add(FinalAfter)) && b.Now.Sub(st.firstWrite) < CatchUpWindow {
+	// turn into "you" time later under another project. The new project
+	// must carry the key of the stored rows: it is the rest of the same
+	// computation, so the device-minute stays one unit that a single key
+	// reproduces (ADR 0017). A row from another computation is refused like
+	// a rewrite.
+	catchingUp := !st.firstWrite.Before(m.Add(FinalAfter)) && b.Now.Sub(st.firstWrite) < CatchUpWindow
+	if catchingUp && st.oneKey && !st.key.IsZero() && st.key.Equal(it.Key) {
 		return nil
 	}
 	return errFinal
