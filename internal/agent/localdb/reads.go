@@ -122,7 +122,11 @@ func (d *DB) Prune(ctx context.Context) (PruneResult, error) {
 				return fmt.Errorf("pruning: %w", err)
 			}
 		}
-		return bumpGeneration(ctx, tx, r.AIEvents+r.ActivitySamples+r.GitEvents+r.ActiveTime, now)
+		raw := r.AIEvents + r.ActivitySamples + r.GitEvents + r.ActiveTime
+		if err := raiseFloor(ctx, tx, raw, time.UnixMilli(cut)); err != nil {
+			return err
+		}
+		return bumpGeneration(ctx, tx, raw, now)
 	})
 	return r, err
 }

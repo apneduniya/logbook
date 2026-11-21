@@ -74,6 +74,10 @@ func TestMigration0007(t *testing.T) {
 		// Uploaded as d4, changed to d5 since and not sent again.
 		"INSERT INTO credited_minutes (minute, project, label, credited, cuts, flags, rules_version, digest, sent_digest, sent_final, cutoff) VALUES ("+
 			sec(-12)+", 'a', 'you', 30, '[]', '[\"low_signal\"]', 'v1', 'd5', 'd4', 0, 0)",
+		// Uploaded in a day the old chain sealed: the server takes no write
+		// there, so it stays as stored.
+		"INSERT INTO credited_minutes (minute, project, label, credited, cuts, flags, rules_version, digest, sent_digest, sent_final, cutoff) VALUES ("+
+			strconv.FormatInt(time.Date(2026, 11, 19, 23, 0, 0, 0, time.UTC).Unix(), 10)+", 'a', 'you', 60, '[]', '[]', 'v1', 'd6', 'd6', 1, 0)",
 		"INSERT INTO kv (key, value, updated_at) VALUES ('crediting.final_through', '"+minute(-40).Format(time.RFC3339)+"', 0)",
 		"INSERT INTO credit_cutoffs (from_minute, to_minute, cutoff) VALUES ("+sec(-50)+", "+sec(-45)+", 0)",
 		"INSERT INTO evidence_days (device_id, day, prev_chain_hash, content_hash, chain_hash, signature, rules_version, "+
@@ -113,25 +117,28 @@ func TestMigration0007(t *testing.T) {
 	if _, err := d.sql.ExecContext(ctx, "SELECT arrived_at FROM heartbeats"); err == nil {
 		t.Fatal("arrived_at still exists")
 	}
+	sealedDay, err := d.StoredMinutes(ctx, time.Date(2026, 11, 19, 0, 0, 0, 0, time.UTC), time.Date(2026, 11, 20, 0, 0, 0, 0, time.UTC))
+	if err != nil || len(sealedDay) != 1 || !sealedDay[0].Final || !sealedDay[0].Acknowledged || !sealedDay[0].Key.IsZero() ||
+		sealedDay[0].Credited != 60 {
+		t.Fatalf("row in a sealed day = %+v, %v; want it kept final, acknowledged and unkeyed", sealedDay, err)
+	}
 	rows, err := d.StoredMinutes(ctx, minute(-60), minute(0))
 	if err != nil || len(rows) != 3 {
-		t.Fatalf("credited minutes = %+v, %v; want the two answered ones and a probe", rows, err)
+		t.Fatalf("credited minutes = %+v, %v; want three probes (the never-sent row dropped)", rows, err)
 	}
-	for _, m := range []CreditedMinute{rows[0], rows[2]} {
-		if !m.Final || !m.Acknowledged || !m.Key.IsZero() {
-			t.Fatalf("legacy row = %+v, want final, acknowledged and unkeyed", m)
+	// Every row that was sent outside a sealed day becomes a removal probe,
+	// final and waiting to be sent, so the server answers with what it
+	// holds: the old agent recorded refused uploads like accepted ones.
+	for i, want := range []int{-50, -12, -10} {
+		probe := rows[i]
+		if !probe.Minute.Equal(minute(want)) || probe.Label != "idle" || probe.Credited != 0 || len(probe.Flags) != 0 ||
+			!probe.Final || probe.Acknowledged || probe.Key != (Key{T: minute(want + 1), H: 0}) {
+			t.Fatalf("probe %d = %+v", want, probe)
 		}
 	}
-	// The row changed since its upload is a removal probe, final and
-	// waiting to be sent, so the server answers with what it holds.
-	probe := rows[1]
-	if !probe.Minute.Equal(minute(-12)) || probe.Label != "idle" || probe.Credited != 0 || len(probe.Flags) != 0 ||
-		!probe.Final || probe.Acknowledged || probe.Key != (Key{T: minute(-11), H: 0}) {
-		t.Fatalf("probe = %+v", probe)
-	}
 	unsent, err := d.UnsentMinutes(ctx, time.Time{}, minute(0), 100)
-	if err != nil || len(unsent) != 1 || !unsent[0].Minute.Equal(minute(-12)) {
-		t.Fatalf("unsent after migrating = %+v, %v; want the probe", unsent, err)
+	if err != nil || len(unsent) != 3 {
+		t.Fatalf("unsent after migrating = %+v, %v; want the three probes", unsent, err)
 	}
 	for _, c := range []struct {
 		m    int

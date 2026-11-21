@@ -31,6 +31,10 @@ const (
 	// keyClock describes a clock problem ("" when none); see
 	// MinutesStatus.Clock.
 	keyClock = "crediting.clock"
+	// keyBelowFloor says why no minute is computed when the system clock is
+	// set back below deleted history ("" when not; see
+	// MinutesStatus.BelowFloor).
+	keyBelowFloor = "crediting.below_floor"
 	// keySealedThrough is the latest UTC day (YYYY-MM-DD) the evidence
 	// chain has moved past, sealed or found empty. It only grows; no minute
 	// before that day's end is computed or stored again.
@@ -113,6 +117,9 @@ type MinutesStatus struct {
 	// MaxClockSkew, or the server gave no usable time (no day is sealed
 	// until the clocks agree; minutes are still uploaded).
 	Clock string `json:"clock,omitempty"`
+	// BelowFloor, when non-empty, says no minute is computed because the
+	// system clock is set back before history the agent has already deleted.
+	BelowFloor string `json:"below_floor,omitempty"`
 	// Settling, when non-empty, says why no minute becomes final yet: the
 	// agent has just started (or woken) and waits for late events, for the
 	// hook spool to drain, or for the server's time (ADR 0017).
@@ -168,7 +175,7 @@ func LoadStatus(ctx context.Context, r StateReader) (Status, error) {
 	s.Minutes = MinutesStatus{
 		LastComputed: parseTime(m[keyLastComputed]), LastSuccess: parseTime(m[keyLastSuccess]),
 		LastError: m[keyLastError], LastErrorAt: parseTime(m[keyLastErrorAt]), Paused: m[keyPaused],
-		Refused: m[keyRefused], SealedError: m[keySealedError], Clock: m[keyClock],
+		Refused: m[keyRefused], SealedError: m[keySealedError], Clock: m[keyClock], BelowFloor: m[keyBelowFloor],
 		Settling: m[keySettling], LateLatest: parseTime(m[keyLateLatest]),
 	}
 	for _, c := range []struct {

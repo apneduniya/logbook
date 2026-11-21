@@ -169,6 +169,9 @@ func printCrediting(p func(string, ...any), c crediting.Status) {
 	if c.Minutes.Clock != "" {
 		p("            clock: %s", c.Minutes.Clock)
 	}
+	if c.Minutes.BelowFloor != "" {
+		p("            paused: %s", c.Minutes.BelowFloor)
+	}
 	if c.Minutes.Settling != "" {
 		p("            settling: %s", c.Minutes.Settling)
 	}

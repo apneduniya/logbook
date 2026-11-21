@@ -75,11 +75,11 @@ const (
 	qRepoPrune = `DELETE FROM repo_map WHERE seq <= ? AND EXISTS (SELECT 1 FROM repo_map n
 		WHERE n.path = repo_map.path AND n.seq > repo_map.seq AND n.since < ?)`
 
-	qHeartbeatTrim = `DELETE FROM heartbeats WHERE id <= (SELECT MAX(id) FROM heartbeats) - ? AND seq <= ?`
-	qAITrim        = `DELETE FROM ai_events WHERE id <= (SELECT MAX(id) FROM ai_events) - ? AND seq <= ?`
-	qActivityTrim  = `DELETE FROM activity_samples WHERE id <= (SELECT MAX(id) FROM activity_samples) - ? AND seq <= ?`
-	qGitTrim       = `DELETE FROM git_events WHERE id <= (SELECT MAX(id) FROM git_events) - ? AND seq <= ?`
-	qActiveTrim    = `DELETE FROM active_time WHERE id <= (SELECT MAX(id) FROM active_time) - ? AND seq <= ?`
+	qHeartbeatTrim = `DELETE FROM heartbeats WHERE id <= (SELECT MAX(id) FROM heartbeats) - ? AND seq <= ? AND time < ?`
+	qAITrim        = `DELETE FROM ai_events WHERE id <= (SELECT MAX(id) FROM ai_events) - ? AND seq <= ? AND time < ?`
+	qActivityTrim  = `DELETE FROM activity_samples WHERE id <= (SELECT MAX(id) FROM activity_samples) - ? AND seq <= ? AND time < ?`
+	qGitTrim       = `DELETE FROM git_events WHERE id <= (SELECT MAX(id) FROM git_events) - ? AND seq <= ? AND time < ?`
+	qActiveTrim    = `DELETE FROM active_time WHERE id <= (SELECT MAX(id) FROM active_time) - ? AND seq <= ? AND to_ms < ?`
 	// qActivitySpan bounds the activity table's row count from above: ids
 	// grow and rows leave from the oldest end.
 	qActivitySpan = `SELECT COALESCE(MAX(id) - MIN(id) + 1, 0) FROM activity_samples`

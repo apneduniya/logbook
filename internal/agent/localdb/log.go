@@ -35,6 +35,11 @@ const (
 	// KeyDroppedSamples counts activity samples dropped because the table
 	// was full of rows not sealed yet.
 	KeyDroppedSamples = "log.dropped_samples"
+	// keyFloor is the deletion floor, unix ms: every raw row deleted by the
+	// row cap or pruning had a time before it, and every row at or after it
+	// is still present. A computation that reads below it can't be replayed
+	// from the sealed blocks, so the crediting runner doesn't make one.
+	keyFloor = "log.floor"
 )
 
 // Logged is a logged row's value with its sequence number.
@@ -125,6 +130,10 @@ type Snapshot struct {
 	// Generation is the deletion generation (EventGeneration) in the
 	// snapshot.
 	Generation int64
+	// Floor is the deletion floor (keyFloor) in the same snapshot: rows with
+	// a time at or after it are all present. The zero Unix time when nothing
+	// was ever deleted.
+	Floor time.Time
 }
 
 // View runs fn with a snapshot of the log. fn must not keep the snapshot.
@@ -143,6 +152,11 @@ func (d *DB) View(ctx context.Context, fn func(*Snapshot) error) error {
 	if s.Generation, err = txCounter(ctx, tx, keyGeneration); err != nil {
 		return err
 	}
+	floor, err := txCounter(ctx, tx, keyFloor)
+	if err != nil {
+		return err
+	}
+	s.Floor = time.UnixMilli(floor).UTC()
 	return fn(s)
 }
 
@@ -413,10 +427,19 @@ func sealedSeq(ctx context.Context, tx *sql.Tx) (int64, error) {
 	return txCounter(ctx, tx, KeySealed)
 }
 
-// trimSealed runs a cap query (limit, sealed) and returns how many rows it
-// deleted: the oldest rows beyond limit, if the evidence chain sealed them.
-func trimSealed(ctx context.Context, tx *sql.Tx, query string, limit, sealed int64) (int64, error) {
-	res, err := tx.ExecContext(ctx, query, limit, sealed)
+// CapHorizon is how old a sealed row must be before the row cap may delete
+// it. Open minutes are computed from the last two hours of events (the
+// window plus struggle.ContextBefore), so rows they read are never trimmed
+// while the clock runs forward; if it is set back below the deletion floor,
+// the runner waits for it instead (Snapshot.Floor).
+const CapHorizon = 3 * time.Hour
+
+// trimSealed runs a cap query (limit, sealed, horizon) and returns how many
+// rows it deleted: the oldest rows beyond limit, if the evidence chain
+// sealed them and their time is before horizon. It raises the deletion
+// floor to horizon when it deletes anything.
+func trimSealed(ctx context.Context, tx *sql.Tx, query string, limit, sealed int64, horizon time.Time) (int64, error) {
+	res, err := tx.ExecContext(ctx, query, limit, sealed, horizon.UnixMilli())
 	if err != nil {
 		return 0, fmt.Errorf("trimming: %w", err)
 	}
@@ -424,5 +447,27 @@ func trimSealed(ctx context.Context, tx *sql.Tx, query string, limit, sealed int
 	if err != nil {
 		return 0, fmt.Errorf("trimming: %w", err)
 	}
+	if err := raiseFloor(ctx, tx, n, horizon); err != nil {
+		return 0, err
+	}
 	return n, nil
+}
+
+// raiseFloor moves the deletion floor up to t after deleting rows that were
+// all older than t. The floor never moves down.
+func raiseFloor(ctx context.Context, tx *sql.Tx, deleted int64, t time.Time) error {
+	if deleted <= 0 {
+		return nil
+	}
+	cur, err := txCounter(ctx, tx, keyFloor)
+	if err != nil {
+		return err
+	}
+	if t.UnixMilli() <= cur {
+		return nil
+	}
+	if _, err := tx.ExecContext(ctx, qKVSet, keyFloor, strconv.FormatInt(t.UnixMilli(), 10), t.UnixMilli()); err != nil {
+		return fmt.Errorf("raising the deletion floor: %w", err)
+	}
+	return nil
 }

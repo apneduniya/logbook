@@ -324,7 +324,16 @@ func (r *Runner) compute(ctx context.Context, now, through time.Time, st settleS
 		repos []struggle.Repo
 		late  localdb.LateResult
 	)
+	below := false
 	err := r.opt.Store.View(ctx, func(snap *localdb.Snapshot) error {
+		if s.history.Before(snap.Floor) {
+			// The run would read history that pruning or the row cap has
+			// deleted, which the sealed blocks still hold: a replay at its
+			// key would see rows it didn't. Only a clock set back far can
+			// get here; wait for it to catch up.
+			below = true
+			return nil
+		}
 		key = localdb.Key{T: s.to, H: snap.H}
 		if err := r.cache.refresh(ctx, snap, s.history, s.to); err != nil {
 			return err
@@ -339,6 +348,15 @@ func (r *Runner) compute(ctx context.Context, now, through time.Time, st settleS
 	if err != nil {
 		return err
 	}
+	if below {
+		msg := "the system clock is set back before deleted history, so no minutes are computed until it catches up"
+		if r.shown[keyBelowFloor] != msg {
+			r.opt.Logger.WarnContext(ctx, msg, "window_start", s.history.UTC().Format(time.RFC3339))
+		}
+		r.show(ctx, keyBelowFloor, msg)
+		return nil
+	}
+	r.show(ctx, keyBelowFloor, "")
 	var active []struggle.ActiveTime
 	if r.opt.ActiveTimes != nil {
 		if active, err = r.opt.ActiveTimes.ActiveTimes(ctx, s.history, s.to); err != nil {

@@ -58,15 +58,17 @@ ALTER TABLE active_time DROP COLUMN arrived_at;
 -- row stored before it; it is never recomputed.
 --
 -- Rows from before this migration become final, acknowledged and unkeyed
--- when the server had answered for them; rows never sent are dropped (they
--- can't be uploaded without a key). A row uploaded before but changed
--- since leaves the server holding an older value the agent can't rebuild,
--- so it becomes a final, unacknowledged removal probe (idle, no credit,
--- cuts or flags, key computed_at = minute + 60 s, snapshot 0). Its upload
--- asks the server what it holds: a final minute it holds a row for is
--- refused with the stored rows, which the agent adopts; one it holds no row
--- for accepts the removal without writing anything, and the probe goes.
--- Pre-release data only.
+-- only in days the old chain sealed (the server refuses any write there, so
+-- nothing can be asked). Rows never sent are dropped: they can't be
+-- uploaded without a key. Every other row that was sent becomes a final,
+-- unacknowledged removal probe (idle, no credit, cuts or flags, key
+-- computed_at = minute + 60 s, snapshot 0), because the old agent recorded
+-- a refused upload exactly like an accepted one: what it stored need not be
+-- what the server holds. The probe's upload asks the server: a final minute
+-- it holds rows for is refused with the stored rows, which the agent
+-- adopts; one it holds no row for accepts the removal without writing
+-- anything, and the probe goes; a minute still open on the server loses its
+-- row on both sides. Pre-release data only.
 DELETE FROM credited_minutes WHERE sent_final = 0 AND digest <> sent_digest AND sent_digest = '';
 DROP INDEX credited_minutes_unsent;
 ALTER TABLE credited_minutes ADD COLUMN computed_at INTEGER;
@@ -76,7 +78,7 @@ ALTER TABLE credited_minutes ADD COLUMN acknowledged INTEGER NOT NULL DEFAULT 0;
 UPDATE credited_minutes SET state = 'final', acknowledged = 1;
 UPDATE credited_minutes SET label = 'idle', credited = 0, cuts = '[]', flags = '[]', digest = 'probe',
     sent_digest = '?', computed_at = minute + 60, snapshot = 0, acknowledged = 0
-WHERE sent_final = 0 AND digest <> sent_digest;
+WHERE sent_digest <> '' AND strftime('%Y-%m-%d', minute, 'unixepoch') NOT IN (SELECT day FROM evidence_days);
 ALTER TABLE credited_minutes DROP COLUMN cutoff;
 ALTER TABLE credited_minutes DROP COLUMN sent_final;
 CREATE INDEX credited_minutes_unacknowledged ON credited_minutes (acknowledged, minute);

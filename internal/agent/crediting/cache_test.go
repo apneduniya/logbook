@@ -167,8 +167,13 @@ func diffEvents(got, want localdb.Events) string {
 func TestEventCacheDropsTrimmedRows(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 11, 20, 12, 0, 5, 0, time.UTC)
+	// The row cap never trims rows a run's window still covers
+	// (localdb.CapHorizon), so the database's clock runs ahead here to
+	// trim inside the cached window: the cache must still notice deletions
+	// by the generation, whatever deletes them.
+	dbNow := now.Add(localdb.CapHorizon + time.Hour)
 	db, err := localdb.Open(ctx, filepath.Join(t.TempDir(), "agent.db"),
-		localdb.WithClock(func() time.Time { return now }), localdb.WithEventCap(2))
+		localdb.WithClock(func() time.Time { return dbNow }), localdb.WithEventCap(2))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -85,7 +85,7 @@ func (d *DB) InsertActiveTime(ctx context.Context, pts []ActiveTimePoint) error 
 		if err != nil {
 			return err
 		}
-		_, err = trimSealed(ctx, tx, qActiveTrim, d.eventCap, sealed)
+		_, err = trimSealed(ctx, tx, qActiveTrim, d.eventCap, sealed, d.now().Add(-CapHorizon))
 		return err
 	})
 }

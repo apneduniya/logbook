@@ -133,7 +133,7 @@ func (d *DB) logHeartbeats(ctx context.Context, tx *sql.Tx, hbs []wire.Heartbeat
 	if err != nil {
 		return err
 	}
-	n, err := trimSealed(ctx, tx, qHeartbeatTrim, d.eventCap, sealed)
+	n, err := trimSealed(ctx, tx, qHeartbeatTrim, d.eventCap, sealed, d.now().Add(-CapHorizon))
 	if err != nil {
 		return err
 	}

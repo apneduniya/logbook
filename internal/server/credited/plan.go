@@ -172,6 +172,7 @@ var (
 	errBeforeDevice    = errors.New("minute is before the UTC day the device was registered")
 	errSealed          = errors.New("minute is in a UTC day this device has already sealed with an evidence record")
 	errFinal           = errors.New("minute is final: stored minutes can only be changed for 30 minutes")
+	errMixedKeys       = errors.New("all rows of a minute must carry the same computed_at and snapshot")
 	errTooManyProjects = errors.New("a minute can have at most 8 projects per device")
 	errOverMinuteCap   = errors.New("credited seconds for this minute would exceed 60 across projects")
 	errUnknownVersion  = errors.New("unknown rules_version")
@@ -406,27 +407,44 @@ func Plan(items []Indexed, stored []Stored, b Bounds) (write, remove []Item, rej
 			return cmp.Or(cmp.Compare(rank(a), rank(b)), cmp.Compare(a.Index, b.Index))
 		})
 		st := minutes[m]
+		var mw, mr []Item
+		var mrej []Rejection
 		for _, c := range changes {
 			if c.remove {
 				st.credited += c.delta
 				st.projects--
-				remove = append(remove, c.Item)
+				mr = append(mr, c.Item)
 				continue
 			}
 			if c.isNew && st.projects >= MaxProjectsPerMinute {
-				rejected = append(rejected, Rejection{Index: c.Index, Error: errTooManyProjects.Error()})
+				mrej = append(mrej, Rejection{Index: c.Index, Error: errTooManyProjects.Error()})
 				continue
 			}
 			if st.credited+c.delta > MaxCreditedSecs {
-				rejected = append(rejected, Rejection{Index: c.Index, Error: errOverMinuteCap.Error()})
+				mrej = append(mrej, Rejection{Index: c.Index, Error: errOverMinuteCap.Error()})
 				continue
 			}
 			st.credited += c.delta
 			if c.isNew {
 				st.projects++
 			}
-			write = append(write, c.Item)
+			mw = append(mw, c.Item)
 		}
+		// A device-minute is one unit that a single key reproduces (ADR
+		// 0017): the agent replaces a changed minute whole, so every row it
+		// keeps afterwards carries the same key. A batch that would leave
+		// rows of two computations (two keys in the request, or a new key
+		// next to untouched rows of an older one) changes nothing in the
+		// minute.
+		if !oneKey(held(m, stored, mw, mr)) {
+			for _, c := range changes {
+				rejected = append(rejected, Rejection{Index: c.Index, Error: errMixedKeys.Error()})
+			}
+			continue
+		}
+		write = append(write, mw...)
+		remove = append(remove, mr...)
+		rejected = append(rejected, mrej...)
 		minutes[m] = st
 	}
 
@@ -472,6 +490,17 @@ func held(m time.Time, stored []Stored, write, remove []Item) []StoredRow {
 	return out
 }
 
+// oneKey reports whether every row carries the same key (legacy rows have
+// the zero key).
+func oneKey(rows []StoredRow) bool {
+	for _, r := range rows[min(1, len(rows)):] {
+		if !sameKey(r, rows[0]) {
+			return false
+		}
+	}
+	return true
+}
+
 // writable reports why the device may not write it (nil if it may).
 // exists says whether its (minute, project) is stored; st describes all of
 // the minute's stored rows.
@@ -515,4 +544,12 @@ func utcDay(t time.Time) time.Time {
 func sameItem(a, b Item) bool {
 	return a.Label == b.Label && a.Credited == b.Credited &&
 		slices.Equal(a.Cuts, b.Cuts) && slices.Equal(a.Flags, b.Flags) && a.Key.Equal(b.Key)
+}
+
+// sameKey reports whether a and b carry the same key (both legacy counts).
+func sameKey(a, b StoredRow) bool {
+	if (a.ComputedAt == nil) != (b.ComputedAt == nil) || (a.Snapshot == nil) != (b.Snapshot == nil) {
+		return false
+	}
+	return (a.ComputedAt == nil || a.ComputedAt.Equal(*b.ComputedAt)) && (a.Snapshot == nil || *a.Snapshot == *b.Snapshot)
 }

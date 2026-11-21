@@ -580,6 +580,12 @@ func (d *DB) PruneCrediting(ctx context.Context) (CreditPruneResult, error) {
 		if err != nil {
 			return fmt.Errorf("pruning repo mapping: %w", err)
 		}
+		// Pruned repo rows were each replaced by a newer row logged before
+		// them in time, so the mapping at any later snapshot is unchanged;
+		// only heartbeats move the floor.
+		if err := raiseFloor(ctx, tx, r.Heartbeats, cut); err != nil {
+			return err
+		}
 		if err := bumpGeneration(ctx, tx, r.Heartbeats+repos, d.now()); err != nil {
 			return err
 		}

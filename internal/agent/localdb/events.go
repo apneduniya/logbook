@@ -68,7 +68,7 @@ func (d *DB) InsertEvents(ctx context.Context, evs []wire.LocalEvent, marks ...K
 			if err := insertEach(ctx, tx, w, batch.insert, batch.evs); err != nil {
 				return err
 			}
-			n, err := trimSealed(ctx, tx, batch.cap, d.eventCap, sealed)
+			n, err := trimSealed(ctx, tx, batch.cap, d.eventCap, sealed, now.Add(-CapHorizon))
 			if err != nil {
 				return err
 			}
@@ -93,7 +93,7 @@ func (d *DB) InsertEvents(ctx context.Context, evs []wire.LocalEvent, marks ...K
 // samples that fit under the cap and counts the rest as dropped. It
 // returns how many rows it trimmed.
 func (d *DB) insertActivity(ctx context.Context, tx *sql.Tx, w *logWriter, evs []wire.LocalEvent, sealed int64, now time.Time) (int64, error) {
-	trimmed, err := trimSealed(ctx, tx, qActivityTrim, d.eventCap-int64(len(evs)), sealed)
+	trimmed, err := trimSealed(ctx, tx, qActivityTrim, d.eventCap-int64(len(evs)), sealed, now.Add(-CapHorizon))
 	if err != nil {
 		return 0, err
 	}

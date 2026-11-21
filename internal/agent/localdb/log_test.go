@@ -254,7 +254,8 @@ func TestRetentionDeletesOnlySealedRows(t *testing.T) {
 	ctx := context.Background()
 	d, _ := openTest(t, WithEventCap(3))
 	for i := range 5 {
-		if err := d.RecordActivity(ctx, *activity(minute(-10 + i)).Activity); err != nil {
+		// Over CapHorizon old, so the cap may trim them once sealed.
+		if err := d.RecordActivity(ctx, *activity(minute(-300 + i)).Activity); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -294,6 +295,50 @@ func TestRetentionDeletesOnlySealedRows(t *testing.T) {
 	if g, _ := d.EventGeneration(ctx); g != 1 {
 		t.Fatalf("generation after a trim = %d, want 1", g)
 	}
+	// The trim raised the deletion floor to its horizon, so no computation
+	// reads below what was deleted.
+	if f := floor(ctx, t, d); !f.Equal(testNow.Add(-CapHorizon)) {
+		t.Fatalf("floor = %v, want %v", f, testNow.Add(-CapHorizon))
+	}
+}
+
+// The row cap never deletes rows younger than CapHorizon, even when they
+// are sealed: open minutes still read them, and a replay at their key reads
+// them from the sealed blocks.
+func TestCapKeepsRecentSealedRows(t *testing.T) {
+	ctx := context.Background()
+	d, _ := openTest(t, WithEventCap(2))
+	for i := range 3 {
+		if err := d.RecordActivity(ctx, *activity(minute(-30 + i)).Activity); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seal(t, d, high(ctx, t, d))
+	if err := d.RecordActivity(ctx, *activity(minute(-1)).Activity); err != nil {
+		t.Fatal(err)
+	}
+	if n := countRows(t, d.sql, "activity_samples"); n != 2 {
+		t.Fatalf("activity samples = %d, want 2", n)
+	}
+	w, err := d.ReadWindow(ctx, minute(-120), minute(0), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(w.Events.Activity) != 2 {
+		t.Fatalf("window holds %d samples, want the two kept", len(w.Events.Activity))
+	}
+	if f := floor(ctx, t, d); !f.Equal(time.UnixMilli(0).UTC()) {
+		t.Fatalf("floor = %v with nothing deleted", f)
+	}
+}
+
+func floor(ctx context.Context, t *testing.T, d *DB) time.Time {
+	t.Helper()
+	var f time.Time
+	if err := d.View(ctx, func(s *Snapshot) error { f = s.Floor; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	return f
 }
 
 func TestPruneOnlySealedRows(t *testing.T) {
