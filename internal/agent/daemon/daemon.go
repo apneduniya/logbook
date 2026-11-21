@@ -196,6 +196,10 @@ func Run(ctx context.Context, o Options) error {
 	log.Info("logbook agent started", "version", o.Version, "addr", ln.Addr().String(), "sensors", len(sensors))
 	g, gctx := errgroup.WithContext(ctx)
 	served = true
+	// Mark the receiver up before it can accept an export: active time is
+	// kept only where a mark covers it, and the ticker's first mark runs in
+	// its own goroutine, which may not get to run before a quick stop.
+	markReceiverUp(ctx, log, db, started)
 	g.Go(func() error { return api.Serve(gctx, ln) })
 	for _, w := range workers {
 		g.Go(func() error { return w.Run(gctx) })
