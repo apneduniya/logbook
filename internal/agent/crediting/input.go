@@ -10,33 +10,30 @@ import (
 	"time"
 
 	"github.com/apneduniya/logbook/internal/agent/localdb"
-	"github.com/apneduniya/logbook/pkg/evidence"
 	"github.com/apneduniya/logbook/pkg/struggle"
 	"github.com/apneduniya/logbook/pkg/wire"
 )
 
-// Window arithmetic (ADR 0010, ADR 0016).
+// Window arithmetic (ADR 0010, ADR 0017).
 const (
 	// Window is how far back each run recomputes minutes.
 	Window = 60 * time.Minute
 	// History is the extra context before the window the engine reads: the
-	// engine's whole look-back, so every minute in the window, also one
-	// finalized at the window's start after a restart, is computed from
-	// all the events its rules read.
+	// engine's whole look-back, so every minute in the window is computed
+	// from all the events its rules read.
 	History = struggle.ContextBefore
 	// FinalAfter is the age at which the server takes no more rewrites of
 	// a minute it has seen.
 	FinalAfter = 30 * time.Minute
-	// FinalLead is when a minute becomes final on the agent: the first
-	// settled run at or after minute + FinalLead computes it for the last
-	// time, with that run's arrival cutoff, while the server still takes
-	// the rewrite. It is past struggle.Lookahead, so the minute's rules have
-	// all the events after it they read.
+	// FinalLead is when a minute becomes final on the agent: its first
+	// settled run with T >= minute + FinalLead makes it final, while the
+	// server still takes the write. It is past struggle.Lookahead, so the
+	// minute's rules have all the events after it they read.
 	FinalLead = FinalAfter - time.Minute
-	// DefaultSettle is how long after a start (or a gap in runs, such as a
-	// sleep) the agent waits before making minutes final, so events that
+	// DefaultSettle is how long after a start (or a wake, or a long gap in
+	// runs) the agent waits before making minutes final, so events that
 	// arrive late because it was down (the hook spool, wakatime-cli's
-	// offline queue) still count.
+	// offline queue, a delayed OTLP export) still count.
 	DefaultSettle = 15 * time.Minute
 	// DayGrace is how long after a UTC day ends before it is sealed.
 	DayGrace = time.Hour
@@ -44,65 +41,75 @@ const (
 
 // span is one run's time ranges, all UTC.
 type span struct {
-	// from and to bound the minutes the engine emits, [from, to).
+	// from and to bound the minutes the engine emits, [from, to). to is the
+	// run's T: the end of its window, a whole minute.
 	from, to time.Time
 	// history is where event reads start.
 	history time.Time
-	// finalBefore: minutes before it are final.
-	finalBefore time.Time
 }
 
-// spanAt returns the ranges for a run at now. The minute now is in hasn't
-// ended, so it is not computed yet.
+// spanAt returns the ranges of the run whose window ends at T, the whole
+// minute now is in (that minute hasn't ended, so it isn't computed yet).
 func spanAt(now time.Time) span {
 	to := now.UTC().Truncate(time.Minute)
 	from := to.Add(-Window)
-	return span{from: from, to: to, history: from.Add(-History), finalBefore: finalBefore(now)}
+	return span{from: from, to: to, history: from.Add(-History)}
 }
 
-// finalBefore returns the first minute that is not yet final at now: a
-// minute M is final once now >= M + FinalAfter.
-func finalBefore(now time.Time) time.Time {
+// finalBefore returns where a settled run at T makes minutes final: every
+// minute m with T >= m + FinalLead, so every minute before T - FinalLead
+// plus one minute.
+func finalBefore(t time.Time) time.Time {
+	return t.UTC().Truncate(time.Minute).Add(-FinalLead).Add(time.Minute)
+}
+
+// serverFinalBefore returns the first minute the server doesn't hold final
+// yet at now: a minute M is final there once now >= M + FinalAfter.
+func serverFinalBefore(now time.Time) time.Time {
 	return now.UTC().Add(-FinalAfter).Truncate(time.Minute).Add(time.Minute)
 }
 
-// cutoff is a run's arrival cutoff: the end of its window. The run reads
-// the events stored by then; one stored later counts from the next run.
-// It is a whole minute, a few seconds before the run starts, so every row
-// stamped by then is committed when the run reads (rows are stamped while
-// their transaction holds the write lock).
-func (s span) cutoff() time.Time { return s.to }
-
-// engineInput builds the engine's Input for one run from local events: those
-// in [s.history, s.to) that arrived by the run's cutoff.
+// engineInput builds the engine's Input for the run whose window is s, from
+// logged events (all at or below the run's high-water mark) and the repo
+// mapping at the same mark. Events outside [s.history, s.to) are left out.
+// It is pure: a replay at the same key gets the same Input, except for the
+// optional active time, which feeds only flags.
 func engineInput(s span, ev localdb.Events, active []struggle.ActiveTime, repos []struggle.Repo, tz *time.Location) struggle.Input {
-	cutoff := s.cutoff()
 	var hbs []struggle.Heartbeat
-	for _, h := range arrivedBy(ev.Heartbeats, s, cutoff, heartbeatTime) {
+	for _, h := range values(ev.Heartbeats, s, heartbeatTime) {
 		hbs = append(hbs, engineHeartbeat(h))
 	}
 	return struggle.Input{
 		Window:     struggle.Window{From: s.from, To: s.to},
-		Activity:   arrivedBy(ev.Activity, s, cutoff, activityTime),
+		DataEnd:    s.to,
+		Activity:   values(ev.Activity, s, activityTime),
 		Heartbeats: hbs,
-		AI:         arrivedBy(ev.AI, s, cutoff, aiTime),
+		AI:         values(ev.AI, s, aiTime),
 		ActiveTime: active,
 		Repos:      repos,
 		TZ:         tz,
 	}
 }
 
-// arrivedBy returns the events of s that arrived by cutoff, with time in
-// [s.history, s.to).
-func arrivedBy[T any](evs []evidence.Received[T], s span, cutoff time.Time,
-	at func(evidence.Received[T]) time.Time) []T {
+// values returns the events of evs with time in [s.history, s.to).
+func values[T any](evs []localdb.Logged[T], s span, at func(T) time.Time) []T {
 	out := make([]T, 0, len(evs))
 	for _, e := range evs {
-		if t := at(e); !t.Before(s.history) && t.Before(s.to) && !e.Arrived.After(cutoff) {
+		if t := at(e.Event); !t.Before(s.history) && t.Before(s.to) {
 			out = append(out, e.Event)
 		}
 	}
 	return out
+}
+
+// Event times as stored and ordered by the local database: unix
+// milliseconds. A heartbeat's payload may carry finer times, which the
+// database orders by sequence number within the millisecond.
+func activityTime(e wire.ActivitySample) time.Time { return e.Time }
+func aiTime(e wire.AIEvent) time.Time              { return e.Time }
+func gitTime(e wire.GitEvent) time.Time            { return e.Time }
+func heartbeatTime(h wire.Heartbeat) time.Time {
+	return time.UnixMilli(h.Timestamp().UnixMilli()).UTC()
 }
 
 // engineHeartbeat is the part of a heartbeat the engine reads.
@@ -149,14 +156,15 @@ func minuteRows(s span, res struggle.Result) []localdb.CreditedMinute {
 	})
 }
 
-// superseded is the row that replaces an open minute's project the engine no
-// longer reports, once the server has seen it: labelled idle, with no
-// credit, cuts or flags. The server reads that shape as a removal and
-// deletes its row (credited.IsRemoval, ADR 0014), which frees the project's
-// slot for the one that displaced it; both go in one batch, since a minute's
-// rows are never split, and the removal sorts first (no credit).
-func superseded(old localdb.CreditedMinute) localdb.CreditedMinute {
-	return newRow(old.Minute, old.Project, string(struggle.LabelIdle), 0, nil, nil, struggle.RulesVersion)
+// removal is the row that removes a project the server holds from an open
+// minute whose new result no longer has it: labelled idle, with no credit,
+// cuts or flags. The server reads that shape as a removal and deletes its
+// row (credited.IsRemoval, ADR 0014), which frees the project's slot for the
+// one that displaced it; both go in one batch, since a minute's rows are
+// never split, and the removal sorts first (no credit). The engine never
+// emits that shape.
+func removal(at time.Time, project string) localdb.CreditedMinute {
+	return newRow(at, project, string(struggle.LabelIdle), 0, nil, nil, struggle.RulesVersion)
 }
 
 func newRow(at time.Time, project, label string, credited int, cuts, flags []string, rules string) localdb.CreditedMinute {
@@ -183,22 +191,6 @@ func digest(r localdb.CreditedMinute) string {
 		h.Write([]byte{0})
 	}
 	return hex.EncodeToString(h.Sum(nil)[:16])
-}
-
-// evidenceActiveTimes converts active-time datapoints for the evidence
-// encoding, keeping those whose To falls in [start, end).
-func evidenceActiveTimes(in []struggle.ActiveTime, start, end time.Time) []evidence.ActiveTime {
-	var out []evidence.ActiveTime
-	for _, a := range in {
-		if a.To.Before(start) || !a.To.Before(end) {
-			continue
-		}
-		out = append(out, evidence.ActiveTime{
-			From: a.From, To: a.To, SessionID: a.SessionID, UserSecs: a.UserSecs, CLISecs: a.CLISecs,
-			Harness: a.Harness, ProjectCwd: a.ProjectCwd,
-		})
-	}
-	return out
 }
 
 // utcDay returns the UTC date of t.

@@ -7,6 +7,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/apneduniya/logbook/pkg/evidence"
 )
 
 // logCounter counts log records whose message contains a word.
@@ -86,26 +88,29 @@ func TestClockBehindSealedDayPausesCrediting(t *testing.T) {
 		t.Fatalf("%d log lines about the clock, want 1", n)
 	}
 
-	// The clock catches up a little past the sealed day: crediting resumes,
-	// and minutes of the sealed day in the window are left alone.
-	e.set(time.Date(2026, 11, 20, 0, 10, 5, 0, time.UTC))
+	// The clock catches up past the sealed day: crediting resumes. Minutes
+	// of the sealed day in the window are left alone, and so are the
+	// minutes the run at 01:00 made final (up to 00:31), even empty ones.
+	e.set(time.Date(2026, 11, 20, 0, 40, 5, 0, time.UTC))
 	e.credit(time.Date(2026, 11, 19, 23, 50, 0, 0, time.UTC), "app", 60)
 	e.credit(time.Date(2026, 11, 20, 0, 5, 0, 0, time.UTC), "app", 60)
+	e.credit(time.Date(2026, 11, 20, 0, 35, 0, 0, time.UTC), "app", 60)
 	e.run()
 	s = e.status()
 	if s.Minutes.Clock != "" || s.Minutes.SealedRejected != 0 || s.Minutes.Rejected != 0 || s.Minutes.Waiting != 0 {
 		t.Fatalf("status after the clock caught up = %+v", s.Minutes)
 	}
-	e.wantServerMinute(time.Date(2026, 11, 20, 0, 5, 0, 0, time.UTC), "app", 60)
-	for _, m := range []time.Time{time.Date(2026, 11, 19, 23, 30, 0, 0, time.UTC), time.Date(2026, 11, 19, 23, 50, 0, 0, time.UTC)} {
+	e.wantServerMinute(time.Date(2026, 11, 20, 0, 35, 0, 0, time.UTC), "app", 60)
+	for _, m := range []time.Time{time.Date(2026, 11, 19, 23, 30, 0, 0, time.UTC), time.Date(2026, 11, 19, 23, 50, 0, 0, time.UTC),
+		time.Date(2026, 11, 20, 0, 5, 0, 0, time.UTC)} {
 		if _, ok := e.srv.minute(id, m, "app"); ok {
-			t.Fatalf("minute %s of the sealed day was sent", m.Format(time.RFC3339))
+			t.Fatalf("minute %s, sealed or final, was sent", m.Format(time.RFC3339))
 		}
 	}
-	// Paused, resumed, and the minutes final by the later clock computed
-	// again (ADR 0016).
-	if n := logs.count(); n != 3 {
-		t.Fatalf("%d log lines about the clock, want 3 (paused, resumed, final minutes recomputed)", n)
+	// Paused and resumed; final minutes stay final whatever the clock did
+	// (ADR 0017), so nothing else is said.
+	if n := logs.count(); n != 2 {
+		t.Fatalf("%d log lines about the clock, want 2 (paused, resumed)", n)
 	}
 }
 
@@ -217,8 +222,13 @@ func TestSealingNeedsServerTime(t *testing.T) {
 				e.run()
 				days = e.srv.storedDays(id)
 			}
-			if len(days) != 2 || days[0].Day != "2026-11-20" || days[1].Day != "2026-11-22" {
-				t.Fatalf("server days = %+v, want the 20th and the 22nd", days)
+			// The 20th's block holds every row logged so far; the 21st and
+			// the 22nd have none left and are skipped.
+			if len(days) != 1 || days[0].Day != "2026-11-20" || days[0].EventCounts[evidence.TypeHeartbeat] != 2 {
+				t.Fatalf("server days = %+v, want the 20th with both days' rows", days)
+			}
+			if v, err := e.db.Get(t.Context(), keySealedThrough); err != nil || v != "2026-11-22" {
+				t.Fatalf("sealed through %q (%v), want 2026-11-22", v, err)
 			}
 			if s := e.status(); s.Minutes.Clock != "" {
 				t.Fatalf("status clock = %q once the clocks agree", s.Minutes.Clock)

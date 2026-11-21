@@ -1,46 +1,88 @@
 package crediting
 
 import (
-	"cmp"
 	"context"
 	"fmt"
 	"math/rand/v2"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/apneduniya/logbook/internal/agent/localdb"
+	"github.com/apneduniya/logbook/pkg/evidence"
 	"github.com/apneduniya/logbook/pkg/struggle"
 	"github.com/apneduniya/logbook/pkg/wire"
 )
 
-// delivery is one raw event and when it reaches the agent.
+// delivery is one raw event and when it reaches the agent (real time).
 type delivery struct {
-	at time.Time
-	ev wire.LocalEvent
-	hb *wire.Heartbeat
+	at  time.Time
+	ev  wire.LocalEvent
+	hbs []wire.Heartbeat
 }
 
-// downtime is a span the agent is stopped: no runs, no sensor samples, and
-// nothing reaches it (hooks spool, editors queue).
-type downtime struct{ from, to time.Time }
+// downtime is a span the agent doesn't run: stopped (a restart follows:
+// the database is reopened and the spool drained) or asleep (the process
+// keeps its state; the machine was suspended). Nothing reaches it
+// meanwhile: hooks spool, editors queue.
+type downtime struct {
+	from, to time.Time
+	asleep   bool
+}
+
+func (d downtime) String() string {
+	kind := "stopped"
+	if d.asleep {
+		kind = "asleep"
+	}
+	return fmt.Sprintf("%s %s-%s", kind, d.from.Format("15:04"), d.to.Format("15:04"))
+}
 
 func isDown(downs []downtime, t time.Time) bool {
 	return slices.ContainsFunc(downs, func(d downtime) bool { return !t.Before(d.from) && t.Before(d.to) })
 }
 
-// randomStream makes two hours of activity, heartbeats and AI hook events
-// with random delivery delays (most within seconds, some minutes, a few an
-// hour, as from wakatime-cli's offline queue), and random downtimes. An
-// event due while the agent is down arrives after it starts again: hook
-// events with the startup spool drain, heartbeats when the editor next
-// retries.
-func randomStream(rng *rand.Rand, from, to time.Time) ([]delivery, []downtime) {
+// skew is a span the agent's clock is off by off (forward or back).
+type skew struct {
+	from, to time.Time
+	off      time.Duration
+}
+
+func (s skew) String() string {
+	return fmt.Sprintf("%+v %s-%s", s.off, s.from.Format("15:04"), s.to.Format("15:04"))
+}
+
+func skewAt(skews []skew, t time.Time) time.Duration {
+	for _, s := range skews {
+		if !t.Before(s.from) && t.Before(s.to) {
+			return s.off
+		}
+	}
+	return 0
+}
+
+// randomStream makes two hours of activity, heartbeats, AI hook events and
+// git commits with random delivery delays (most within seconds, some
+// minutes, a few an hour, as from wakatime-cli's offline queue), random
+// downtimes and random clock jumps. An event due while the agent is down
+// arrives after it runs again: hook events with the startup spool drain,
+// heartbeats when the editor next retries (sometimes resent: a duplicate).
+func randomStream(rng *rand.Rand, from, to time.Time) ([]delivery, []downtime, []skew) {
 	var downs []downtime
 	for range 1 + rng.IntN(2) {
 		start := from.Add(time.Duration(10+rng.IntN(90)) * time.Minute)
-		downs = append(downs, downtime{start, start.Add(time.Duration(3+rng.IntN(60)) * time.Minute)})
+		downs = append(downs, downtime{start, start.Add(time.Duration(3+rng.IntN(60)) * time.Minute), rng.IntN(2) == 0})
+	}
+	var skews []skew
+	for range rng.IntN(3) {
+		start := from.Add(time.Duration(rng.IntN(100)) * time.Minute)
+		off := time.Duration(2+rng.IntN(40)) * time.Minute
+		if rng.IntN(2) == 0 {
+			off = -off
+		}
+		skews = append(skews, skew{start, start.Add(time.Duration(5+rng.IntN(25)) * time.Minute), off})
 	}
 	restart := func(t time.Time) time.Time {
 		for _, d := range downs {
@@ -51,7 +93,7 @@ func randomStream(rng *rand.Rand, from, to time.Time) ([]delivery, []downtime) {
 		return t
 	}
 	var out []delivery
-	add := func(t time.Time, ev wire.LocalEvent, hb *wire.Heartbeat, spooled bool) {
+	add := func(t time.Time, d delivery, spooled bool) {
 		delay := time.Duration(rng.IntN(20)) * time.Second
 		switch k := rng.IntN(20); {
 		case k == 0:
@@ -59,14 +101,14 @@ func randomStream(rng *rand.Rand, from, to time.Time) ([]delivery, []downtime) {
 		case k < 3:
 			delay = time.Duration(1+rng.IntN(10)) * time.Minute
 		}
-		at := t.Add(delay)
-		if r := restart(at); !r.Equal(at) {
-			at = r.Add(time.Duration(rng.IntN(300)) * time.Second)
+		d.at = t.Add(delay)
+		if r := restart(d.at); !r.Equal(d.at) {
+			d.at = r.Add(time.Duration(rng.IntN(300)) * time.Second)
 			if spooled {
-				at = r.Add(time.Second) // the startup drain
+				d.at = r.Add(time.Second) // the startup drain
 			}
 		}
-		out = append(out, delivery{at: at, ev: ev, hb: hb})
+		out = append(out, d)
 	}
 	hashes := []string{strings.Repeat("a1", 32), strings.Repeat("b2", 32)}
 	kinds := []wire.AIEventKind{wire.AIToolStart, wire.AIToolEnd, wire.AIToolEnd, wire.AITurnEnd, wire.AIPermissionAsk}
@@ -85,7 +127,11 @@ func randomStream(rng *rand.Rand, from, to time.Time) ([]delivery, []downtime) {
 			p := []string{"app", "lib"}[rng.IntN(2)]
 			h := wire.Heartbeat{Entity: "/src/" + p + "/main.go", Project: p, IsWrite: rng.IntN(3) == 0,
 				Lineno: new(1 + rng.IntN(3)), Time: float64(t.Add(time.Duration(rng.IntN(10))*time.Second).UnixMilli()) / 1000}
-			add(t, wire.LocalEvent{}, &h, false)
+			hbs := []wire.Heartbeat{h}
+			if rng.IntN(8) == 0 {
+				hbs = append(hbs, h) // resent by wakatime-cli: stored once
+			}
+			add(t, delivery{hbs: hbs}, false)
 		}
 		if rng.IntN(9) == 0 {
 			e := wire.AIEvent{Time: t.Add(time.Duration(rng.IntN(10)) * time.Second), Harness: wire.HarnessClaudeCode,
@@ -98,52 +144,78 @@ func randomStream(rng *rand.Rand, from, to time.Time) ([]delivery, []downtime) {
 			} else {
 				e.Kind = kinds[rng.IntN(len(kinds))]
 			}
-			add(t, wire.LocalEvent{Type: "ai", AI: &e}, nil, true)
+			add(t, delivery{ev: wire.LocalEvent{Type: "ai", AI: &e}}, true)
+		}
+		if rng.IntN(120) == 0 {
+			g := wire.GitEvent{Time: t, Project: "app", Kind: "commit", CommitHash: fmt.Sprintf("%040x", rng.IntN(4)), FilesChanged: 1}
+			add(t, delivery{ev: wire.LocalEvent{Type: "git", Git: &g}}, false) // a commit seen twice is stored once
 		}
 	}
 	slices.SortStableFunc(out, func(a, b delivery) int { return a.at.Compare(b.at) })
-	return out, downs
-}
-
-// finalCredit is the stored final minutes before the watermark, by minute.
-func finalCredit(t *testing.T, db *localdb.DB, from time.Time) (map[time.Time]string, time.Time) {
-	t.Helper()
-	ctx := context.Background()
-	ft, err := db.FinalThrough(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	rows, err := db.StoredMinutes(ctx, from, ft)
-	if err != nil {
-		t.Fatal(err)
-	}
-	out := map[time.Time]string{}
-	for _, r := range rows {
-		out[r.Minute] += creditOf(r)
-	}
-	return out, ft
+	return out, downs, skews
 }
 
 // creditOf is what a re-run is compared on: project, label, credit, cuts.
-// A removal row (sent to the server for a displaced project) says nothing.
 func creditOf(r localdb.CreditedMinute) string {
-	if r.Label == string(struggle.LabelIdle) && r.Credited == 0 && len(r.Cuts) == 0 && len(r.Flags) == 0 {
-		return ""
-	}
 	return fmt.Sprintf("[%s %s %d %v]", r.Project, r.Label, r.Credited, r.Cuts)
 }
 
-// Random event streams, delivered with random delays, with the agent
-// stopped and started again at random: every minute that is final never
-// changes afterwards, and a replay of the raw events with the persisted
-// cutoffs gives every final minute exactly its stored credit.
-func TestFinalMinutesNeverChangeAndReplay(t *testing.T) {
-	for seed := range uint64(12) {
+// settledMinutes returns, by minute, the stored minutes whose rows are all
+// final and acknowledged: agreed with the server. Each value has the rows'
+// content and keys.
+func settledMinutes(t *testing.T, db *localdb.DB, from, to time.Time) map[time.Time]string {
+	t.Helper()
+	rows, err := db.StoredMinutes(context.Background(), from, to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, open := map[time.Time]string{}, map[time.Time]bool{}
+	for _, r := range rows {
+		if !r.Final || !r.Acknowledged {
+			open[r.Minute] = true
+		}
+		out[r.Minute] += fmt.Sprintf("%s %v %v@%s/%d", creditOf(r), r.Flags, r.RulesVersion, r.Key.T.Format("15:04"), r.Key.H)
+	}
+	for m := range open {
+		delete(out, m)
+	}
+	return out
+}
+
+// The property test of ADR 0017. Random interleavings of event arrival
+// (late, duplicated, spooled), git commits, clock jumps forward and back,
+// suspends, restarts, failed requests and lost responses, with the real
+// engine, local database, API client and a fake server following the
+// server contract. Then, once things calm down:
+//
+//   - a minute agreed with the server (final and acknowledged) never
+//     changes afterwards;
+//   - every final minute holds exactly the server's rows, keys included,
+//     and the server holds no row the agent doesn't;
+//   - ReplayMinute at each final minute's key reproduces its label,
+//     project, credit and cuts;
+//   - ReplayBlock reproduces the signed content hash of the sealed day.
+func TestFinalMinutesAgreeWithServerAndReplay(t *testing.T) {
+	var (
+		mu            sync.Mutex
+		finalRefusals int
+	)
+	t.Cleanup(func() {
+		// Across seeds the server must have refused a final rewrite with
+		// its rows at least once, or adoption went untested.
+		if !t.Failed() && finalRefusals == 0 {
+			t.Error("no seed made the server answer a final refusal with its rows")
+		}
+	})
+	for seed := range uint64(6) {
 		t.Run(fmt.Sprint(seed), func(t *testing.T) {
-			rng := rand.New(rand.NewPCG(seed, 16))
-			start := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
+			t.Parallel()
+			ctx := context.Background()
+			rng := rand.New(rand.NewPCG(seed, 17))
+			start := time.Date(2026, 11, 19, 22, 0, 0, 0, time.UTC)
 			end := start.Add(2 * time.Hour)
-			stream, downs := randomStream(rng, start, end)
+			calm := time.Date(2026, 11, 20, 1, 15, 0, 0, time.UTC) // the 19th sealable from 01:00
+			stream, downs, skews := randomStream(rng, start, end)
 			settle := []time.Duration{-1, 3 * time.Minute, DefaultSettle}[rng.IntN(3)]
 
 			e := newEnv(t, start.Add(5*time.Second))
@@ -154,92 +226,148 @@ func TestFinalMinutesNeverChangeAndReplay(t *testing.T) {
 			}
 			e.open()
 
-			seen := map[time.Time]string{}
-			next, wasDown := 0, false
-			for at := start; at.Before(end.Add(time.Hour)); at = at.Add(time.Minute) {
-				now := at.Add(5 * time.Second)
-				e.set(now)
+			agreed := map[time.Time]string{}
+			next, down := 0, downtime{}
+			for rt := start; rt.Before(calm); rt = rt.Add(time.Minute) {
+				now := rt.Add(5 * time.Second)
+				off := skewAt(skews, now)
+				e.set(now.Add(off))
+				e.srv.set(func(f *fakeServer) { f.offset = -off })
 				if isDown(downs, now) {
-					wasDown = true
+					for _, d := range downs {
+						if !now.Before(d.from) && now.Before(d.to) {
+							down = d
+						}
+					}
 					continue
 				}
-				if wasDown { // a restart: the spool drains before anything is final
-					wasDown = false
-					drained = make(chan struct{})
-					e.open()
+				if !down.from.IsZero() {
+					if !down.asleep { // a restart: the spool drains before anything is final
+						drained = make(chan struct{})
+						e.open()
+					}
+					down = downtime{}
 				}
 				for ; next < len(stream) && !stream[next].at.After(now); next++ {
 					d := stream[next]
-					e.mu.Lock()
-					e.arrived = d.at
-					e.mu.Unlock()
 					var err error
-					if d.hb != nil {
-						err = e.db.Enqueue(context.Background(), []wire.Heartbeat{*d.hb}, false)
+					if d.hbs != nil {
+						err = e.db.Enqueue(ctx, d.hbs, false)
 					} else {
-						err = e.db.InsertEvents(context.Background(), []wire.LocalEvent{d.ev})
+						err = e.db.InsertEvents(ctx, []wire.LocalEvent{d.ev})
 					}
 					if err != nil {
 						t.Fatal(err)
 					}
 				}
-				e.mu.Lock()
-				e.arrived = time.Time{}
-				e.mu.Unlock()
 				select {
 				case <-drained:
 				default:
 					close(drained)
 				}
+				failing := rt.Before(end) && rng.IntN(12) == 0
+				lost := rt.Before(end) && !failing && rng.IntN(12) == 0
+				e.srv.set(func(f *fakeServer) {
+					f.status, f.dropResponse = 0, lost
+					if failing {
+						f.status = 503
+					}
+				})
 				e.run()
 
-				final, _ := finalCredit(t, e.db, start.Add(-Window))
-				for m, c := range seen {
-					if final[m] != c {
-						t.Fatalf("at %s the final minute %s changed from %q to %q", now.Format("15:04:05"),
-							m.Format("15:04"), c, final[m])
+				now2 := settledMinutes(t, e.db, start.Add(-3*time.Hour), calm)
+				for m, v := range agreed {
+					if now2[m] != v {
+						t.Fatalf("at %s the agreed minute %s changed from %q to %q", now.Format("15:04"), m.Format("15:04"), v, now2[m])
 					}
 				}
-				for m, c := range final {
-					seen[m] = c
+				for m, v := range now2 {
+					agreed[m] = v
 				}
 			}
 
-			ctx := context.Background()
-			final, ft := finalCredit(t, e.db, start.Add(-Window))
-			if ft.Before(end) {
-				t.Fatalf("final only through %s", ft.Format("15:04"))
-			}
-			journal, err := e.db.RepoMap(ctx)
+			e.srv.set(func(f *fakeServer) {
+				mu.Lock()
+				finalRefusals += f.finalRefusals
+				mu.Unlock()
+				st := e.status().Minutes
+				t.Logf("settle %v, downtimes %v, skews %v: %d final refusals, %d other refusals, %d late events, %d agreed minutes",
+					settle, downs, skews, f.finalRefusals, st.Rejected, st.LateIgnored, len(agreed))
+			})
+
+			// Every stored minute old enough to be final is final and agreed,
+			// and matches the server.
+			from, to := start.Add(-time.Hour), calm.Add(-35*time.Minute)
+			local, err := e.db.StoredMinutes(ctx, from, to)
 			if err != nil {
 				t.Fatal(err)
 			}
-			cutoffs, err := e.db.CutoffsBetween(ctx, start.Add(-Window), ft)
+			id := e.deviceID()
+			byMinute := map[time.Time][]localdb.CreditedMinute{}
+			for _, r := range local {
+				if !r.Final || !r.Acknowledged {
+					t.Fatalf("minute %s not settled at the end: %+v (downtimes %v, skews %v)", r.Minute.Format("15:04"), r, downs, skews)
+				}
+				byMinute[r.Minute] = append(byMinute[r.Minute], r)
+			}
+			held := e.srv.heldBetween(id, from, to)
+			if len(held) != len(local) {
+				t.Fatalf("server holds %d rows, the agent %d", len(held), len(local))
+			}
+			for _, r := range local {
+				s, ok := e.srv.minute(id, r.Minute, r.Project)
+				if !ok || s.Label != r.Label || s.Credited != r.Credited || !slices.Equal(s.Cuts, r.Cuts) ||
+					!slices.Equal(s.Flags, r.Flags) || !s.ComputedAt.Equal(r.Key.T) || s.Snapshot == nil || *s.Snapshot != r.Key.H {
+					t.Fatalf("minute %s %s: agent %+v, server %+v (exists %v)", r.Minute.Format("15:04"), r.Project, r, s, ok)
+				}
+			}
+
+			// Every final minute replays at its key.
+			for m, rows := range byMinute {
+				key := rows[0].Key
+				for _, r := range rows {
+					if r.Key != key {
+						t.Fatalf("minute %s mixes keys: %+v", m.Format("15:04"), rows)
+					}
+				}
+				replayed, err := ReplayMinute(ctx, e.db, m, key, struggle.Compute, time.UTC)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got, want := describe(replayed), describe(rows); got != want {
+					t.Fatalf("minute %s at key %s/%d: stored %s, replay %s", m.Format("15:04"), key.T.Format("15:04"), key.H, want, got)
+				}
+			}
+
+			// The 19th is sealed, and its block re-hashes to the signed hash.
+			day, ok, err := e.db.EvidenceDayOf(ctx, id, "2026-11-19")
+			if err != nil || !ok || day.State != localdb.EvidenceAccepted {
+				t.Fatalf("evidence for the 19th = %+v, %v, %v", day, ok, err)
+			}
+			rows, err := ReplayBlock(ctx, e.db, day)
 			if err != nil {
 				t.Fatal(err)
 			}
-			replayed, err := ReplayMinutes(ctx, e.db, journal, cutoffs, start.Add(-Window), ft, struggle.Compute, time.UTC)
-			if err != nil {
-				t.Fatal(err)
+			if h, err := evidence.ContentHash(rows); err != nil || h != day.ContentHash {
+				t.Fatalf("replayed block hash = %s, %v; signed %s", h, err, day.ContentHash)
 			}
-			want := map[time.Time]string{}
-			for _, r := range replayed {
-				want[r.Minute] += creditOf(r)
-			}
-			var minutes []time.Time
-			for m := range want {
-				minutes = append(minutes, m)
-			}
-			for m := range final {
-				minutes = append(minutes, m)
-			}
-			slices.SortFunc(minutes, func(a, b time.Time) int { return cmp.Compare(a.Unix(), b.Unix()) })
-			for _, m := range minutes {
-				if final[m] != want[m] {
-					t.Fatalf("minute %s: stored %q, replay with cutoff %s gives %q (downtimes %v)", m.Format("15:04"),
-						final[m], CutoffAt(cutoffs, m).Format("15:04"), want[m], downs)
+			_, dayEnd, _ := evidence.DayBounds(day.Day)
+			for _, r := range local {
+				if r.Minute.Before(dayEnd) && r.Key.H > day.SeqTo {
+					t.Fatalf("minute %s of the sealed day has key H %d past the block's end %d", r.Minute.Format("15:04"), r.Key.H, day.SeqTo)
 				}
 			}
 		})
 	}
+}
+
+// describe is rows compared on project, label, credit and cuts, in project
+// order.
+func describe(rows []localdb.CreditedMinute) string {
+	out := make([]string, len(rows))
+	for i, r := range rows {
+		out[i] = creditOf(r)
+	}
+	slices.Sort(out)
+	return strings.Join(out, " ")
 }

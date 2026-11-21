@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/apneduniya/logbook/internal/agent/devicekey"
+	"github.com/apneduniya/logbook/internal/agent/localdb"
 	"github.com/apneduniya/logbook/pkg/struggle"
 )
 
@@ -73,20 +74,23 @@ func TestUnknownRulesVersionHoldsMinutes(t *testing.T) {
 	}
 }
 
-// flakySource is an active-time source that fails while fail is set.
-type flakySource struct{ fail *bool }
+// flakyStore fails to store evidence days while fail is set.
+type flakyStore struct {
+	*localdb.DB
+	fail *bool
+}
 
-func (f flakySource) ActiveTimes(context.Context, time.Time, time.Time) ([]struggle.ActiveTime, error) {
-	if *f.fail {
-		return nil, errors.New("active time unreadable")
+func (s flakyStore) InsertEvidenceDay(ctx context.Context, e localdb.EvidenceDay) error {
+	if *s.fail {
+		return errors.New("disk full")
 	}
-	return nil, nil
+	return s.DB.InsertEvidenceDay(ctx, e)
 }
 
 func TestLocalSealErrorDoesNotBackOff(t *testing.T) {
 	fail := true
 	e := newEnv(t, time.Date(2026, 11, 17, 8, 0, 5, 0, time.UTC))
-	e.active = flakySource{&fail}
+	e.options = func(o *Options) { o.Store = flakyStore{e.db, &fail} }
 	e.open()
 	e.run() // registers on 2026-11-17
 	id := e.deviceID()

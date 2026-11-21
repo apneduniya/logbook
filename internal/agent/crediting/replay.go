@@ -1,10 +1,10 @@
 package crediting
 
 import (
-	"cmp"
 	"context"
+	"errors"
 	"fmt"
-	"slices"
+	"maps"
 	"time"
 
 	"github.com/apneduniya/logbook/internal/agent/localdb"
@@ -12,88 +12,90 @@ import (
 	"github.com/apneduniya/logbook/pkg/struggle"
 )
 
-// CutoffAt returns the arrival cutoff final minute m was computed with: the
-// range of ranges holding m, else m + FinalLead (ADR 0016). A zero cutoff
-// means the agent never computed m: no events count for it.
-func CutoffAt(ranges []localdb.CutoffRange, m time.Time) time.Time {
-	for _, r := range ranges {
-		if !m.Before(r.From) && m.Before(r.To) {
-			return r.Cutoff
-		}
-	}
-	return m.Add(FinalLead)
+// LogReader reads the local event log in consistent snapshots. *localdb.DB
+// satisfies it.
+type LogReader interface {
+	View(ctx context.Context, fn func(*localdb.Snapshot) error) error
 }
 
-// ReplayMinutes recomputes the final minutes [from, to) from raw events
-// exactly as the agent made them final: each minute with the run its
-// cutoff names (the window ending at the cutoff, over the events that had
-// arrived by then, with the repo mapping journal), so events that arrived
-// later never count. It returns the rows the agent stores for them, sorted
-// by minute and project.
+// ErrNotReproducible is returned by a replay when local data can no longer
+// rebuild what was sealed or computed: rows pruned or trimmed since, or a
+// day sealed before the event log existed.
+var ErrNotReproducible = errors.New("can no longer be rebuilt from local data")
+
+// ReplayMinute recomputes minute m at its computation key (ADR 0017): the
+// engine over the window ending at key.T, with every logged event of
+// [key.T - Window - History, key.T) at or below key.H and the repo mapping
+// at key.H. It returns the engine's rows for m, sorted by project; a
+// stored minute's rows (removals aside) must match them on label, project,
+// credit and cuts.
 //
-// Claude Code active time is not replayed: it feeds only the advisory
-// otel_mismatch flag. Compare label, project, credit and cuts.
-//
-// compute is the engine (struggle.Compute when nil).
-func ReplayMinutes(ctx context.Context, events EventReader, journal []localdb.RepoMapping, ranges []localdb.CutoffRange,
-	from, to time.Time, compute func(struggle.Input) struggle.Result, tz *time.Location) ([]localdb.CreditedMinute, error) {
+// Claude Code active time is not replayed: it feeds only flags, as does the
+// time zone (tz, UTC when nil). compute is the engine (struggle.Compute
+// when nil).
+func ReplayMinute(ctx context.Context, log LogReader, m time.Time, key localdb.Key,
+	compute func(struggle.Input) struggle.Result, tz *time.Location) ([]localdb.CreditedMinute, error) {
 	if compute == nil {
 		compute = struggle.Compute
 	}
 	if tz == nil {
 		tz = time.UTC
 	}
-	from, to = from.UTC().Truncate(time.Minute), to.UTC().Truncate(time.Minute)
-	// A cutoff is the end of a window holding its minute, so it is at most
-	// Window after it, and that run read History before its window.
-	ev, err := events.EventsBetween(ctx, from.Add(-History-Window), to.Add(Window), nil)
-	if err != nil {
-		return nil, fmt.Errorf("reading events to replay: %w", err)
+	if key.IsZero() {
+		return nil, fmt.Errorf("minute %s has no key: %w", m.UTC().Format(time.RFC3339), ErrNotReproducible)
 	}
-	byCutoff := map[time.Time][]time.Time{}
-	for m := from; m.Before(to); m = m.Add(time.Minute) {
-		if c := CutoffAt(ranges, m); !c.IsZero() {
-			byCutoff[c] = append(byCutoff[c], m)
-		}
+	s := spanAt(key.T)
+	if !s.to.Equal(key.T.UTC()) {
+		return nil, fmt.Errorf("key time %s is not a whole minute", key.T.Format(time.RFC3339Nano))
 	}
-	cutoffs := make([]time.Time, 0, len(byCutoff))
-	for c := range byCutoff {
-		cutoffs = append(cutoffs, c)
-	}
-	slices.SortFunc(cutoffs, time.Time.Compare)
-	var out []localdb.CreditedMinute
-	for _, c := range cutoffs {
-		s := spanAt(c)
-		if !s.cutoff().Equal(c) {
-			return nil, fmt.Errorf("cutoff %s is not a whole minute", c.Format(time.RFC3339Nano))
+	var (
+		ev    localdb.Events
+		repos []struggle.Repo
+	)
+	err := log.View(ctx, func(snap *localdb.Snapshot) error {
+		if snap.H < key.H {
+			return fmt.Errorf("log at %d is behind the key's %d: %w", snap.H, key.H, ErrNotReproducible)
 		}
-		mine := byCutoff[c]
-		for _, row := range minuteRows(s, computeSpan(compute, s, ev, nil, journal, tz)) {
-			if _, ok := slices.BinarySearchFunc(mine, row.Minute, time.Time.Compare); ok {
-				out = append(out, row)
-			}
+		var err error
+		if ev, err = snap.Events(ctx, s.history, s.to, 0, key.H); err != nil {
+			return err
 		}
-	}
-	slices.SortFunc(out, func(a, b localdb.CreditedMinute) int {
-		if c := a.Minute.Compare(b.Minute); c != 0 {
-			return c
-		}
-		return cmp.Compare(a.Project, b.Project)
+		repos, err = snap.Repos(ctx, key.H)
+		return err
 	})
+	if err != nil {
+		return nil, fmt.Errorf("reading the log to replay %s: %w", m.UTC().Format(time.RFC3339), err)
+	}
+	var out []localdb.CreditedMinute
+	for _, row := range minuteRows(s, compute(engineInput(s, ev, nil, repos, tz))) {
+		if row.Minute.Equal(m.UTC()) {
+			out = append(out, row)
+		}
+	}
 	return out, nil
 }
 
-// ReplayDayCredit recomputes a sealed day's minutes with the cutoffs stored
-// with it (ReplayMinutes). It returns ErrNotReproducible for a day sealed
-// before cutoffs were kept, or whose cutoffs were pruned.
-func ReplayDayCredit(ctx context.Context, events EventReader, e localdb.EvidenceDay, journal []localdb.RepoMapping,
-	compute func(struggle.Input) struggle.Result, tz *time.Location) ([]localdb.CreditedMinute, error) {
-	if e.Cutoffs == nil {
-		return nil, fmt.Errorf("%s: cutoffs not kept: %w", e.Day, ErrNotReproducible)
+// ReplayBlock rebuilds the rows a sealed evidence block covers: every
+// logged row with a sequence number in [e.SeqFrom, e.SeqTo]. Rows are never
+// updated, so hashing the result (evidence.ContentHash) gives the sealed
+// content hash. It returns ErrNotReproducible when local data no longer
+// holds the block (rows deleted since, checked against the sealed counts)
+// or the day was sealed before the event log (legacy).
+func ReplayBlock(ctx context.Context, log LogReader, e localdb.EvidenceDay) ([]evidence.Row, error) {
+	if e.Legacy {
+		return nil, fmt.Errorf("%s was sealed before the event log: %w", e.Day, ErrNotReproducible)
 	}
-	start, end, err := evidence.DayBounds(e.Day)
+	var rows []evidence.Row
+	err := log.View(ctx, func(s *localdb.Snapshot) error {
+		var err error
+		rows, err = s.Rows(ctx, e.SeqFrom-1, e.SeqTo)
+		return err
+	})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("reading the log to replay %s: %w", e.Day, err)
 	}
-	return ReplayMinutes(ctx, events, journal, e.Cutoffs, start, end, compute, tz)
+	if got := evidence.Counts(rows); !maps.Equal(got, e.EventCounts) {
+		return nil, fmt.Errorf("%s: row counts %v, sealed %v: %w", e.Day, got, e.EventCounts, ErrNotReproducible)
+	}
+	return rows, nil
 }

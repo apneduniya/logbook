@@ -173,8 +173,16 @@ func printCrediting(p func(string, ...any), c crediting.Status) {
 		p("            settling: %s", c.Minutes.Settling)
 	}
 	if c.Minutes.LateIgnored > 0 {
-		p("            %d late events kept as evidence but not credited (latest %s)",
+		p("            %d events arrived after their minute was final: kept as evidence, not credited (latest for %s)",
 			c.Minutes.LateIgnored, c.Minutes.LateLatest.Local().Format("2006-01-02 15:04"))
+	}
+	if c.Minutes.Unkeyed > 0 {
+		p("            %d minutes kept as the server holds them, from before minutes recorded how they were computed",
+			c.Minutes.Unkeyed)
+	}
+	if c.Minutes.DroppedSamples > 0 {
+		p("            %d activity samples dropped: the local log is full of rows not sealed as evidence yet",
+			c.Minutes.DroppedSamples)
 	}
 	switch {
 	case c.Evidence.State != "":

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/apneduniya/logbook/internal/agent/devicekey"
+	"github.com/apneduniya/logbook/internal/agent/localdb"
 )
 
 // Persisted state keys. The status page reads them, so they also work when
@@ -34,16 +35,19 @@ const (
 	// day the evidence chain has moved past, sealed or found empty. It only
 	// grows; no minute before it is computed or stored again.
 	keySealedThrough = "crediting.sealed_through"
-	// keySettling says why no minute becomes final yet after a start ("" once
-	// settled).
+	// keySettling says why no minute becomes final yet after a start or a
+	// wake ("" once settled).
 	keySettling = "crediting.settling"
-	// keyLateIgnored counts raw events that arrived after their minute was
-	// final, and keyLateLatest is the latest such arrival. keyLateMark is
-	// how far rows have been checked ("<heartbeats> <ai> <activity> <git>"
-	// row ids).
+	// keyLateIgnored counts raw events logged after their minute was final,
+	// and keyLateLatest is the latest such event's time. keyLateMark is the
+	// log's high-water mark up to which rows have been checked.
 	keyLateIgnored = "crediting.late_ignored"
 	keyLateLatest  = "crediting.late_latest"
 	keyLateMark    = "crediting.late_mark"
+	// keyUnkeyed counts rows adopted from the server that carry no
+	// computation key (stored before keys existed): they can't be
+	// replayed.
+	keyUnkeyed = "crediting.unkeyed"
 
 	keyEvidenceDevice = "evidence.device"
 	keyEvidenceDay    = "evidence.last_day"
@@ -107,13 +111,19 @@ type MinutesStatus struct {
 	Clock string `json:"clock,omitempty"`
 	// Settling, when non-empty, says why no minute becomes final yet: the
 	// agent has just started (or woken) and waits for late events, or for
-	// the hook spool to drain (ADR 0016).
+	// the hook spool to drain (ADR 0017).
 	Settling string `json:"settling,omitempty"`
-	// LateIgnored counts raw events that arrived after the minute they
-	// belong to was final; they are kept as evidence but never change its
-	// credit. LateLatest is the latest such arrival.
+	// LateIgnored counts raw events logged after the minute they belong to
+	// was final; they are kept and sealed as evidence but never change its
+	// credit. LateLatest is the latest such event's time.
 	LateIgnored int64     `json:"late_ignored,omitempty"`
 	LateLatest  time.Time `json:"late_latest,omitzero"`
+	// Unkeyed counts rows adopted from the server without a computation
+	// key (stored before the server kept keys); they can't be replayed.
+	Unkeyed int64 `json:"unkeyed,omitempty"`
+	// DroppedSamples counts activity samples not stored because the local
+	// log was full of rows the evidence chain hasn't sealed yet.
+	DroppedSamples int64 `json:"dropped_samples,omitempty"`
 }
 
 // EvidenceStatus is the evidence chain's progress.
@@ -163,11 +173,21 @@ func LoadStatus(ctx context.Context, r StateReader) (Status, error) {
 	}{
 		{keyRejected, &s.Minutes.Rejected}, {keyWaiting, &s.Minutes.Waiting},
 		{keySealedRejected, &s.Minutes.SealedRejected}, {keyLateIgnored, &s.Minutes.LateIgnored},
+		{keyUnkeyed, &s.Minutes.Unkeyed},
 	} {
 		if v := m[c.key]; v != "" {
 			if *c.dst, err = strconv.ParseInt(v, 10, 64); err != nil {
 				return Status{}, fmt.Errorf("reading %s: %w", c.key, err)
 			}
+		}
+	}
+	logState, err := r.Prefix(ctx, localdb.KeyDroppedSamples)
+	if err != nil {
+		return Status{}, err
+	}
+	if v := logState[localdb.KeyDroppedSamples]; v != "" {
+		if s.Minutes.DroppedSamples, err = strconv.ParseInt(v, 10, 64); err != nil {
+			return Status{}, fmt.Errorf("reading %s: %w", localdb.KeyDroppedSamples, err)
 		}
 	}
 	ev, err := r.Prefix(ctx, "evidence.")
