@@ -3,6 +3,7 @@ package evidence
 import (
 	"bufio"
 	"bytes"
+	"cmp"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -10,13 +11,12 @@ import (
 	"fmt"
 	"io"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/apneduniya/logbook/pkg/wire"
 )
 
-// Event type names used in the canonical encoding's "type" field. They are
+// Row type names used in the canonical encoding's "type" field. They are
 // part of the format: renaming one changes every content hash.
 const (
 	TypeActivity   = "activity"
@@ -24,102 +24,127 @@ const (
 	TypeAI         = "ai"
 	TypeGit        = "git"
 	TypeHeartbeat  = "heartbeat"
+	TypeRepo       = "repo"
 )
+
+// types lists every row type, for Counts and validation.
+var types = []string{TypeActivity, TypeActiveTime, TypeAI, TypeGit, TypeHeartbeat, TypeRepo}
 
 // ActiveTime is one Claude Code OpenTelemetry active-time datapoint as it
-// appears in evidence: a delta over [From, To). It mirrors
-// struggle.ActiveTime but is defined here, with JSON tags, so the evidence
+// appears in evidence: a delta over [From, To). It mirrors the stored row,
+// without any field derived from other tables (such as the session's
+// working directory), and is defined here, with JSON tags, so the evidence
 // format doesn't change when the engine's types do.
 type ActiveTime struct {
-	From       time.Time    `json:"from"`
-	To         time.Time    `json:"to"`
-	SessionID  string       `json:"session_id,omitempty"`
-	UserSecs   float64      `json:"user_secs"`
-	CLISecs    float64      `json:"cli_secs"`
-	Harness    wire.Harness `json:"harness,omitempty"`
-	ProjectCwd string       `json:"project_cwd,omitempty"`
+	From      time.Time    `json:"from"`
+	To        time.Time    `json:"to"`
+	SessionID string       `json:"session_id,omitempty"`
+	UserSecs  float64      `json:"user_secs"`
+	CLISecs   float64      `json:"cli_secs"`
+	Harness   wire.Harness `json:"harness,omitempty"`
 }
 
-// Received is a raw event together with the instant the device stored it,
-// its arrival (ADR 0016). A minute's final credit counts only the events
-// that had arrived by that minute's cutoff, so the arrival is part of the
-// evidence: a replay needs it to leave out exactly the late events the
-// device left out.
-type Received[T any] struct {
-	Event T
-	// Arrived is the device's wall clock when it stored the event. It is
-	// never zero.
-	Arrived time.Time
+// Repo is one row of the device's repo mapping journal: from the row on,
+// files and working directories under Path belong to Project.
+type Repo struct {
+	Path    string `json:"path"`
+	Project string `json:"project"`
 }
 
-// DayEvents is one UTC day's raw events from one device: everything the
-// day's content hash covers. Slices need not be sorted.
-type DayEvents struct {
-	// Day is the UTC date, YYYY-MM-DD.
-	Day        string
-	Activity   []Received[wire.ActivitySample]
-	Heartbeats []Received[wire.Heartbeat]
-	AI         []Received[wire.AIEvent]
-	Git        []Received[wire.GitEvent]
-	// ActiveTime datapoints belong to the day their To falls in. They carry
-	// no arrival: they feed only the advisory otel_mismatch flag, never a
-	// minute's label, credit or cuts, so no arrival cutoff applies to them.
-	ActiveTime []ActiveTime
+// Row is one logged row of a device's event log (ADR 0017): every raw event
+// the struggle engine can read, and every repo mapping row, gets a sequence
+// number from one counter when it is stored. Build rows with the
+// constructors (ActivityRow and the others), which set Type and Time from
+// the value.
+type Row struct {
+	// Seq is the row's sequence number: positive and unique in a block.
+	Seq int64
+	// Type is one of the Type* names and says what Value holds.
+	Type string
+	// Time is the row's own time, the "t" of its line.
+	Time time.Time
+	// Value is the stored row: wire.ActivitySample, wire.Heartbeat,
+	// wire.AIEvent, wire.GitEvent, ActiveTime or Repo.
+	Value any
 }
 
-var (
-	// ErrOutsideDay is wrapped when an event's time is not within
-	// DayEvents.Day.
-	ErrOutsideDay = errors.New("event outside the evidence day")
-	// ErrNoArrival is wrapped when a raw event has no arrival time.
-	ErrNoArrival = errors.New("event without an arrival time")
-)
-
-// line is one event of the canonical encoding.
-type line struct {
-	t   time.Time
-	a   string // the arrival, RFC 3339 UTC; "" for active time
-	typ string
-	v   []byte // canonical JSON of the event
+// ActivityRow is an activity sample's row; its time is the sample's.
+func ActivityRow(seq int64, e wire.ActivitySample) Row {
+	e.Time = e.Time.UTC()
+	return Row{Seq: seq, Type: TypeActivity, Time: e.Time, Value: e}
 }
 
-// lineJSON fixes the key order of an encoded line: t, a, type, v.
+// HeartbeatRow is a heartbeat's row, kept exactly as received; its time is
+// the heartbeat's Timestamp().
+func HeartbeatRow(seq int64, h wire.Heartbeat) Row {
+	return Row{Seq: seq, Type: TypeHeartbeat, Time: h.Timestamp().UTC(), Value: h}
+}
+
+// AIRow is an AI event's row; its time is the event's.
+func AIRow(seq int64, e wire.AIEvent) Row {
+	e.Time = e.Time.UTC()
+	return Row{Seq: seq, Type: TypeAI, Time: e.Time, Value: e}
+}
+
+// GitRow is a git event's row; its time is the event's.
+func GitRow(seq int64, e wire.GitEvent) Row {
+	e.Time = e.Time.UTC()
+	return Row{Seq: seq, Type: TypeGit, Time: e.Time, Value: e}
+}
+
+// ActiveTimeRow is an active-time datapoint's row; its time is To.
+func ActiveTimeRow(seq int64, a ActiveTime) Row {
+	a.From, a.To = a.From.UTC(), a.To.UTC()
+	return Row{Seq: seq, Type: TypeActiveTime, Time: a.To, Value: a}
+}
+
+// RepoRow is a repo mapping row; its time is when the device recorded it.
+func RepoRow(seq int64, since time.Time, r Repo) Row {
+	return Row{Seq: seq, Type: TypeRepo, Time: since.UTC(), Value: r}
+}
+
+// ErrInvalidRow is wrapped when a row can't be encoded: a sequence number
+// that isn't positive or appears twice, or an unknown type.
+var ErrInvalidRow = errors.New("invalid evidence row")
+
+// lineJSON fixes the key order of an encoded line: s, t, type, v.
 type lineJSON struct {
+	S    int64           `json:"s"`
 	T    string          `json:"t"`
-	A    string          `json:"a,omitempty"`
 	Type string          `json:"type"`
 	V    json.RawMessage `json:"v"`
 }
 
-// Encode writes the canonical encoding of d to w: JSON Lines, one object
-// {"t": <RFC 3339 UTC time with nanoseconds>, "a": <arrival, same format>,
-// "type": <event type>, "v": <event>} per event, each line ending in "\n",
-// sorted by time, then type, then the bytes of v, then the arrival.
-// Active-time lines have no "a".
+// Encode writes the canonical encoding of a block of logged rows to w:
+// JSON Lines, one object {"s": <sequence number>, "t": <RFC 3339 UTC time
+// with nanoseconds>, "type": <row type>, "v": <row>} per row, each line
+// ending in "\n", sorted by s. Sequence numbers are unique, so the order is
+// total and doesn't depend on the order of rows.
 //
 // The format is fixed by:
-//   - v is the event encoded by encoding/json without HTML escaping, so the
+//   - v is the row encoded by encoding/json without HTML escaping, so the
 //     JSON field order is the Go struct field order of the wire types
 //     (wire.ActivitySample, wire.Heartbeat, wire.AIEvent, wire.GitEvent) and
-//     of ActiveTime. Reordering, renaming or retagging a field of those
-//     structs changes the format, and TestContentHashGolden fails.
-//   - every time.Time inside v is converted to UTC first; a heartbeat keeps
-//     its float64 Unix time exactly as received.
-//   - t is the event's time: Time for activity, AI and git events,
-//     Timestamp() for heartbeats and To for active-time datapoints.
-//   - a is when the device stored the event (Received.Arrived), in UTC.
+//     of ActiveTime and Repo. Reordering, renaming or retagging a field of
+//     those structs changes the format, and TestContentHashGolden fails.
+//   - every time.Time inside v is in UTC (the constructors convert it); a
+//     heartbeat keeps its float64 Unix time exactly as received.
+//   - t is the row's time (Row.Time), in UTC.
 //
-// Events whose t falls outside [Day 00:00 UTC, next day 00:00 UTC) are
-// rejected with ErrOutsideDay rather than silently dropped, and raw events
-// without an arrival with ErrNoArrival.
-func Encode(w io.Writer, d DayEvents) error {
-	lines, err := canonicalLines(d)
+// A row with a sequence number that isn't positive or repeats, or with an
+// unknown type, is rejected with ErrInvalidRow.
+func Encode(w io.Writer, rows []Row) error {
+	sorted, err := sortedRows(rows)
 	if err != nil {
 		return err
 	}
 	bw := bufio.NewWriter(w)
-	for _, l := range lines {
-		b, err := marshal(lineJSON{T: l.t.Format(time.RFC3339Nano), A: l.a, Type: l.typ, V: l.v})
+	for _, r := range sorted {
+		v, err := marshal(r.Value)
+		if err != nil {
+			return err
+		}
+		b, err := marshal(lineJSON{S: r.Seq, T: r.Time.UTC().Format(time.RFC3339Nano), Type: r.Type, V: v})
 		if err != nil {
 			return err
 		}
@@ -136,27 +161,28 @@ func Encode(w io.Writer, d DayEvents) error {
 	return nil
 }
 
-// ContentHash returns the hex SHA-256 of Encode(d): the content_hash of an
-// evidence Day.
-func ContentHash(d DayEvents) (string, error) {
+// ContentHash returns the hex SHA-256 of Encode(rows): the content_hash of
+// an evidence Day.
+func ContentHash(rows []Row) (string, error) {
 	h := sha256.New()
-	if err := Encode(h, d); err != nil {
+	if err := Encode(h, rows); err != nil {
 		return "", err
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-// Counts returns how many events of each type d holds, keyed by the type
+// Counts returns how many rows of each type rows holds, keyed by the type
 // names above. Every type is present, with 0 when there are none. It is the
 // event_counts field of an uploaded evidence day.
-func Counts(d DayEvents) map[string]int {
-	return map[string]int{
-		TypeActivity:   len(d.Activity),
-		TypeActiveTime: len(d.ActiveTime),
-		TypeAI:         len(d.AI),
-		TypeGit:        len(d.Git),
-		TypeHeartbeat:  len(d.Heartbeats),
+func Counts(rows []Row) map[string]int {
+	out := make(map[string]int, len(types))
+	for _, t := range types {
+		out[t] = 0
 	}
+	for _, r := range rows {
+		out[r.Type]++
+	}
+	return out
 }
 
 // DayBounds returns the UTC start and end of day (YYYY-MM-DD).
@@ -168,80 +194,22 @@ func DayBounds(day string) (start, end time.Time, err error) {
 	return start, start.AddDate(0, 0, 1), nil
 }
 
-// canonicalLines encodes every event of d and sorts them.
-func canonicalLines(d DayEvents) ([]line, error) {
-	start, end, err := DayBounds(d.Day)
-	if err != nil {
-		return nil, err
-	}
-	n := len(d.Activity) + len(d.Heartbeats) + len(d.AI) + len(d.Git) + len(d.ActiveTime)
-	lines := make([]line, 0, n)
-	add := func(t time.Time, typ string, v any) (*line, error) {
-		t = t.UTC()
-		if t.Before(start) || !t.Before(end) {
-			return nil, fmt.Errorf("%w: %s event at %s is not on %s", ErrOutsideDay, typ, t.Format(time.RFC3339Nano), d.Day)
+// sortedRows validates rows and returns them sorted by sequence number.
+func sortedRows(rows []Row) ([]Row, error) {
+	out := slices.Clone(rows)
+	slices.SortFunc(out, func(a, b Row) int { return cmp.Compare(a.Seq, b.Seq) })
+	for i, r := range out {
+		if r.Seq <= 0 {
+			return nil, fmt.Errorf("%w: sequence number %d", ErrInvalidRow, r.Seq)
 		}
-		b, err := marshal(v)
-		if err != nil {
-			return nil, err
+		if i > 0 && out[i-1].Seq == r.Seq {
+			return nil, fmt.Errorf("%w: sequence number %d appears twice", ErrInvalidRow, r.Seq)
 		}
-		lines = append(lines, line{t: t, typ: typ, v: b})
-		return &lines[len(lines)-1], nil
-	}
-	// addRaw adds a raw event with its arrival.
-	addRaw := func(t, arrived time.Time, typ string, v any) error {
-		if arrived.IsZero() {
-			return fmt.Errorf("%w: %s event at %s", ErrNoArrival, typ, t.UTC().Format(time.RFC3339Nano))
-		}
-		l, err := add(t, typ, v)
-		if err != nil {
-			return err
-		}
-		l.a = arrived.UTC().Format(time.RFC3339Nano)
-		return nil
-	}
-	for _, e := range d.Activity {
-		e.Event.Time = e.Event.Time.UTC()
-		if err := addRaw(e.Event.Time, e.Arrived, TypeActivity, e.Event); err != nil {
-			return nil, err
+		if !slices.Contains(types, r.Type) {
+			return nil, fmt.Errorf("%w: type %q", ErrInvalidRow, r.Type)
 		}
 	}
-	for _, e := range d.Heartbeats {
-		if err := addRaw(e.Event.Timestamp(), e.Arrived, TypeHeartbeat, e.Event); err != nil {
-			return nil, err
-		}
-	}
-	for _, e := range d.AI {
-		e.Event.Time = e.Event.Time.UTC()
-		if err := addRaw(e.Event.Time, e.Arrived, TypeAI, e.Event); err != nil {
-			return nil, err
-		}
-	}
-	for _, e := range d.Git {
-		e.Event.Time = e.Event.Time.UTC()
-		if err := addRaw(e.Event.Time, e.Arrived, TypeGit, e.Event); err != nil {
-			return nil, err
-		}
-	}
-	for _, e := range d.ActiveTime {
-		e.From, e.To = e.From.UTC(), e.To.UTC()
-		if _, err := add(e.To, TypeActiveTime, e); err != nil {
-			return nil, err
-		}
-	}
-	slices.SortFunc(lines, func(a, b line) int {
-		if c := a.t.Compare(b.t); c != 0 {
-			return c
-		}
-		if c := strings.Compare(a.typ, b.typ); c != 0 {
-			return c
-		}
-		if c := bytes.Compare(a.v, b.v); c != 0 {
-			return c
-		}
-		return strings.Compare(a.a, b.a)
-	})
-	return lines, nil
+	return out, nil
 }
 
 // marshal encodes v as compact JSON without HTML escaping and without the
@@ -251,7 +219,7 @@ func marshal(v any) ([]byte, error) {
 	enc := json.NewEncoder(&buf)
 	enc.SetEscapeHTML(false)
 	if err := enc.Encode(v); err != nil {
-		return nil, fmt.Errorf("encoding evidence event: %w", err)
+		return nil, fmt.Errorf("encoding evidence row: %w", err)
 	}
 	return bytes.TrimSuffix(buf.Bytes(), []byte("\n")), nil
 }
