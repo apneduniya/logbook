@@ -117,3 +117,13 @@ ALTER TABLE evidence_days DROP COLUMN cutoffs;
 -- A path's mapping at H is its row with the highest seq <= H.
 DROP INDEX repo_map_path;
 CREATE INDEX repo_map_path ON repo_map (path, seq);
+
+-- The device the stored credited minutes belong to (crediting.device; the
+-- crediting runner sets it once a device switch is complete). An install
+-- upgraded from before it has minutes of the device it knows, or of the
+-- one it last forgot; recording that here means a crash during the first
+-- account switch after the upgrade still retires them (ADR 0017).
+INSERT INTO kv (key, value, updated_at)
+SELECT 'crediting.device', value, 0 FROM kv
+WHERE key = (SELECT key FROM kv WHERE key IN ('device.id', 'device.prev_id') AND value <> ''
+             ORDER BY key = 'device.id' DESC LIMIT 1);

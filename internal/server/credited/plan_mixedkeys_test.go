@@ -44,9 +44,32 @@ func TestPlanRejectsMixedKeysInOpenMinute(t *testing.T) {
 					mixed++
 				}
 			}
+			for _, r := range rejected {
+				// A mixed-key refusal carries the minute's rows, so the
+				// device adopts them instead of dropping its view.
+				if r.Error == errMixedKeys.Error() && r.Stored == nil {
+					t.Fatalf("mixed-key refusal without stored rows: %+v", r)
+				}
+			}
 			if len(writes) != tc.wantWrites || mixed != tc.wantMixed {
 				t.Fatalf("writes = %+v, rejected = %+v; want %d writes, %d mixed-key rejections", writes, rejected, tc.wantWrites, tc.wantMixed)
 			}
 		})
+	}
+}
+
+// A migration probe (a keyed removal) next to a legacy row the agent
+// doesn't know of is refused with the minute's rows, which the agent then
+// adopts, instead of being refused without them and dropped.
+func TestPlanMixedKeysAgainstLegacyRowsReturnsStored(t *testing.T) {
+	m := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
+	legacy := func(p string) Stored {
+		return Stored{Item: Item{Minute: m, Project: p, Label: "you", Credited: 30}, RulesVersion: "v1", UpdatedAt: m.Add(time.Minute)}
+	}
+	probe := Item{Minute: m, Project: "a", Label: "idle", Key: Key{ComputedAt: m.Add(time.Minute)}}
+	_, removes, rejected := Plan([]Indexed{{Index: 0, Item: probe}}, []Stored{legacy("a"), legacy("b")},
+		Bounds{RulesVersion: "v1", Now: m.Add(5 * time.Minute), Since: m.Add(-time.Hour)})
+	if len(removes) != 0 || len(rejected) != 1 || len(rejected[0].Stored) != 2 {
+		t.Fatalf("removes = %+v, rejected = %+v; want the probe refused with both stored rows", removes, rejected)
 	}
 }

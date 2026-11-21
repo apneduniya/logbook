@@ -147,6 +147,11 @@ func (r *Runner) applyAnswer(ctx context.Context, rows []localdb.CreditedMinute,
 			continue
 		case e.Stored != nil:
 			stored[m.Minute] = e.Stored
+			if isSealedRejection(e.Error) && lostTo(m, e.Stored) {
+				// The server's rows are adopted, but credit the agent held
+				// for a sealed day is lost: show it, as below.
+				sealed = append(sealed, m)
+			}
 			continue
 		case isSealedRejection(e.Error):
 			sealed = append(sealed, m)
@@ -217,6 +222,17 @@ func (r *Runner) adopt(ctx context.Context, minute time.Time, stored []serverapi
 const sealedRejection = "already sealed"
 
 func isSealedRejection(msg string) bool { return strings.Contains(msg, sealedRejection) }
+
+// lostTo reports whether adopting the server's rows loses credit the local
+// row m holds: the server holds less, or nothing, for its project.
+func lostTo(m localdb.CreditedMinute, held []serverapi.StoredMinute) bool {
+	for _, s := range held {
+		if s.Project == m.Project {
+			return s.Credited < m.Credited
+		}
+	}
+	return m.Credited > 0
+}
 
 // reportSealed shows minutes the server refused because their day was
 // already sealed: they can never be sent, so they are counted (with the

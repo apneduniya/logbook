@@ -78,6 +78,7 @@ func TestMigration0007(t *testing.T) {
 		// there, so it stays as stored.
 		"INSERT INTO credited_minutes (minute, project, label, credited, cuts, flags, rules_version, digest, sent_digest, sent_final, cutoff) VALUES ("+
 			strconv.FormatInt(time.Date(2026, 11, 19, 23, 0, 0, 0, time.UTC).Unix(), 10)+", 'a', 'you', 60, '[]', '[]', 'v1', 'd6', 'd6', 1, 0)",
+		"INSERT INTO kv (key, value, updated_at) VALUES ('device.id', 'dev-1', 0)",
 		"INSERT INTO kv (key, value, updated_at) VALUES ('crediting.final_through', '"+minute(-40).Format(time.RFC3339)+"', 0)",
 		"INSERT INTO credit_cutoffs (from_minute, to_minute, cutoff) VALUES ("+sec(-50)+", "+sec(-45)+", 0)",
 		"INSERT INTO evidence_days (device_id, day, prev_chain_hash, content_hash, chain_hash, signature, rules_version, "+
@@ -147,6 +148,11 @@ func TestMigration0007(t *testing.T) {
 		if ok, _ := d.IsFinal(ctx, minute(c.m)); ok != c.want {
 			t.Errorf("minute %d final = %v, want %v", c.m, ok, c.want)
 		}
+	}
+	// The minutes belong to the device the install knew, so an account
+	// switch that crashes before retiring them is still caught.
+	if v, _ := d.Get(ctx, "crediting.device"); v != "dev-1" {
+		t.Fatalf("crediting.device = %q, want the known device", v)
 	}
 	if v, _ := d.Get(ctx, "crediting.final_through"); v != "" {
 		t.Fatalf("old watermark kept: %q", v)

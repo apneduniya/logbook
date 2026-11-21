@@ -121,8 +121,8 @@ type Bounds struct {
 }
 
 // Rejection says why one item of a batch was not stored. Stored is set only
-// when the item was refused because its minute is final or in a sealed
-// day: it holds every row the server keeps for that device-minute once the
+// when the item was refused because its minute is final, in a sealed day,
+// or would mix computation keys: it holds every row the server keeps for that device-minute once the
 // batch is applied, sorted by project, so the agent can adopt the server's
 // answer (ADR 0017). Such a refusal always sends "stored", as [] when the
 // server holds no row; other refusals leave it out (nil).
@@ -450,6 +450,7 @@ func Plan(items []Indexed, stored []Stored, b Bounds) (write, remove []Item, rej
 		if !oneKey(after) {
 			for _, c := range changes {
 				rejected = append(rejected, Rejection{Index: c.Index, Error: errMixedKeys.Error()})
+				finalAt[c.Index] = m // the device's view of the minute is wrong: send what is held
 			}
 			continue
 		}
