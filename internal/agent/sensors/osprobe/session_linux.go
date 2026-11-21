@@ -84,6 +84,19 @@ func sessionFromLogind(typ, display string) linuxSession {
 	return linuxSession{}
 }
 
+// graphicalSession reports whether a logind session of this Type is a
+// desktop whose idle hint describes the person using it. Without a desktop,
+// logind elects a text session ("tty", even a remote SSH login) as the
+// user's Display, and its hint tracks a terminal the person may not be
+// using at all.
+func graphicalSession(typ string) bool {
+	switch typ {
+	case "x11", "wayland", "mir":
+		return true
+	}
+	return false
+}
+
 // logindState decides what logind's idle hints are worth.
 //
 // logind's IdleHint is only as good as the desktop that sets it, and several
