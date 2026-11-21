@@ -6,9 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
-
-	"github.com/apneduniya/logbook/pkg/evidence"
 )
 
 // Evidence day states.
@@ -25,7 +24,8 @@ const (
 	EvidenceRejected = "rejected"
 )
 
-// EvidenceDay is one sealed link of a device's evidence chain.
+// EvidenceDay is one sealed link of a device's evidence chain: one block of
+// the event log per UTC day (ADR 0017).
 type EvidenceDay struct {
 	DeviceID      string
 	Day           string
@@ -35,20 +35,13 @@ type EvidenceDay struct {
 	Signature     []byte
 	RulesVersion  string
 	EventCounts   map[string]int
-	// HighWater pins exactly which rows of the raw event tables (heartbeats,
-	// AI events, activity samples, git events) the content hash covers.
-	HighWater HighWater
-	// ActiveTime is exactly the active-time records the content hash
-	// covers, kept because active time can't be pinned by row ids. nil
-	// means they are not kept: the day was sealed before they were, or its
-	// raw events have been pruned. Sealing stores a non-nil slice.
-	ActiveTime []evidence.ActiveTime
-	// Cutoffs are the day's final minutes whose arrival cutoff isn't the
-	// default (minute + the lead), as stored when the day was sealed, so a
-	// replay of the day's credit uses exactly the agent's cutoffs (ADR
-	// 0016). nil means not kept: the day was sealed before they were, or
-	// its raw events have been pruned. Sealing stores a non-nil slice.
-	Cutoffs   []CutoffRange
+	// SeqFrom and SeqTo bound the block: the content hash covers every
+	// logged row with a sequence number in [SeqFrom, SeqTo]. SeqTo is the
+	// log's high-water mark read in the transaction that sealed the block.
+	SeqFrom, SeqTo int64
+	// Legacy days were sealed by event time before the event log (local
+	// migration 0007). They have no range and can't be replayed.
+	Legacy    bool
 	State     string
 	Error     string
 	CreatedAt time.Time
@@ -56,36 +49,34 @@ type EvidenceDay struct {
 }
 
 // InsertEvidenceDay stores a newly sealed day. It fails if the device
-// already has a row for that day.
+// already has a row for that day. In the same transaction it moves
+// KeySealed to the block's end: its rows are sealed by the device's chain,
+// so retention may delete them once they are old enough.
 func (d *DB) InsertEvidenceDay(ctx context.Context, e EvidenceDay) error {
 	counts, err := json.Marshal(e.EventCounts)
 	if err != nil {
 		return fmt.Errorf("encoding event counts: %w", err)
 	}
-	active := e.ActiveTime
-	if active == nil {
-		active = []evidence.ActiveTime{}
-	}
-	at, err := json.Marshal(active)
-	if err != nil {
-		return fmt.Errorf("encoding active time: %w", err)
-	}
-	cutoffs := e.Cutoffs
-	if cutoffs == nil {
-		cutoffs = []CutoffRange{}
-	}
-	cs, err := json.Marshal(cutoffs)
-	if err != nil {
-		return fmt.Errorf("encoding cutoffs: %w", err)
-	}
 	now := d.now().UnixMilli()
-	_, err = d.sql.ExecContext(ctx, qEvidenceInsert, e.DeviceID, e.Day, e.PrevChainHash, e.ContentHash,
-		e.ChainHash, e.Signature, e.RulesVersion, string(counts), e.HighWater.Heartbeats, e.HighWater.AI,
-		e.HighWater.Activity, e.HighWater.Git, string(at), string(cs), e.State, e.Error, now, now)
-	if err != nil {
-		return fmt.Errorf("storing evidence day %s: %w", e.Day, err)
+	legacy := 0
+	if e.Legacy {
+		legacy = 1
 	}
-	return nil
+	return d.inTx(ctx, func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, qEvidenceInsert, e.DeviceID, e.Day, e.PrevChainHash, e.ContentHash,
+			e.ChainHash, e.Signature, e.RulesVersion, string(counts), e.SeqFrom, e.SeqTo, legacy, e.State, e.Error,
+			now, now)
+		if err != nil {
+			return fmt.Errorf("storing evidence day %s: %w", e.Day, err)
+		}
+		if e.Legacy {
+			return nil
+		}
+		if _, err := tx.ExecContext(ctx, qKVSet, KeySealed, strconv.FormatInt(e.SeqTo, 10), now); err != nil {
+			return fmt.Errorf("recording sealed rows: %w", err)
+		}
+		return nil
+	})
 }
 
 // LastEvidenceDay returns the device's latest evidence day in any state.
@@ -103,13 +94,12 @@ func (d *DB) EvidenceDayOf(ctx context.Context, deviceID, day string) (e Evidenc
 func (d *DB) evidenceDay(ctx context.Context, q string, args ...any) (e EvidenceDay, ok bool, err error) {
 	var (
 		counts           string
-		active, cutoffs  sql.NullString
+		legacy           int
 		created, updated int64
-		hw               HighWater
 	)
 	err = d.sql.QueryRowContext(ctx, q, args...).Scan(&e.DeviceID, &e.Day, &e.PrevChainHash,
-		&e.ContentHash, &e.ChainHash, &e.Signature, &e.RulesVersion, &counts, &hw.Heartbeats, &hw.AI,
-		&hw.Activity, &hw.Git, &active, &cutoffs, &e.State, &e.Error, &created, &updated)
+		&e.ContentHash, &e.ChainHash, &e.Signature, &e.RulesVersion, &counts, &e.SeqFrom, &e.SeqTo, &legacy,
+		&e.State, &e.Error, &created, &updated)
 	if errors.Is(err, sql.ErrNoRows) {
 		return EvidenceDay{}, false, nil
 	}
@@ -119,19 +109,7 @@ func (d *DB) evidenceDay(ctx context.Context, q string, args ...any) (e Evidence
 	if err := json.Unmarshal([]byte(counts), &e.EventCounts); err != nil {
 		return EvidenceDay{}, false, fmt.Errorf("decoding event counts: %w", err)
 	}
-	if active.Valid {
-		e.ActiveTime = []evidence.ActiveTime{}
-		if err := json.Unmarshal([]byte(active.String), &e.ActiveTime); err != nil {
-			return EvidenceDay{}, false, fmt.Errorf("decoding active time of %s: %w", e.Day, err)
-		}
-	}
-	if cutoffs.Valid {
-		e.Cutoffs = []CutoffRange{}
-		if err := json.Unmarshal([]byte(cutoffs.String), &e.Cutoffs); err != nil {
-			return EvidenceDay{}, false, fmt.Errorf("decoding cutoffs of %s: %w", e.Day, err)
-		}
-	}
-	e.HighWater = hw
+	e.Legacy = legacy == 1
 	e.CreatedAt, e.UpdatedAt = time.UnixMilli(created).UTC(), time.UnixMilli(updated).UTC()
 	return e, true, nil
 }

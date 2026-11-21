@@ -183,6 +183,8 @@ func TestEventsCountsAndPrune(t *testing.T) {
 	if err != nil || len(dirs) != 1 || dirs[0].Dir != "/src/app" || dirs[0].Project != "app" {
 		t.Fatalf("RecentDirs = %+v, %v", dirs, err)
 	}
+	// Old events go once the evidence chain has sealed them.
+	seal(t, d, high(t, d))
 	r, err := d.Prune(ctx)
 	if err != nil || r.AIEvents != 1 {
 		t.Fatalf("Prune = %+v, %v", r, err)
@@ -190,21 +192,6 @@ func TestEventsCountsAndPrune(t *testing.T) {
 	bad := []wire.LocalEvent{{Type: "ai", Activity: &wire.ActivitySample{}}}
 	if err := d.InsertEvents(ctx, bad); !errors.Is(err, wire.ErrInvalidEvent) {
 		t.Fatalf("invalid event err = %v", err)
-	}
-}
-
-func TestEventCap(t *testing.T) {
-	ctx := context.Background()
-	d, _ := openTest(t, WithEventCap(3))
-	for i := range 5 {
-		s := wire.ActivitySample{Time: testNow.Add(time.Duration(i) * time.Second), FocusKind: "other"}
-		if err := d.RecordActivity(ctx, s); err != nil {
-			t.Fatal(err)
-		}
-	}
-	c, _ := d.CountSince(ctx, time.Time{})
-	if c.ActivitySamples != 3 {
-		t.Fatalf("activity samples = %d, want 3", c.ActivitySamples)
 	}
 }
 

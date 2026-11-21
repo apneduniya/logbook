@@ -199,3 +199,23 @@ func (d *DB) inTx(ctx context.Context, fn func(tx *sql.Tx) error) error {
 	}
 	return nil
 }
+
+// queryer runs queries: *sql.DB or *sql.Tx.
+type queryer interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}
+
+// queryRows runs query on q and calls scan for every row.
+func queryRows(ctx context.Context, q queryer, query string, args []any, scan func(*sql.Rows) error) error {
+	rows, err := q.QueryContext(ctx, query, args...)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		if err := scan(rows); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
+}

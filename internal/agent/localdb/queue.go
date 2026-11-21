@@ -95,19 +95,7 @@ func (d *DB) Enqueue(ctx context.Context, hbs []wire.Heartbeat, mirror bool) err
 		if _, err := trim(ctx, tx, qLogTrim, d.queueCap); err != nil {
 			return err
 		}
-		// The arrival is taken while the transaction holds the write lock
-		// (see InsertEvents). A resent heartbeat keeps its first arrival.
-		arrived := d.now()
-		if err := execEach(ctx, tx, qHeartbeatInsert, len(hbs), func(i int) []any {
-			return []any{hbs[i].Timestamp().UnixMilli(), hbs[i].FieldsHash(), payloads[i], arrived.UnixMilli()}
-		}); err != nil {
-			return fmt.Errorf("keeping heartbeats: %w", err)
-		}
-		n, err := trim(ctx, tx, qHeartbeatTrim, d.eventCap)
-		if err != nil {
-			return err
-		}
-		return bumpGeneration(ctx, tx, n, arrived)
+		return d.logHeartbeats(ctx, tx, hbs, payloads)
 	})
 	if err != nil {
 		return err
@@ -116,6 +104,40 @@ func (d *DB) Enqueue(ctx context.Context, hbs []wire.Heartbeat, mirror bool) err
 		d.log.WarnContext(ctx, "upload queue full; dropped oldest heartbeats", "queue", string(q), "dropped", n)
 	}
 	return nil
+}
+
+// logHeartbeats keeps full heartbeats in the event log, inside Enqueue's
+// transaction: each new one takes the next sequence number; one wakatime-cli
+// resent is already stored and takes none (ADR 0017). Heartbeats are always
+// kept: over the row cap only rows the evidence chain sealed are trimmed.
+func (d *DB) logHeartbeats(ctx context.Context, tx *sql.Tx, hbs []wire.Heartbeat, payloads [][]byte) error {
+	now := d.now()
+	w, err := openLog(ctx, tx)
+	if err != nil {
+		return err
+	}
+	stmt, err := tx.PrepareContext(ctx, qHeartbeatInsert)
+	if err != nil {
+		return fmt.Errorf("preparing: %w", err)
+	}
+	defer func() { _ = stmt.Close() }()
+	for i, h := range hbs {
+		if _, err := w.insert(ctx, stmt, h.Timestamp().UnixMilli(), h.FieldsHash(), payloads[i]); err != nil {
+			return fmt.Errorf("keeping heartbeats: %w", err)
+		}
+	}
+	if err := w.close(ctx, tx, now); err != nil {
+		return err
+	}
+	sealed, err := sealedSeq(ctx, tx)
+	if err != nil {
+		return err
+	}
+	n, err := trimSealed(ctx, tx, qHeartbeatTrim, d.eventCap, sealed)
+	if err != nil {
+		return err
+	}
+	return bumpGeneration(ctx, tx, n, now)
 }
 
 // entityDir returns the directory of a file heartbeat's entity, or "" for
