@@ -46,8 +46,9 @@ func openAt(t *testing.T, version int, stmts ...string) *DB {
 
 // Migration 0007 numbers existing rows in arrival order (arrived_at, then
 // table, then id), keeps answered credited minutes as final, acknowledged
-// and unkeyed, drops unanswered ones, carries the old final watermark over
-// as a final span, and marks sealed days legacy.
+// and unkeyed, drops ones never sent, turns ones changed since their upload
+// into removal probes, carries the old final watermark over as a final
+// span, and marks sealed days legacy.
 func TestMigration0007(t *testing.T) {
 	ctx := context.Background()
 	ms := func(m int) string { return strconv.FormatInt(minute(m).UnixMilli(), 10) }
@@ -70,6 +71,9 @@ func TestMigration0007(t *testing.T) {
 			sec(-10)+", 'a', 'you', 30, '[]', '[]', 'v1', 'd2', 'd2', 0, 0)",
 		"INSERT INTO credited_minutes (minute, project, label, credited, cuts, flags, rules_version, digest, sent_digest, sent_final, cutoff) VALUES ("+
 			sec(-9)+", 'a', 'you', 30, '[]', '[]', 'v1', 'd3', '', 0, 0)",
+		// Uploaded as d4, changed to d5 since and not sent again.
+		"INSERT INTO credited_minutes (minute, project, label, credited, cuts, flags, rules_version, digest, sent_digest, sent_final, cutoff) VALUES ("+
+			sec(-12)+", 'a', 'you', 30, '[]', '[\"low_signal\"]', 'v1', 'd5', 'd4', 0, 0)",
 		"INSERT INTO kv (key, value, updated_at) VALUES ('crediting.final_through', '"+minute(-40).Format(time.RFC3339)+"', 0)",
 		"INSERT INTO credit_cutoffs (from_minute, to_minute, cutoff) VALUES ("+sec(-50)+", "+sec(-45)+", 0)",
 		"INSERT INTO evidence_days (device_id, day, prev_chain_hash, content_hash, chain_hash, signature, rules_version, "+
@@ -110,13 +114,24 @@ func TestMigration0007(t *testing.T) {
 		t.Fatal("arrived_at still exists")
 	}
 	rows, err := d.StoredMinutes(ctx, minute(-60), minute(0))
-	if err != nil || len(rows) != 2 {
-		t.Fatalf("credited minutes = %+v, %v; want the two answered ones", rows, err)
+	if err != nil || len(rows) != 3 {
+		t.Fatalf("credited minutes = %+v, %v; want the two answered ones and a probe", rows, err)
 	}
-	for _, m := range rows {
+	for _, m := range []CreditedMinute{rows[0], rows[2]} {
 		if !m.Final || !m.Acknowledged || !m.Key.IsZero() {
 			t.Fatalf("legacy row = %+v, want final, acknowledged and unkeyed", m)
 		}
+	}
+	// The row changed since its upload is a removal probe, final and
+	// waiting to be sent, so the server answers with what it holds.
+	probe := rows[1]
+	if !probe.Minute.Equal(minute(-12)) || probe.Label != "idle" || probe.Credited != 0 || len(probe.Flags) != 0 ||
+		!probe.Final || probe.Acknowledged || probe.Key != (Key{T: minute(-11), H: 0}) {
+		t.Fatalf("probe = %+v", probe)
+	}
+	unsent, err := d.UnsentMinutes(ctx, time.Time{}, minute(0), 100)
+	if err != nil || len(unsent) != 1 || !unsent[0].Minute.Equal(minute(-12)) {
+		t.Fatalf("unsent after migrating = %+v, %v; want the probe", unsent, err)
 	}
 	for _, c := range []struct {
 		m    int
