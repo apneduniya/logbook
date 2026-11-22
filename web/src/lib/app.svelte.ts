@@ -73,8 +73,11 @@ export class AppState {
 	}
 
 	async loadDevices(): Promise<void> {
+		const session = this.session;
 		try {
-			this.devices = await this.api.devices();
+			const devices = await this.api.devices();
+			// Drop an answer that arrives after sign-out (or a new sign-in).
+			if (this.session === session) this.devices = devices;
 		} catch {
 			// The header just shows no agent status; pages that need devices load them themselves.
 		}
@@ -140,8 +143,9 @@ export class AppState {
 			// reconnecting (it ends streams every 30 min), so refresh after each
 			// reconnect.
 			src.addEventListener('ready', () => {
-				if (opened) this.#refresh(0);
+				if (opened || this.#missed) this.#refresh(0);
 				opened = true;
+				this.#missed = false;
 			});
 			// Closed for good: the server refused a reconnect (expired session,
 			// stream limit). Recheck the session, and retry later if it is fine.
@@ -149,9 +153,6 @@ export class AppState {
 				if (src.readyState === EventSource.CLOSED) void this.#streamRefused();
 			});
 			this.#source = src;
-			// Events were missed while the tab was hidden: refresh once now.
-			if (this.#missed) this.#refresh(0);
-			this.#missed = false;
 		} else if (!want && this.#source) {
 			this.#close();
 			this.#missed = !!this.session;
@@ -168,6 +169,8 @@ export class AppState {
 
 	async #streamRefused(): Promise<void> {
 		this.#close();
+		// Changes during the outage are lost; refresh once the stream is back.
+		this.#missed = true;
 		try {
 			if (!(await this.api.session())) {
 				this.#sessionEnded();
@@ -195,6 +198,7 @@ export class AppState {
 		if (this.#timer) clearTimeout(this.#timer);
 		if (this.#retry) clearTimeout(this.#retry);
 		this.#timer = this.#retry = null;
+		this.#missed = false;
 	}
 
 	/** The session expired or was revoked mid-use: show the signed-out home. */

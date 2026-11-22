@@ -10,23 +10,42 @@
 	let { data }: PageProps = $props();
 	const p = $derived(data.profile);
 
-	// Refetch when the profile's numbers change (at most once a minute, server side).
+	// Refetch when the profile's numbers change (at most once a minute, server
+	// side). The stream follows the username only, so a refetch doesn't reopen it.
+	const username = $derived(p?.username ?? null);
 	$effect(() => {
-		if (!p) return;
-		const src = app.api.livePublic(p.username);
-		let opened = false;
-		src.addEventListener('minutes', () => void invalidate(PROFILE));
-		// Changes aren't replayed across a reconnect, so refetch after one.
-		src.addEventListener('ready', () => {
-			if (opened) void invalidate(PROFILE);
-			opened = true;
-		});
-		// The server closes the stream when the profile goes private, and then
-		// refuses to reopen it; refetching shows the 404 instead of stale data.
-		src.addEventListener('error', () => {
-			if (src.readyState === EventSource.CLOSED) void invalidate(PROFILE);
-		});
-		return () => src.close();
+		if (!username) return;
+		const name = username;
+		let src: EventSource | null = null;
+		let retry: ReturnType<typeof setTimeout> | null = null;
+		let missed = false;
+		const open = () => {
+			retry = null;
+			const s = app.api.livePublic(name);
+			let opened = false;
+			s.addEventListener('minutes', () => void invalidate(PROFILE));
+			// Changes aren't replayed across a reconnect, so refetch after one.
+			s.addEventListener('ready', () => {
+				if (opened || missed) void invalidate(PROFILE);
+				opened = true;
+				missed = false;
+			});
+			// Closed for good: the profile went private (the refetch shows the
+			// 404), or the server is busy (429, 503), so try again later.
+			s.addEventListener('error', () => {
+				if (s.readyState !== EventSource.CLOSED) return;
+				s.close();
+				missed = true;
+				void invalidate(PROFILE);
+				retry = setTimeout(open, 30_000);
+			});
+			src = s;
+		};
+		open();
+		return () => {
+			src?.close();
+			if (retry) clearTimeout(retry);
+		};
 	});
 
 	const since = $derived(

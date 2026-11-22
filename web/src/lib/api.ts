@@ -107,7 +107,11 @@ export class Api {
 			message,
 			Number.isFinite(retry) && retry > 0 ? retry : null
 		);
-		if (res.status === 401 && path !== '/api/v1/session') this.#onUnauthorized();
+		// A 401 means the session ended, except on the check that asks whether
+		// there is one (GET /api/v1/session answers 401 when signed out).
+		if (res.status === 401 && !(method === 'GET' && path === '/api/v1/session')) {
+			this.#onUnauthorized();
+		}
 		throw err;
 	}
 
@@ -130,7 +134,12 @@ export class Api {
 
 	async logout(): Promise<void> {
 		// Not POST /auth/logout: CORS covers /api/ only (docs/api/auth.md).
-		await this.#call<void>('DELETE', '/api/v1/session');
+		try {
+			await this.#call<void>('DELETE', '/api/v1/session');
+		} catch (err) {
+			// Already signed out (expired or revoked): that's the goal anyway.
+			if (!(err instanceof ApiError && err.status === 401)) throw err;
+		}
 		this.#csrf = '';
 	}
 
