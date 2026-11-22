@@ -43,7 +43,9 @@ func MirrorTarget(orig Original, o MirrorOptions) config.Hackatime {
 		target = o.OverrideURL
 	}
 	target = strings.TrimRight(target, "/")
-	if sameHost(target, o.ServerURL) || sameHost(target, o.LocalURL) {
+	// The retired origin was Logbook's own server before ADR 0011: mirroring
+	// there would count the time twice, and it no longer takes uploads.
+	if sameHost(target, o.ServerURL) || sameHost(target, o.LocalURL) || config.IsRetired(target) {
 		return config.Hackatime{}
 	}
 	if orig.APIKey == "" {

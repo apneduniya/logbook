@@ -70,6 +70,7 @@ func TestLoadMovesRetiredServer(t *testing.T) {
 		{"https://logbook.boogles.dev", DefaultServerURL},
 		{"https://logbook.boogles.dev/", DefaultServerURL},
 		{"https://logbook.example.org", "https://logbook.example.org"},
+		{"http://logbook.boogles.dev", "http://logbook.boogles.dev"}, // not the retired https origin
 	} {
 		dir := t.TempDir()
 		c, err := Default()
@@ -87,5 +88,40 @@ func TestLoadMovesRetiredServer(t *testing.T) {
 		if got.ServerURL != tt.want {
 			t.Errorf("saved %q: loaded %q, want %q", tt.saved, got.ServerURL, tt.want)
 		}
+	}
+}
+
+func TestMigrateRetired(t *testing.T) {
+	for in, want := range map[string]string{
+		"https://logbook.boogles.dev/api/v1":     "https://api.logbook.boogles.dev/api/v1",
+		"https://Logbook.Boogles.dev/api/v1/":    "https://api.logbook.boogles.dev/api/v1",
+		"https://api.logbook.boogles.dev/api/v1": "https://api.logbook.boogles.dev/api/v1",
+		"https://hackatime.hackclub.com/api/v1":  "https://hackatime.hackclub.com/api/v1",
+		"":                                       "",
+	} {
+		if got := MigrateRetired(in); got != want {
+			t.Errorf("MigrateRetired(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// TestLoadDropsRetiredMirror: a mirror aimed at the retired origin was
+// Logbook itself, so it is dropped rather than retried forever.
+func TestLoadDropsRetiredMirror(t *testing.T) {
+	dir := t.TempDir()
+	c, err := Default()
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.Hackatime = Hackatime{URL: "https://logbook.boogles.dev/api/v1", APIKey: "k", Mirror: true}
+	if err := Save(dir, c); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Hackatime != (Hackatime{}) {
+		t.Fatalf("mirror = %+v, want none", got.Hackatime)
 	}
 }

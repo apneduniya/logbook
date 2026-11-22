@@ -10,7 +10,8 @@ func TestMirrorTarget(t *testing.T) {
 	const (
 		hackatime = "https://hackatime.hackclub.com/api/hackatime/v1"
 		key       = "11111111-1111-4111-8111-111111111111"
-		server    = "https://logbook.boogles.dev"
+		server    = "https://api.logbook.boogles.dev"
+		retired   = "https://logbook.boogles.dev/api/v1"
 		local     = "http://127.0.0.1:47231/api/v1"
 	)
 	base := MirrorOptions{ServerURL: server, LocalURL: local}
@@ -36,6 +37,7 @@ func TestMirrorTarget(t *testing.T) {
 			config.Hackatime{URL: hackatime, APIKey: key, Mirror: true}},
 		{"no key, no mirror", Original{}, base, config.Hackatime{URL: DefaultWakaTimeURL}},
 		{"already logbook server", Original{URL: server + "/api/v1", HadURL: true, APIKey: key, HadKey: true}, base, config.Hackatime{}},
+		{"retired logbook origin", Original{URL: retired, HadURL: true, APIKey: key, HadKey: true}, base, config.Hackatime{}},
 		{"already local daemon", Original{URL: local, HadURL: true, APIKey: key, HadKey: true}, base, config.Hackatime{}},
 	}
 	for _, tt := range tests {

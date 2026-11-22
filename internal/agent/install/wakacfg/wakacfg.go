@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/apneduniya/logbook/internal/agent/config"
 	"github.com/apneduniya/logbook/internal/agent/install/atomicfile"
 )
 
@@ -242,6 +243,13 @@ func (m *Manager) Uninstall() (UninstallResult, error) {
 		return res, err
 	}
 	unedited := exists && digest(raw) == st.WrittenSHA256
+	// An editor that pointed at the retired origin goes back to the API's
+	// origin instead (config.MigrateRetired). The exact backup holds the old
+	// address, so only the keys are restored then.
+	if st.Original.HadURL && config.IsRetired(st.Original.URL) {
+		st.Original.URL = config.MigrateRetired(st.Original.URL)
+		st.RestoreExact = false
+	}
 
 	switch {
 	case !exists:
