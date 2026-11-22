@@ -27,6 +27,9 @@ import (
 // where other local users could see it in the process list.
 const keyEnv = "LOGBOOK_API_KEY"
 
+// serverEnv sets --server the same way, so one-line installers can pass it.
+const serverEnv = "LOGBOOK_SERVER"
+
 // daemonCommand is the subcommand every autostart entry runs.
 const daemonCommand = "run"
 
@@ -88,7 +91,7 @@ func runInstall(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("install", flag.ContinueOnError)
 	var o install.Options
 	fs.StringVar(&o.Key, "key", "", "your Logbook API key (or set "+keyEnv+")")
-	fs.StringVar(&o.ServerURL, "server", "", "Logbook server URL (default "+config.DefaultServerURL+")")
+	fs.StringVar(&o.ServerURL, "server", "", "Logbook API URL (or set "+serverEnv+"; default "+config.DefaultServerURL+")")
 	fs.BoolVar(&o.NoMirror, "no-mirror", false, "don't also send heartbeats to where .wakatime.cfg pointed before")
 	fs.StringVar(&o.MirrorURL, "mirror-url", "", "mirror heartbeats to this WakaTime-compatible API URL instead")
 	fs.StringVar(&o.Harness, "harness", "all", "AI tools to hook: all, none, or a comma-separated list")
@@ -100,6 +103,9 @@ func runInstall(ctx context.Context, args []string) error {
 	}
 	if o.Key == "" {
 		o.Key = os.Getenv(keyEnv)
+	}
+	if o.ServerURL == "" {
+		o.ServerURL = os.Getenv(serverEnv)
 	}
 	if o.Key == "" {
 		return errors.New("--key is required; copy your API key from Logbook's settings page")

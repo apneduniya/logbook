@@ -19,7 +19,7 @@ import (
 const DefaultLocalAddr = "127.0.0.1:47231"
 
 // DefaultServerURL is the Logbook server the agent talks to.
-const DefaultServerURL = "https://logbook.boogles.dev"
+const DefaultServerURL = "https://api.logbook.boogles.dev"
 
 // Config is the agent's settings, stored as JSON with mode 0600.
 type Config struct {

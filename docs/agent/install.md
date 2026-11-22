@@ -17,7 +17,7 @@ Both scripts:
 3. check the binary's SHA-256 against `checksums.txt` and stop on any mismatch or missing entry;
 4. run `<binary> install` with any extra arguments.
 
-`install.sh` is POSIX `sh` (tested with dash and busybox) and refuses to run as root. `install.ps1` works on Windows PowerShell 5.1, turns on TLS 1.2 for old Windows 10 builds, and never calls `exit`, so `irm | iex` can't close the user's window. Passing the key in `LOGBOOK_API_KEY` rather than `--key` keeps it out of the process list.
+`install.sh` is POSIX `sh` (tested with dash and busybox) and refuses to run as root. `install.ps1` works on Windows PowerShell 5.1, turns on TLS 1.2 for old Windows 10 builds, and never calls `exit`, so `irm | iex` can't close the user's window. Passing the key in `LOGBOOK_API_KEY` rather than `--key` keeps it out of the process list. The web UI's commands also set `LOGBOOK_SERVER` to the API origin it talks to, so a self-hosted Logbook installs agents that report to itself.
 
 ## `logbook install`
 
@@ -25,11 +25,11 @@ Both scripts:
 logbook install --key <key> [--server <url>] [--no-mirror] [--mirror-url <url>] [--harness all|none|claude-code,codex,...]
 ```
 
-`--key` falls back to `LOGBOOK_API_KEY`. Install refuses to run in a build without the `run` daemon command, because every autostart entry runs it (and `release.yml` refuses to publish such a build). Input is checked before anything changes: the key must be a Logbook key (lowercase UUIDv4), `--harness` names must exist, URLs must be http(s). The steps then run in this order, each printing one line:
+`--key` falls back to `LOGBOOK_API_KEY`, and `--server` to `LOGBOOK_SERVER` (default `https://api.logbook.boogles.dev`, the API's origin; the web UI's origin serves only the static site, ADR 0011). Install refuses to run in a build without the `run` daemon command, because every autostart entry runs it (and `release.yml` refuses to publish such a build). Input is checked before anything changes: the key must be a Logbook key (lowercase UUIDv4), `--harness` names must exist, URLs must be http(s). The steps then run in this order, each printing one line:
 
 | # | Step | What changes | Undo on a later failure |
 |---|---|---|---|
-| 1 | config | Loads `config.json` or creates it with `config.Default()` (new local token). Checks the key with `GET <server>/api/v1/users/current/statusbar/today` (`Authorization: Basic base64(key)`, 15 s timeout; https only, except plain http to localhost). Saves the key and server. | Restore the previous config, or delete a new one. |
+| 1 | config | Loads `config.json` or creates it with `config.Default()` (new local token). Checks the key with `GET <server>/api/v1/users/current/statusbar/today` (`Authorization: Basic base64(key)`, 15 s timeout; https only, except plain http to localhost). A 2xx counts only when the body is a JSON object with `data`, so a website that answers every path with HTML (such as the web UI's origin) is refused. Saves the key and server. | Restore the previous config, or delete a new one. |
 | 2 | binary | Copies the running binary into place (below). | Put the previous binary back, or delete the new one. |
 | 3 | wakatime | Points `.wakatime.cfg` at the daemon (below) and saves the mirror target in `config.json`. | First install: restore the file as uninstall would. Re-install: put back the file bytes and state this run replaced (for example the old `api_key` after a new `--key`), so the file and `config.json` agree. |
 | 4 | hooks | For each selected harness that `Detect()`s, `Install(<installed binary>)`. A harness that fails is reported and skipped; it doesn't undo the install. | `Uninstall()` hooks this run added. |
