@@ -2,9 +2,11 @@ import { error, redirect } from '@sveltejs/kit';
 import { app, ME } from '#lib/app.svelte.ts';
 import { ApiError } from '#lib/api.ts';
 import { addDays, todayIn } from '#lib/format.ts';
+import { loadFailed } from '#lib/load.ts';
 import type { PageLoad } from './$types';
 
-export const load: PageLoad = async ({ params, depends, url }) => {
+export const load: PageLoad = async ({ params, depends, url, parent }) => {
+	await parent();
 	if (!app.session) redirect(307, `/?next=${encodeURIComponent(url.pathname)}`);
 	depends(ME);
 	const end = todayIn(app.timezone);
@@ -19,6 +21,6 @@ export const load: PageLoad = async ({ params, depends, url }) => {
 		if (err instanceof ApiError && (err.status === 404 || err.status === 400)) {
 			error(404, 'No project with that name.');
 		}
-		throw err;
+		loadFailed(err);
 	}
 };

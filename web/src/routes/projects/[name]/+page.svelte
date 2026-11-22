@@ -109,7 +109,7 @@
 		{#if p.languages.length}
 			<div class="langs">
 				<span class="lbl col-span-full">Languages</span>
-				{#each p.languages.slice(0, 6) as l (l.name)}
+				{#each p.languages.slice(0, 6) as l, i (i)}
 					<span class="truncate">{l.name || 'Unknown'}</span>
 					<span class="mono">{duration(l.seconds)}</span>
 					<span class="mono lbl text-right">{percent(l.seconds, langTotal)}%</span>

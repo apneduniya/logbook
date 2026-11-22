@@ -4,14 +4,18 @@
 	import Panel from '#lib/components/Panel.svelte';
 
 	const missing = $derived(page.status === 404);
-	const title = $derived(missing ? 'Not found' : 'Something went wrong');
-	// Our own 404s carry a sentence; SvelteKit's unmatched-route one just says "Not Found".
+	const title = $derived(
+		missing ? 'Not found' : page.status === 429 ? 'Slow down' : 'Something went wrong'
+	);
+	// Loads pass the API's user-safe message through (#lib/load.ts). SvelteKit's
+	// own messages ("Not Found", "Internal Error") get a plainer sentence.
+	const generic = ['Not Found', 'Internal Error', ''];
 	const text = $derived(
-		missing
-			? page.error?.message && page.error.message !== 'Not Found'
-				? page.error.message
-				: 'There’s nothing at this address.'
-			: 'Logbook couldn’t load this page. Check your connection and try again.'
+		page.error?.message && !generic.includes(page.error.message)
+			? page.error.message
+			: missing
+				? 'There’s nothing at this address.'
+				: 'Logbook couldn’t load this page. Check your connection and try again.'
 	);
 </script>
 

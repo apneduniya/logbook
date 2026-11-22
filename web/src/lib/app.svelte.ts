@@ -2,7 +2,8 @@
 // stream. The app is client-only (ssr = false, docs/web.md), so one module
 // instance per browser tab is safe; there is no server sharing it.
 
-import { invalidate } from '$app/navigation';
+import { goto, invalidate } from '$app/navigation';
+import { resolve } from '$app/paths';
 import { LOGBOOK_API_URL } from '$app/env/public';
 import { Api, ApiError } from './api.ts';
 import { isLocalPath } from './paths.ts';
@@ -10,6 +11,9 @@ import type { Device, Session } from './types.ts';
 
 /** How long to wait after a live event before refetching, so bursts merge. */
 const LIVE_DEBOUNCE_MS = 5000;
+
+/** How long to wait before reopening a live stream the server refused. */
+const LIVE_RETRY_MS = 30_000;
 
 /** Activity this recent shows as "tracking now". */
 const LIVE_WINDOW_MS = 3 * 60 * 1000;
@@ -28,11 +32,12 @@ export class AppState {
 	now = $state(Date.now());
 
 	#source: EventSource | null = null;
+	#retry: ReturnType<typeof setTimeout> | null = null;
 	#timer: ReturnType<typeof setTimeout> | null = null;
 	#missed = false;
 
 	constructor(origin: string) {
-		this.api = new Api(origin, () => this.#signedOut());
+		this.api = new Api(origin, () => this.#sessionEnded());
 	}
 
 	get user() {
@@ -124,11 +129,24 @@ export class AppState {
 
 	#syncStream(): void {
 		const want = !!this.session && document.visibilityState === 'visible';
-		if (want && !this.#source) {
+		if (want && !this.#source && !this.#retry) {
 			const src = this.api.liveMe();
+			let opened = false;
 			src.addEventListener('minutes', () => {
 				this.lastActivity = Date.now();
 				this.#refresh(LIVE_DEBOUNCE_MS);
+			});
+			// The server doesn't replay what changed while EventSource was
+			// reconnecting (it ends streams every 30 min), so refresh after each
+			// reconnect.
+			src.addEventListener('ready', () => {
+				if (opened) this.#refresh(0);
+				opened = true;
+			});
+			// Closed for good: the server refused a reconnect (expired session,
+			// stream limit). Recheck the session, and retry later if it is fine.
+			src.addEventListener('error', () => {
+				if (src.readyState === EventSource.CLOSED) void this.#streamRefused();
 			});
 			this.#source = src;
 			// Events were missed while the tab was hidden: refresh once now.
@@ -148,6 +166,22 @@ export class AppState {
 		}, delay);
 	}
 
+	async #streamRefused(): Promise<void> {
+		this.#close();
+		try {
+			if (!(await this.api.session())) {
+				this.#sessionEnded();
+				return;
+			}
+		} catch {
+			// Offline or a server error: retry the stream later all the same.
+		}
+		this.#retry = setTimeout(() => {
+			this.#retry = null;
+			this.#syncStream();
+		}, LIVE_RETRY_MS);
+	}
+
 	#close(): void {
 		this.#source?.close();
 		this.#source = null;
@@ -158,6 +192,16 @@ export class AppState {
 		this.devices = null;
 		this.lastActivity = null;
 		this.#close();
+		if (this.#timer) clearTimeout(this.#timer);
+		if (this.#retry) clearTimeout(this.#retry);
+		this.#timer = this.#retry = null;
+	}
+
+	/** The session expired or was revoked mid-use: show the signed-out home. */
+	#sessionEnded(): void {
+		if (this.session === null) return;
+		this.#signedOut();
+		void goto(resolve('/'), { refreshAll: true });
 	}
 }
 

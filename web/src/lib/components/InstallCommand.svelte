@@ -20,8 +20,8 @@
 	let copied = $state(false);
 
 	const masked = $derived(key ? `${key.slice(0, 4)}••••` : '');
-	const command = $derived(key ? installCommand(os, key) : '');
-	const visible = $derived(key ? installCommand(os, shown ? key : masked) : '');
+	const command = $derived(key ? installCommand(os, key, app.api.origin) : '');
+	const visible = $derived(key ? installCommand(os, shown ? key : masked, app.api.origin) : '');
 
 	function deviceName(): string {
 		const p = navigator.userAgent;

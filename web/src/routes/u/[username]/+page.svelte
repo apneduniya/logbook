@@ -14,7 +14,18 @@
 	$effect(() => {
 		if (!p) return;
 		const src = app.api.livePublic(p.username);
+		let opened = false;
 		src.addEventListener('minutes', () => void invalidate(PROFILE));
+		// Changes aren't replayed across a reconnect, so refetch after one.
+		src.addEventListener('ready', () => {
+			if (opened) void invalidate(PROFILE);
+			opened = true;
+		});
+		// The server closes the stream when the profile goes private, and then
+		// refuses to reopen it; refetching shows the 404 instead of stale data.
+		src.addEventListener('error', () => {
+			if (src.readyState === EventSource.CLOSED) void invalidate(PROFILE);
+		});
 		return () => src.close();
 	});
 
@@ -111,7 +122,7 @@
 				<p class="mute">No languages yet.</p>
 			{:else}
 				<div class="langs">
-					{#each p.languages.slice(0, 8) as l (l.name)}
+					{#each p.languages.slice(0, 8) as l, i (i)}
 						<span class="truncate">{l.name || 'Unknown'}</span>
 						<span class="mono">{duration(l.seconds)}</span>
 						<span class="mono lbl text-right">{percent(l.seconds, langTotal)}%</span>

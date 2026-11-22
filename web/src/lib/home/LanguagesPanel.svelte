@@ -9,16 +9,18 @@
 
 	const tones = ['bg-ink', 'bg-ink-2', 'bg-ink-3'];
 
+	// Rows carry their own key: a language may itself be called "Other" or
+	// "Unknown", which must not collide with the remainder row.
 	const rows = $derived.by(() => {
 		const total = languages.reduce((s, l) => s + l.seconds, 0);
-		const top = languages.slice(0, 3);
-		const rest = languages.slice(3).reduce((s, l) => s + l.seconds, 0);
-		const out = top.map((l, i) => ({
+		const out = languages.slice(0, 3).map((l, i) => ({
+			key: `lang:${i}`,
 			name: l.name || 'Unknown',
 			seconds: l.seconds,
 			tone: tones[i]
 		}));
-		if (rest > 0) out.push({ name: 'Other', seconds: rest, tone: 'other' });
+		const rest = languages.slice(3).reduce((s, l) => s + l.seconds, 0);
+		if (rest > 0) out.push({ key: 'rest', name: 'Other', seconds: rest, tone: 'other' });
 		return out.map((r) => ({ ...r, pc: percent(r.seconds, total) }));
 	});
 </script>
@@ -29,12 +31,12 @@
 	{:else}
 		<div class="grid content-start gap-4">
 			<div class="split" role="img" aria-label={rows.map((r) => `${r.name} ${r.pc}%`).join(', ')}>
-				{#each rows as r (r.name)}
+				{#each rows as r (r.key)}
 					<span class={r.tone} style:flex={r.seconds}></span>
 				{/each}
 			</div>
 			<div class="table">
-				{#each rows as r (r.name)}
+				{#each rows as r (r.key)}
 					<span class="truncate"><i class="sw {r.tone}"></i>{r.name}</span>
 					<span class="mono">{duration(r.seconds)}</span>
 					<span class="mono lbl text-right">{r.pc}%</span>
@@ -43,7 +45,7 @@
 			{#if editors.length}
 				<div class="editors">
 					<span class="lbl col-span-full">Editors</span>
-					{#each editors.slice(0, 4) as e (e.name)}
+					{#each editors.slice(0, 4) as e, i (i)}
 						<span class="truncate">{editorName(e.name)}</span><span class="mono">
 							{duration(e.seconds)}
 						</span>
