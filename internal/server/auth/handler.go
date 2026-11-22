@@ -50,6 +50,9 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.Handle("POST /auth/dev-login", signInLimited(httpapi.Handle(h.devLogin)))
 
 	mux.Handle("GET /api/v1/session", s.RequireSession(httpapi.Handle(h.session)))
+	// The web UI signs out here: it is on another origin, and CORS covers
+	// /api/ only (ADR 0011). Same handler and budget as POST /auth/logout.
+	mux.Handle("DELETE /api/v1/session", limited(s.RequireSession(httpapi.Handle(h.logout))))
 	mux.Handle("GET /api/v1/api_keys", s.RequireSession(httpapi.Handle(h.listKeys)))
 	mux.Handle("POST /api/v1/api_keys", s.RequireSession(httpapi.Handle(h.createKey)))
 	mux.Handle("DELETE /api/v1/api_keys/{id}", s.RequireSession(httpapi.Handle(h.revokeKey)))

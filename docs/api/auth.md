@@ -116,6 +116,16 @@ The signed-in user and the CSRF token. The UI calls this on load to decide wheth
 }
 ```
 
+### `DELETE /api/v1/session`
+
+Signs out, exactly like `POST /auth/logout` (same handler, rate limit and audit entry). The web UI uses this route: it lives on another origin, and CORS covers `/api/` only, so a cross-origin `POST /auth/logout` with the CSRF header would fail its preflight.
+
+| | |
+|---|---|
+| Auth | session + CSRF |
+| Response | `204`. Deletes the session, clears the cookie and writes `auth.logout` to the audit log. |
+| Errors | `401` with no session, `403` with a bad CSRF token, `429` if rate-limited (shares the `/auth/callback` budget). |
+
 ## API keys
 
 API keys are for editor plugins (through stock `wakatime-cli`) and the Logbook agent. A key is a random lowercase UUIDv4 (`xxxxxxxx-xxxx-4xxx-[89ab]xxx-xxxxxxxxxxxx`), the format `wakatime-cli` accepts. The server stores only its SHA-256 and the first 8 characters (`prefix`), so it can show the key only once, at creation. Each user can have at most **20** active keys. Creating or revoking a key writes `api_key.create` / `api_key.revoke` to the audit log, with the name and prefix but never the key.
