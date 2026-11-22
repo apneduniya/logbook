@@ -18,10 +18,13 @@ func TestVerify(t *testing.T) {
 			w.WriteHeader(http.StatusNotFound)
 		case r.Header.Get("Authorization") == "Basic "+base64.StdEncoding.EncodeToString([]byte("waka_boom")):
 			w.WriteHeader(http.StatusBadGateway)
+		case r.Header.Get("Authorization") == "Basic "+base64.StdEncoding.EncodeToString([]byte("waka_spa")):
+			// A static site answers every path with 200 and its HTML shell.
+			_, _ = w.Write([]byte(`<!doctype html><title>Logbook</title>`))
 		case r.Header.Get("Authorization") != "Basic "+base64.StdEncoding.EncodeToString([]byte(good)):
 			w.WriteHeader(http.StatusUnauthorized)
 		default:
-			_, _ = w.Write([]byte(`{}`))
+			_, _ = w.Write([]byte(`{"data":{}}`))
 		}
 	}))
 	defer srv.Close()
@@ -34,6 +37,7 @@ func TestVerify(t *testing.T) {
 		{"rejected", srv.URL, "waka_bad", ErrKeyRejected, true},
 		{"empty", srv.URL, " ", ErrKeyRejected, true},
 		{"server error", srv.URL, "waka_boom", nil, true},
+		{"website, not the API", srv.URL, "waka_spa", ErrNotAPI, true},
 		{"unreachable", "http://127.0.0.1:1", good, nil, true},
 	}
 	for _, tt := range tests {

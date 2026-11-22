@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // DefaultLocalAddr is where the daemon's local HTTP server listens.
@@ -20,6 +21,11 @@ const DefaultLocalAddr = "127.0.0.1:47231"
 
 // DefaultServerURL is the Logbook server the agent talks to.
 const DefaultServerURL = "https://api.logbook.boogles.dev"
+
+// retiredServerURL was DefaultServerURL until the API moved to its own origin
+// (ADR 0011). It now serves the static web UI, so Load moves configs saved
+// with it to DefaultServerURL. Any other server URL is kept as written.
+const retiredServerURL = "https://logbook.boogles.dev"
 
 // Config is the agent's settings, stored as JSON with mode 0600.
 type Config struct {
@@ -109,6 +115,9 @@ func Load(dir string) (Config, error) {
 	var c Config
 	if err := json.Unmarshal(b, &c); err != nil {
 		return Config{}, fmt.Errorf("parsing config: %w", err)
+	}
+	if strings.TrimRight(c.ServerURL, "/") == retiredServerURL {
+		c.ServerURL = DefaultServerURL
 	}
 	if err := c.Validate(); err != nil {
 		return Config{}, err

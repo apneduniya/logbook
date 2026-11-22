@@ -62,3 +62,30 @@ func TestValidate(t *testing.T) {
 		})
 	}
 }
+
+// TestLoadMovesRetiredServer: configs saved while the default server was the
+// web UI's origin move to the API's origin; custom servers are kept.
+func TestLoadMovesRetiredServer(t *testing.T) {
+	for _, tt := range []struct{ saved, want string }{
+		{"https://logbook.boogles.dev", DefaultServerURL},
+		{"https://logbook.boogles.dev/", DefaultServerURL},
+		{"https://logbook.example.org", "https://logbook.example.org"},
+	} {
+		dir := t.TempDir()
+		c, err := Default()
+		if err != nil {
+			t.Fatal(err)
+		}
+		c.ServerURL = tt.saved
+		if err := Save(dir, c); err != nil {
+			t.Fatal(err)
+		}
+		got, err := Load(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.ServerURL != tt.want {
+			t.Errorf("saved %q: loaded %q, want %q", tt.saved, got.ServerURL, tt.want)
+		}
+	}
+}
