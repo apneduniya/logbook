@@ -112,7 +112,7 @@
 	<Panel title="Today" meta={dayLabel(today.end)}>
 		<div class="empty">
 			<div class="px mute tracking-[.06em]">( NO COUNTED TIME YET )</div>
-			<div class="lbl">Counted time shows up here a few minutes after you start working.</div>
+			<div class="hint">Counted time shows up here a few minutes after you start working.</div>
 		</div>
 	</Panel>
 	<Panel title="Programs" meta="hours you submit">

@@ -5,6 +5,7 @@ import {
 	clock,
 	dayLabel,
 	duration,
+	editorName,
 	percent,
 	rangeLabel,
 	todayIn,
@@ -67,6 +68,15 @@ describe('ago', () => {
 		['2026-11-17T12:00:00Z', '2 days ago']
 	])('%s', (t, want) => {
 		expect(ago(t, now)).toBe(want);
+	});
+});
+
+describe('editorName', () => {
+	it('merges the names plugins use for one editor', () => {
+		expect(editorName('code')).toBe('VS Code');
+		expect(editorName('vscode')).toBe('VS Code');
+		expect(editorName('claude-code')).toBe('Claude Code');
+		expect(editorName('gpt')).toBe('gpt');
 	});
 });
 

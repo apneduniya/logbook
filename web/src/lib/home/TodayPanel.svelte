@@ -79,7 +79,7 @@
 				</div>
 			</div>
 		{/if}
-		<p class="lbl">
+		<p class="hint">
 			Editor plugins logged {duration(today.total_seconds)} at the keyboard today.
 		</p>
 	</div>
@@ -106,7 +106,7 @@
 	}
 	.idle-sw {
 		background: var(--color-fill);
-		outline: 1px solid var(--color-rule);
+		outline: 1px solid var(--color-ink-3);
 	}
 	.legend {
 		display: flex;

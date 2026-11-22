@@ -52,4 +52,15 @@
 		background: var(--color-ink);
 		color: var(--color-ground);
 	}
+	/* Ink focus ring on an ink block would vanish; draw it in the ground colour inside. */
+	button[aria-pressed='true']:focus-visible {
+		outline-color: var(--color-ground);
+		outline-offset: -3px;
+	}
+	@media (max-width: 720px) {
+		button {
+			padding-top: 10px;
+			padding-bottom: 10px;
+		}
+	}
 </style>

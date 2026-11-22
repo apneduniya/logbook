@@ -31,6 +31,8 @@ The tokens live in `src/routes/layout.css` and are copied from the canvas.
 
 Don't make the whole UI pixel or mono; hierarchy comes from the contrast between voices.
 
+- **Sentences are sans,** even small help text. Use `.hint`: Geist at 13 px, `ink-2`, 60 characters wide at most. The mono `.lbl` voice is for real labels and meta, such as counts, dates, key prefixes and legends; a full sentence in tiny spaced mono is the hardest text on the page to read.
+
 ## Layout
 
 - **Desktop:** panels sit on an 8/4 grid (`calc((100% - 12px) * 8 / 12)`) with 12 px gaps. Panel heads are 36 px tall. Bodies are padded 18 × 16.
@@ -44,9 +46,17 @@ Don't make the whole UI pixel or mono; hierarchy comes from the contrast between
 - **Buttons:**
   - Secondary: bordered, filling with ink on hover.
   - Primary (sign in only): solid ink.
-  - Destructive actions ask once inline (`ConfirmButton`) instead of opening a modal.
+  - Destructive actions ask once inline (`ConfirmButton`) instead of opening a modal. The trigger is a bordered button, not muted text, because it acts. Its error shows by its own row, never in a page-level notice.
+- **Form fields** have an `ink-3` border at rest. A hairline-only field is invisible (1.3:1).
+- **Errors on fields** show after the field is left or a save is tried, not from the first keystroke.
 - **Disabled:** don't disable a submit button to signal invalid input; let it explain on submit. Buttons disable only while busy.
 - **Motion:** 150 ms colour and transform transitions, plus the 8-step spinner of the live badge. Everything stops under `prefers-reduced-motion`.
+
+## Charts
+
+- A chart whose numbers appear only on hover also carries a visually hidden table, so screen readers get the numbers.
+- Copy never promises an interaction the device lacks: hover hints are hidden on touch screens.
+- On phones the year grid scrolls with fixed columns, and its window is sized to whole columns so the edge never cuts a dot in half.
 
 ## Words
 

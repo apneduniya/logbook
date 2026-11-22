@@ -39,7 +39,7 @@
 		<label class="sr-only" for="q">Find a project</label>
 		<input
 			id="q"
-			class="field w-full max-w-[320px]"
+			class="field w-full sm:max-w-[320px]"
 			type="search"
 			placeholder="Find a project"
 			bind:value={query}
@@ -67,9 +67,11 @@
 				: 'No project matches.'}
 		</p>
 	{/each}
-	<p class="lbl px-3.5 py-3">
-		{shown.length} of {data.projects.length}. Keyboard is time from editor plugins; counted is the
-		agent’s.
+	<p class="px-3.5 py-3">
+		<span class="lbl">{shown.length} of {data.projects.length}.</span>
+		<span class="hint">
+			Counted is the time the agent credited to you; keyboard is raw editor time.
+		</span>
 	</p>
 </Panel>
 

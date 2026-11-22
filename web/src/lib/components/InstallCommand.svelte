@@ -83,7 +83,7 @@
 			<button class="copy" type="button" onclick={copy}>{copied ? 'Copied' : 'Copy'}</button>
 		</div>
 	</div>
-	<p class="lbl mt-2">
+	<p class="hint mt-2">
 		{os === 'windows' ? 'Paste it into PowerShell.' : 'Paste it into a terminal.'} The command has your
 		key in it, so don’t paste it anywhere public. This is the only time the key is shown.
 	</p>
@@ -92,10 +92,10 @@
 		<button class="btn" type="button" onclick={create} disabled={busy}>
 			{busy ? 'Creating a key…' : 'Get my install command'}
 		</button>
-		<span class="lbl">Creates a key for this computer.</span>
+		<span class="hint">Creates a key for this computer.</span>
 	</div>
 {/if}
-{#if error}<p class="lbl mt-2 text-ink" role="alert">{error}</p>{/if}
+{#if error}<p class="hint mt-2 text-ink" role="alert">{error}</p>{/if}
 
 <span class="sr-only" aria-live="polite">{copied ? 'Command copied' : ''}</span>
 

@@ -32,11 +32,11 @@
 		],
 		[
 			'Every cut says why',
-			'Idle time, an agent running on its own, rubber-stamped changes and loops are taken off, with the reason shown. The rules are public.'
+			'Idle time, an agent left running alone, AI changes accepted without reading them, and the same prompt sent over and over are taken off, each with the reason shown. The rules are public.'
 		],
 		[
 			'Only timings leave your laptop',
-			'Prompts, code and keystrokes stay on your computer. The server gets counted minutes and a daily fingerprint, unless you choose to submit evidence.'
+			'Prompts, code and keystrokes stay on your computer. The server gets counted minutes and a signed daily hash that proves they weren’t edited later. Evidence goes up only if you submit it.'
 		]
 	];
 </script>
@@ -57,7 +57,7 @@
 			<button class="cta" type="button" onclick={() => app.signIn()}>Sign in with Hack Club</button>
 			<a class="link" href={RULES_URL} rel="external">How counting works →</a>
 		</div>
-		<p class="lbl">
+		<p class="hint">
 			Free and open source (AGPLv3). Your editor plugins keep working with Hackatime.
 		</p>
 	</div>
@@ -67,17 +67,18 @@
 			<div class="flex items-baseline gap-3">
 				<span class="px text-xl">52m</span><span class="mute">counted of 60m at the keyboard</span>
 			</div>
+			<!-- 12 minutes a row; each row starts with its time. -->
 			<div
 				class="hour"
 				role="img"
 				aria-label="An example hour: 52 minutes you, 5 minutes agent alone, 3 minutes idle"
 			>
-				{#each minutes as k, i (i)}
-					<i class="m {k}" title="14:{String(i).padStart(2, '0')} · {what[k]}"></i>
+				{#each [0, 1, 2, 3, 4] as row (row)}
+					<span class="lbl t">14:{String(row * 12).padStart(2, '0')}</span>
+					{#each minutes.slice(row * 12, row * 12 + 12) as k, i (i)}
+						<i class="m {k}" title="14:{String(row * 12 + i).padStart(2, '0')} · {what[k]}"></i>
+					{/each}
 				{/each}
-			</div>
-			<div class="lbl flex justify-between">
-				<span>14:00</span><span>14:30</span><span>14:59</span>
 			</div>
 			<div class="cuts">
 				<span class="mono">14:21</span><span>
@@ -164,8 +165,9 @@
 	}
 	.hour {
 		display: grid;
-		grid-template-columns: repeat(12, 1fr);
+		grid-template-columns: 40px repeat(12, 1fr);
 		gap: 4px;
+		align-items: center;
 	}
 	.m {
 		height: 22px;
@@ -178,10 +180,12 @@
 	}
 	.m.idle {
 		background: var(--color-fill);
+		outline: 1px solid var(--color-ink-3);
+		outline-offset: -1px;
 	}
 	.idle-sw {
 		background: var(--color-fill);
-		outline: 1px solid var(--color-rule);
+		outline: 1px solid var(--color-ink-3);
 	}
 	.cuts {
 		display: grid;
@@ -203,6 +207,9 @@
 		padding: 18px 0;
 		border-top: 1px solid var(--color-rule);
 		align-items: baseline;
+	}
+	.row > :last-child {
+		max-width: 62ch;
 	}
 	.row:last-child {
 		border-bottom: 1px solid var(--color-rule);

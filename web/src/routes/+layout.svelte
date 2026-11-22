@@ -86,8 +86,5 @@
 		.wrap {
 			padding: 14px 16px 0;
 		}
-		.status {
-			display: none;
-		}
 	}
 </style>

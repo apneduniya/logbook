@@ -52,18 +52,14 @@
 		}
 	}
 
-	let actionError = $state<string | null>(null);
 	function message(err: unknown): string {
 		return err instanceof ApiError ? err.userMessage : 'Something went wrong. Try again.';
 	}
+	// A row action (revoke, disconnect, unlink). Errors go back to its
+	// ConfirmButton, which shows them by the row.
 	async function act(fn: () => Promise<void>) {
-		actionError = null;
-		try {
-			await fn();
-			await invalidate(ME);
-		} catch (err) {
-			actionError = message(err);
-		}
+		await fn();
+		await invalidate(ME);
 	}
 
 	const activeDevices = $derived(data.devices.filter((d) => !d.revoked_at));
@@ -74,17 +70,25 @@
 		}[page.url.searchParams.get('hackatime') ?? ''] ?? null
 	);
 
+	let signingOut = $state(false);
+	let signOutError = $state<string | null>(null);
 	async function signOut() {
-		await app.signOut();
-		await goto(resolve('/'), { refreshAll: true });
+		signingOut = true;
+		signOutError = null;
+		try {
+			await app.signOut();
+			await goto(resolve('/'), { refreshAll: true });
+		} catch (err) {
+			signOutError = message(err);
+		} finally {
+			signingOut = false;
+		}
 	}
 </script>
 
 <svelte:head><title>Settings · Logbook</title></svelte:head>
 
 <h1 class="sr-only">Settings</h1>
-{#if actionError}<p class="note" role="alert">{actionError}</p>{/if}
-
 <div class="stack">
 	<Panel title="Profile">
 		<form class="form" onsubmit={saveProfile}>
@@ -99,7 +103,7 @@
 						bind:value={displayName}
 						placeholder={app.user?.username}
 					/>
-					<span class="lbl">
+					<span class="hint">
 						Shown on your public profile. Your username, {app.user?.username}, never changes.
 					</span>
 				</div>
@@ -111,7 +115,7 @@
 						{#if !zones.includes(timezone)}<option value={timezone}>{timezone}</option>{/if}
 						{#each zones as z (z)}<option value={z}>{z}</option>{/each}
 					</select>
-					<span class="lbl">
+					<span class="hint">
 						Days and streaks start at midnight here.
 						{#if browserZone && browserZone !== timezone}
 							This browser is in {browserZone}.
@@ -133,7 +137,7 @@
 						<input type="checkbox" bind:checked={isPublic} /> Anyone can see my profile at /u/{app
 							.user?.username}
 					</label>
-					<span class="lbl">
+					<span class="hint">
 						It shows totals, top projects and languages. Never your email, code or prompts. Hidden
 						projects are left out.
 					</span>
@@ -145,7 +149,7 @@
 					<button class="btn" type="submit" disabled={saving}>
 						{saving ? 'Saving…' : 'Save profile'}
 					</button>
-					{#if profileMsg}<span class="lbl" class:text-ink={!profileMsg.ok} role="status">
+					{#if profileMsg}<span class="hint" class:text-ink={!profileMsg.ok} role="status">
 							{profileMsg.text}
 						</span>{/if}
 				</div>
@@ -215,11 +219,11 @@
 	</Panel>
 
 	<Panel title="Hackatime">
-		{#if hackatimeNotice}<p class="note mb-3" role="status">{hackatimeNotice}</p>{/if}
+		{#if hackatimeNotice}<p class="hint mb-3 text-ink" role="status">{hackatimeNotice}</p>{/if}
 		<HackatimeStatus link={data.hackatime} />
 		{#if data.hackatime.linked}
 			<div class="mt-4 flex flex-wrap items-center gap-4">
-				<span class="lbl">
+				<span class="hint">
 					Linked to {data.hackatime.hackatime_username
 						? `@${data.hackatime.hackatime_username}`
 						: `Hackatime account ${data.hackatime.hackatime_user_id}`}.
@@ -239,7 +243,12 @@
 	<Panel title="Session">
 		<div class="flex flex-wrap items-center justify-between gap-4">
 			<p class="mute">Signed in with Hack Club as {app.user?.username}.</p>
-			<button class="btn" type="button" onclick={() => act(signOut)}>Sign out</button>
+			<div class="grid justify-items-end gap-1.5">
+				<button class="btn" type="button" onclick={signOut} disabled={signingOut}>
+					{signingOut ? 'Signing out…' : 'Sign out'}
+				</button>
+				{#if signOutError}<span class="hint text-ink" role="alert">{signOutError}</span>{/if}
+			</div>
 		</div>
 	</Panel>
 </div>
@@ -248,7 +257,8 @@
 	.stack {
 		display: grid;
 		gap: 12px;
-		max-width: 960px;
+		/* The page's 8-column line (DESIGN.md); full width on narrow screens. */
+		max-width: calc((100% - 12px) * 8 / 12);
 		padding-bottom: 32px;
 	}
 	.form {
@@ -298,12 +308,6 @@
 		font-size: var(--text-base);
 		margin-top: 22px;
 	}
-	.note {
-		color: var(--color-ink);
-		border-left: 2px solid var(--color-ink);
-		padding-left: 12px;
-		margin-bottom: 12px;
-	}
 	button.inline {
 		background: none;
 		border: 0;
@@ -311,6 +315,11 @@
 		font: inherit;
 		color: var(--color-ink-2);
 		cursor: pointer;
+	}
+	@media (max-width: 900px) {
+		.stack {
+			max-width: none;
+		}
 	}
 	@media (max-width: 560px) {
 		.row {

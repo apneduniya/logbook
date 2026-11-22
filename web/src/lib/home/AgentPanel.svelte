@@ -34,7 +34,7 @@
 			{/each}
 		</ul>
 	{/if}
-	<a class="link mt-auto pt-4" href="{resolve('/settings')}#devices">Manage computers →</a>
+	<a class="link pt-4" href="{resolve('/settings')}#devices">Manage computers →</a>
 </Panel>
 
 <style>

@@ -73,7 +73,7 @@
 		<span class="mono text-ink">{view.heartbeats.toLocaleString('en')}</span> heartbeats imported,
 		{view.range}. They show as time at the keyboard.
 	</p>
-	{#if view.note}<p class="lbl mt-2">{view.note}</p>{/if}
+	{#if view.note}<p class="hint mt-2">{view.note}</p>{/if}
 {/if}
 
 <style>
@@ -85,6 +85,5 @@
 		display: block;
 		height: 100%;
 		background: var(--color-ink);
-		transition: width 300ms ease-out;
 	}
 </style>

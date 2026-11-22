@@ -62,21 +62,20 @@
 </svelte:head>
 
 {#if !p}
+	<h1 class="sr-only">Your profile</h1>
 	<Panel title="Your profile">
 		<div class="px mute tracking-[.06em]">( PRIVATE )</div>
 		<p class="mute mt-3">Your profile is private, so nobody else can see it.</p>
 		<a class="btn mt-4 self-start" href={resolve('/settings')}>Make it public in Settings</a>
 	</Panel>
 {:else}
-	<div class="head">
+	<div class="phead">
 		<Identicon seed={p.username} size={48} />
 		<div class="min-w-0">
 			<h1 class="px">{p.display_name || p.username}</h1>
 			<p class="lbl mt-1">@{p.username} · on Logbook since {since}</p>
 		</div>
-		{#if data.own}<a class="link ml-auto self-start" href={resolve('/settings')}>
-				Edit profile
-			</a>{/if}
+		{#if data.own}<a class="link edit" href={resolve('/settings')}>Edit profile →</a>{/if}
 	</div>
 
 	<div class="figs">
@@ -102,7 +101,7 @@
 		</div>
 	</div>
 	{#if counted === null}
-		<p class="lbl mb-3">
+		<p class="hint mb-3">
 			{p.display_name || p.username} hasn’t connected the Logbook agent yet, so nothing is counted; keyboard
 			time comes from editor plugins.
 		</p>
@@ -111,7 +110,7 @@
 	<div class="g2">
 		<Panel title="Projects" meta="top {p.projects.length}, all time" padded={false}>
 			{#if p.projects.length}
-				<div class="lbl prow head" aria-hidden="true">
+				<div class="lbl prow cols" aria-hidden="true">
 					<span>Project</span><span class="text-right">Keyboard</span><span class="text-right">
 						Counted
 					</span>
@@ -127,9 +126,17 @@
 							</a>
 						{/if}
 					</div>
-					<span class="mono kb">{duration(pr.total_seconds)}</span>
+					<span class="mono kb">
+						{duration(pr.total_seconds)}<span class="sr-only"> at the keyboard</span>
+					</span>
 					<span class="mono">
-						{pr.credited_seconds === null ? '—' : duration(pr.credited_seconds)}
+						{#if pr.credited_seconds === null}<span aria-hidden="true">—</span><span
+								class="sr-only"
+							>
+								not counted
+							</span>{:else}{duration(pr.credited_seconds)}<span class="sr-only">
+								counted
+							</span>{/if}
 					</span>
 				</div>
 			{:else}
@@ -153,11 +160,17 @@
 {/if}
 
 <style>
-	.head {
+	.phead {
 		display: flex;
 		gap: 16px;
 		align-items: center;
 		padding: 16px 0 22px;
+	}
+	.edit {
+		margin-left: auto;
+		align-self: flex-start;
+		white-space: nowrap;
+		flex-shrink: 0;
 	}
 	h1 {
 		font-weight: 400;
@@ -200,7 +213,7 @@
 	.prow .mono {
 		text-align: right;
 	}
-	.prow.head {
+	.prow.cols {
 		padding-top: 10px;
 		padding-bottom: 10px;
 	}
@@ -212,6 +225,15 @@
 		grid-template-columns: minmax(0, 1fr) auto 40px;
 		gap: 10px 12px;
 	}
+	@media (max-width: 480px) {
+		.phead {
+			flex-wrap: wrap;
+		}
+		.edit {
+			order: 3;
+			margin-left: 64px;
+		}
+	}
 	@media (max-width: 900px) {
 		.g2 {
 			grid-template-columns: 1fr;
@@ -222,6 +244,13 @@
 		}
 		.fig {
 			font-size: 40px;
+		}
+	}
+	/* After the 900px block, so it wins on phones: one line per figure. */
+	@media (max-width: 480px) {
+		.fig {
+			font-size: var(--text-xl);
+			white-space: nowrap;
 		}
 	}
 </style>

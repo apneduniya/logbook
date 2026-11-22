@@ -20,6 +20,9 @@
 	let hidden = $derived(p.hidden);
 	let archived = $derived(p.archived);
 	let saving = $state(false);
+	// Show the address error only once the field has been left or a save tried.
+	let touched = $state(false);
+	let repoInput = $state<HTMLInputElement | null>(null);
 	let message = $state<{ ok: boolean; text: string } | null>(null);
 
 	const dirty = $derived(
@@ -35,7 +38,9 @@
 			return;
 		}
 		if (!repoValid) {
+			touched = true;
 			message = { ok: false, text: 'Fix the repository address first.' };
+			repoInput?.focus();
 			return;
 		}
 		saving = true;
@@ -134,19 +139,21 @@
 						spellcheck="false"
 						placeholder="https://github.com/owner/repo"
 						bind:value={repo}
-						aria-invalid={!repoValid}
+						bind:this={repoInput}
+						onblur={() => (touched = true)}
+						aria-invalid={touched && !repoValid}
 						aria-describedby="repo-help"
 					/>
-					<span id="repo-help" class="lbl">
-						{repoValid
+					<span id="repo-help" class="hint" class:text-ink={touched && !repoValid}>
+						{!touched || repoValid
 							? 'Links this project to its code. Leave empty to unlink.'
 							: 'Use the form https://github.com/owner/repo.'}
 					</span>
 				</div>
 			</div>
 			<div class="row">
-				<span>Visibility</span>
-				<div class="grid gap-2.5">
+				<span id="visibility">Visibility</span>
+				<div class="grid gap-2.5" role="group" aria-labelledby="visibility">
 					<label class="check">
 						<input type="checkbox" bind:checked={hidden} /> Hide from my public profile
 					</label>
@@ -161,7 +168,7 @@
 					<button class="btn" type="submit" disabled={saving}>
 						{saving ? 'Saving…' : 'Save'}
 					</button>
-					{#if message}<span class="lbl" class:text-ink={!message.ok} role="status">
+					{#if message}<span class="hint" class:text-ink={!message.ok} role="status">
 							{message.text}
 						</span>{/if}
 				</div>
@@ -206,6 +213,8 @@
 	.form {
 		display: grid;
 		gap: 18px;
+		/* End the field on the 8/12 line the panels above share (DESIGN.md). */
+		max-width: calc((100% + 20px) * 8 / 12 - 34px);
 		max-width: 760px;
 	}
 	.row {
@@ -228,6 +237,11 @@
 	@media (max-width: 900px) {
 		.g2 {
 			grid-template-columns: 1fr;
+		}
+	}
+	@media (max-width: 900px) {
+		.form {
+			max-width: none;
 		}
 	}
 	@media (max-width: 560px) {

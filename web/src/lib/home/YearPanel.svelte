@@ -10,10 +10,29 @@
 
 	let { days }: { days: Day[] } = $props();
 
-	// On narrow screens the grid scrolls; start at the recent end.
+	// On phones the grid scrolls with fixed 15px columns and 3px gaps (see the
+	// 720px rule). Size the window to a whole number of columns and start at the
+	// recent end, so the left edge never cuts a column in half.
+	const LABELS = 40; // weekday column (32px) + gap (8px)
+	const STEP = 18; // column + gap
 	let scroller = $state<HTMLElement | null>(null);
 	$effect(() => {
-		if (scroller && days.length) scroller.scrollLeft = scroller.scrollWidth;
+		const el = scroller;
+		const box = el?.parentElement;
+		if (!el || !box || !days.length) return;
+		const fit = () => {
+			if (window.innerWidth > 720) {
+				el.style.width = '';
+			} else {
+				const n = Math.floor((box.clientWidth - LABELS) / STEP);
+				el.style.width = `${LABELS + n * STEP}px`;
+			}
+			el.scrollLeft = el.scrollWidth;
+		};
+		fit();
+		const ro = new ResizeObserver(fit);
+		ro.observe(box);
+		return () => ro.disconnect();
 	});
 
 	// Monday = 0 … Sunday = 6
@@ -50,7 +69,7 @@
 <Panel title="Year" meta="{duration(total)} at the keyboard">
 	<div class="scroll" bind:this={scroller}>
 		<div class="year" style:--cols={columns}>
-			<span></span>
+			<span class="corner"></span>
 			<div class="months lbl" aria-hidden="true">
 				{#each months as m (m.col)}
 					<span style:grid-column="{m.col + 1} / span 3">{m.name}</span>
@@ -83,8 +102,7 @@
 		<span class="lbl">
 			{#if peak}Peak: <span class="text-ink">{duration(peak.seconds)}</span> on {dayLabel(
 					peak.date
-				)} ·
-			{/if}hover a day for its time
+				)}{/if}<span class="hover-hint">{peak ? ' · ' : ''}hover a day for its time</span>
 		</span>
 		<span class="lbl flex items-center gap-[5px]" aria-hidden="true">
 			less {#each [0, 1, 2, 3, 4] as l (l)}<i class="dot key l{l}"></i>{/each} more
@@ -95,6 +113,8 @@
 <style>
 	.scroll {
 		overflow-x: auto;
+		/* Room for today's accent ring, which sits outside its dot. */
+		padding: 3px 3px 3px 0;
 	}
 	.year {
 		display: grid;
@@ -110,6 +130,17 @@
 	}
 	.months {
 		height: 16px;
+	}
+	/* The weekday labels stay put while the grid scrolls on narrow screens. */
+	.wd,
+	.corner {
+		position: sticky;
+		left: 0;
+		z-index: 1;
+		background: var(--color-ground);
+		/* Also cover the 8px column gap, so scrolled dots don't peek through it. */
+		margin-right: -8px;
+		padding-right: 8px;
 	}
 	.wd {
 		display: grid;
@@ -156,5 +187,22 @@
 	.dot.today {
 		outline: 1px solid var(--color-accent);
 		outline-offset: 2px;
+	}
+	/* Touch screens can't hover, so don't promise it. */
+	@media (hover: none) {
+		.hover-hint {
+			display: none;
+		}
+	}
+	/* Phones scroll the grid: fixed columns, so the edge never cuts a dot in half. */
+	@media (max-width: 720px) {
+		.year {
+			min-width: 0;
+			width: max-content;
+		}
+		.months,
+		.grid-days {
+			grid-template-columns: repeat(var(--cols), 15px);
+		}
 	}
 </style>

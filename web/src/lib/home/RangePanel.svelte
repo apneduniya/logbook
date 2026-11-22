@@ -98,10 +98,10 @@
 			</div>
 			{#if previous}
 				<div>
-					<div class="lbl">Period before</div>
+					<div class="lbl">Previous {summary.days.length} days</div>
 					<div class="mono mt-1 text-lg">{duration(previous.counted)}</div>
 					<div class="mute">
-						{previous.label}{#if change !== null}{` · this one ${Math.abs(change)}% ${change >= 0 ? 'more' : 'less'}`}{/if}
+						{previous.label}{#if change !== null}{` · now ${Math.abs(change)}% ${change >= 0 ? 'more' : 'less'}`}{/if}
 					</div>
 				</div>
 			{/if}

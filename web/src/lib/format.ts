@@ -123,6 +123,9 @@ export function percent(part: number, whole: number): number {
 export function editorName(name: string): string {
 	const known: Record<string, string> = {
 		vscode: 'VS Code',
+		code: 'VS Code',
+		'visual studio code': 'VS Code',
+		'claude-code': 'Claude Code',
 		godot: 'Godot',
 		intellij: 'IntelliJ',
 		neovim: 'Neovim',

@@ -30,6 +30,18 @@
 		</div>
 	{/each}
 </div>
+{#if dense}
+	<!-- Dense charts show their numbers only on hover; this table gives them to screen readers. -->
+	<table class="sr-only">
+		<caption>{label}</caption>
+		<thead><tr><th>Period</th><th>Counted</th><th>At the keyboard</th></tr></thead>
+		<tbody>
+			{#each bars as b (b.key)}
+				<tr><td>{b.title}</td><td>{duration(b.counted)}</td><td>{duration(b.keyboard)}</td></tr>
+			{/each}
+		</tbody>
+	</table>
+{/if}
 {#if !dense}
 	<div class="labels" style:--n={bars.length}>
 		{#each bars as b (b.key)}

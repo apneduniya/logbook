@@ -219,6 +219,10 @@
 			grid-column: 1 / -1;
 			overflow-x: auto;
 		}
+		.tab {
+			padding-top: 10px;
+			padding-bottom: 10px;
+		}
 		.who,
 		.acct svg:last-child {
 			display: none;

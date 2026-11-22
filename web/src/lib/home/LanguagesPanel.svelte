@@ -11,6 +11,20 @@
 
 	// Rows carry their own key: a language may itself be called "Other" or
 	// "Unknown", which must not collide with the remainder row.
+	// Plugins name one editor several ways ("code", "vscode"): merge by the
+	// name people know, then rank.
+	const editorRows = $derived.by(() => {
+		const byName: Record<string, number> = {};
+		for (const e of editors) {
+			const n = editorName(e.name);
+			byName[n] = (byName[n] ?? 0) + e.seconds;
+		}
+		return Object.entries(byName)
+			.map(([name, seconds]) => ({ name, seconds }))
+			.sort((a, b) => b.seconds - a.seconds || a.name.localeCompare(b.name))
+			.slice(0, 4);
+	});
+
 	const rows = $derived.by(() => {
 		const total = languages.reduce((s, l) => s + l.seconds, 0);
 		const out = languages.slice(0, 3).map((l, i) => ({
@@ -42,11 +56,11 @@
 					<span class="mono lbl text-right">{r.pc}%</span>
 				{/each}
 			</div>
-			{#if editors.length}
+			{#if editorRows.length}
 				<div class="editors">
 					<span class="lbl col-span-full">Editors</span>
-					{#each editors.slice(0, 4) as e, i (i)}
-						<span class="truncate">{editorName(e.name)}</span><span class="mono">
+					{#each editorRows as e (e.name)}
+						<span class="truncate">{e.name}</span><span class="mono">
 							{duration(e.seconds)}
 						</span>
 					{/each}
