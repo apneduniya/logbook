@@ -38,6 +38,7 @@ func TestMirrorTarget(t *testing.T) {
 		{"no key, no mirror", Original{}, base, config.Hackatime{URL: DefaultWakaTimeURL}},
 		{"already logbook server", Original{URL: server + "/api/v1", HadURL: true, APIKey: key, HadKey: true}, base, config.Hackatime{}},
 		{"retired logbook origin", Original{URL: retired, HadURL: true, APIKey: key, HadKey: true}, base, config.Hackatime{}},
+		{"retired origin, explicit port", Original{URL: "https://logbook.boogles.dev:443/api/v1", HadURL: true, APIKey: key, HadKey: true}, base, config.Hackatime{}},
 		{"already local daemon", Original{URL: local, HadURL: true, APIKey: key, HadKey: true}, base, config.Hackatime{}},
 	}
 	for _, tt := range tests {

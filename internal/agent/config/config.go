@@ -30,7 +30,12 @@ const retiredServerURL = "https://logbook.boogles.dev"
 // IsRetired reports whether u is on the retired server origin.
 func IsRetired(u string) bool {
 	p, err := url.Parse(strings.TrimSpace(u))
-	return err == nil && p.Scheme+"://"+strings.ToLower(p.Host) == retiredServerURL
+	if err != nil || !strings.EqualFold(p.Scheme, "https") {
+		return false
+	}
+	// Compare origins: the hostname without case, and :443 is the default port.
+	port := p.Port()
+	return "https://"+strings.ToLower(p.Hostname()) == retiredServerURL && (port == "" || port == "443")
 }
 
 // MigrateRetired moves a URL on the retired origin to the API's origin,

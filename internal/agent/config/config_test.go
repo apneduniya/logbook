@@ -95,6 +95,9 @@ func TestMigrateRetired(t *testing.T) {
 	for in, want := range map[string]string{
 		"https://logbook.boogles.dev/api/v1":     "https://api.logbook.boogles.dev/api/v1",
 		"https://Logbook.Boogles.dev/api/v1/":    "https://api.logbook.boogles.dev/api/v1",
+		"https://logbook.boogles.dev:443/api/v1": "https://api.logbook.boogles.dev/api/v1",
+		"HTTPS://logbook.boogles.dev/api/v1":     "https://api.logbook.boogles.dev/api/v1",
+		"https://logbook.boogles.dev:8443/api":   "https://logbook.boogles.dev:8443/api",
 		"https://api.logbook.boogles.dev/api/v1": "https://api.logbook.boogles.dev/api/v1",
 		"https://hackatime.hackclub.com/api/v1":  "https://hackatime.hackclub.com/api/v1",
 		"":                                       "",
