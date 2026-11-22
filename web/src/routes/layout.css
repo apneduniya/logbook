@@ -1,0 +1,210 @@
+@import 'tailwindcss';
+@import '@fontsource-variable/geist';
+@import '@fontsource-variable/geist-mono';
+
+@font-face {
+	font-family: 'Departure Mono';
+	src: url('/fonts/departure-mono.woff2') format('woff2');
+	font-weight: 400;
+	font-style: normal;
+	font-display: swap;
+}
+
+/*
+ * Design tokens, copied from the Doop canvas "Logbook web UI" (see web/DESIGN.md).
+ * Light is ledger paper; dark is near-black, never navy. The accent is used only
+ * for live state and today's cell.
+ */
+:root {
+	--color-ground: #f1efe8;
+	--color-ink: #17160f;
+	--color-ink-2: #5f5b51;
+	--color-ink-3: #6e6a61;
+	--color-rule: #d8d4c8;
+	--color-fill: #e6e3d9;
+	--color-accent: #2740d6;
+	--hatch: repeating-linear-gradient(135deg, var(--color-ink-3) 0 1px, transparent 1px 4px);
+	color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+	:root {
+		--color-ground: #0e0e0d;
+		--color-ink: #eceae2;
+		--color-ink-2: #9b988f;
+		--color-ink-3: #85827a;
+		--color-rule: #262523;
+		--color-fill: #1a1a18;
+		--color-accent: #7387ff;
+		color-scheme: dark;
+	}
+}
+
+@theme inline {
+	--color-ground: var(--color-ground);
+	--color-ink: var(--color-ink);
+	--color-ink-2: var(--color-ink-2);
+	--color-ink-3: var(--color-ink-3);
+	--color-rule: var(--color-rule);
+	--color-fill: var(--color-fill);
+	--color-accent: var(--color-accent);
+
+	--font-sans: 'Geist Variable', sans-serif;
+	--font-mono: 'Geist Mono Variable', monospace;
+	--font-pixel: 'Departure Mono', monospace;
+
+	--text-xs: 11px;
+	--text-sm: 13px;
+	--text-base: 15px;
+	--text-lg: 20px;
+	--text-xl: 32px;
+	--text-2xl: 56px;
+	--text-3xl: 88px;
+}
+
+@layer base {
+	html {
+		background: var(--color-ground);
+		color: var(--color-ink);
+		font-family: var(--font-sans);
+		font-size: var(--text-sm);
+		line-height: 1.45;
+		-webkit-font-smoothing: antialiased;
+		text-rendering: optimizeLegibility;
+	}
+	body {
+		min-height: 100dvh;
+	}
+	:focus-visible {
+		outline: 1px solid var(--color-ink);
+		outline-offset: 2px;
+	}
+	::selection {
+		background: var(--color-ink);
+		color: var(--color-ground);
+	}
+}
+
+@layer components {
+	/* Text voices: pixel for figures and panel heads, mono for numbers and labels. */
+	.px {
+		font-family: var(--font-pixel);
+		font-variant-numeric: tabular-nums;
+	}
+	.mono {
+		font-family: var(--font-mono);
+		font-variant-numeric: tabular-nums;
+	}
+	.lbl {
+		font-family: var(--font-mono);
+		font-size: var(--text-xs);
+		letter-spacing: 0.04em;
+		color: var(--color-ink-3);
+	}
+	.mute {
+		color: var(--color-ink-2);
+	}
+
+	/* A link that reads as one at rest: muted, brightens on hover. */
+	.link {
+		color: var(--color-ink-2);
+		text-decoration: none;
+		transition: color 150ms ease-out;
+	}
+	.link:hover {
+		color: var(--color-ink);
+	}
+
+	/* Bordered secondary button; fills with ink on hover. */
+	.btn {
+		display: inline-flex;
+		align-items: center;
+		gap: 8px;
+		height: 32px;
+		padding: 0 12px;
+		border: 1px solid var(--color-ink-3);
+		color: var(--color-ink);
+		background: none;
+		font: inherit;
+		font-size: var(--text-sm);
+		text-decoration: none;
+		cursor: pointer;
+		transition:
+			background 150ms ease-out,
+			color 150ms ease-out;
+	}
+	.btn:hover:not(:disabled) {
+		background: var(--color-ink);
+		color: var(--color-ground);
+	}
+	.btn:disabled {
+		cursor: progress;
+		opacity: 0.6;
+	}
+	.btn-danger:hover:not(:disabled) {
+		background: var(--color-ink);
+	}
+
+	/* Primary call to action: solid ink. */
+	.cta {
+		display: inline-flex;
+		align-items: center;
+		gap: 10px;
+		height: 44px;
+		padding: 0 18px;
+		background: var(--color-ink);
+		color: var(--color-ground);
+		font-size: var(--text-base);
+		font-weight: 500;
+		text-decoration: none;
+		transition: background 150ms ease-out;
+	}
+	.cta:hover {
+		background: var(--color-ink-2);
+	}
+	.cta:focus-visible {
+		outline-offset: 3px;
+	}
+
+	/* Legend swatch. */
+	.sw {
+		display: inline-block;
+		width: 10px;
+		height: 10px;
+		vertical-align: -1px;
+		margin-right: 8px;
+	}
+	.hatch {
+		background: var(--hatch);
+	}
+
+	/* Form fields. */
+	.field {
+		height: 34px;
+		padding: 0 10px;
+		border: 1px solid var(--color-rule);
+		background: var(--color-ground);
+		color: var(--color-ink);
+		font: inherit;
+		font-size: var(--text-sm);
+		min-width: 0;
+	}
+	.field:hover {
+		border-color: var(--color-ink-3);
+	}
+	.field:focus-visible {
+		outline: 1px solid var(--color-ink);
+		outline-offset: -1px;
+		border-color: var(--color-ink);
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	*,
+	*::before,
+	*::after {
+		transition-duration: 0ms !important;
+		animation-duration: 0ms !important;
+		animation-iteration-count: 1 !important;
+	}
+}
