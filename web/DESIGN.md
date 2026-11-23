@@ -66,6 +66,12 @@ Don't make the whole UI pixel or mono; hierarchy comes from the contrast between
 
 Never call raw time "coding time" or "hours worked". Sentences are plain and short, in second person. Example content in the UI is labelled "example".
 
+## Signed-out home
+
+- One promise, one action, one picture. The headline, a single sentence and "Sign in with Hack Club" are all the hero holds; the reading links live in the header and footer.
+- The example is one figure that teaches one idea: an hour as a single strip, with each cut labelled under the minutes it took. Labels go on the data, not in a legend or a log table beside it.
+- Privacy copy names exactly what reaches the server (project, language and file names, counted minutes, the daily hash). "Only timings leave your laptop" was wrong and was removed.
+
 ## Don'ts (already tried and rejected)
 
 - A dotted background, corner ticks and an outer frame around the page.
@@ -73,3 +79,4 @@ Never call raw time "coding time" or "hours worked". Sentences are plain and sho
 - An evidence panel on the dashboard (evidence belongs to submissions).
 - Fake logos or avatars from other services: users get a pixel identicon drawn from their username.
 - Decorative bits that answer no question.
+- "Fig. 1" style numbering when there is no Fig. 2.

@@ -161,10 +161,15 @@
 		font-size: var(--text-base);
 		font-weight: 500;
 		text-decoration: none;
-		transition: background 150ms ease-out;
+		transition: transform 150ms ease-out;
 	}
+	/* Hover never lightens the one primary button, so it never looks disabled. */
 	.cta:hover {
-		background: var(--color-ink-2);
+		text-decoration: underline;
+		text-underline-offset: 3px;
+	}
+	.cta:active {
+		transform: translateY(1px);
 	}
 	.cta:focus-visible {
 		outline-offset: 3px;
