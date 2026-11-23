@@ -11,14 +11,30 @@ function parseRange(v: string | null): Range {
 	return v === '30d' || v === 'year' ? v : '7d';
 }
 
+// The last home this tab showed, so a failed background reload (app.reload:
+// live updates, import progress) can keep it on screen instead of replacing
+// it with the error page. Keyed by user and URL, so it is never someone
+// else's data or another range.
+let last: { key: string; data: Awaited<ReturnType<typeof dashboard>> } | null = null;
+
 export const load: PageLoad = async ({ url, depends, parent }) => {
 	depends(ME);
 	// The layout's load checks the session; loads run in parallel unless they wait.
 	await parent();
-	if (!app.session) return { kind: 'signed-out' as const };
+	if (!app.session) {
+		last = null;
+		return { kind: 'signed-out' as const };
+	}
+	const key = `${app.session.user.username} ${url.search}`;
 	try {
-		return await dashboard(url);
+		const data = await dashboard(url);
+		last = { key, data };
+		return data;
 	} catch (err) {
+		if (app.background && last?.key === key) {
+			app.reloadFailed = true;
+			return last.data;
+		}
 		loadFailed(err);
 	}
 };

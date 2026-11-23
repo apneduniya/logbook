@@ -45,12 +45,7 @@
 	});
 	$effect(() => {
 		latest = null;
-		if (importing(hackatime))
-			return watchImport(
-				hackatime,
-				(l) => (latest = l),
-				() => !waiting
-			);
+		if (importing(hackatime)) return watchImport(hackatime, (l) => (latest = l));
 	});
 </script>
 

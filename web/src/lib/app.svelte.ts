@@ -31,10 +31,20 @@ export class AppState {
 	/** A clock that ticks every 30 s, so "tracking now" expires on its own. */
 	now = $state(Date.now());
 
+	/**
+	 * True while a background reload (see reload()) is running, so the home's
+	 * load can keep showing what it has if a request fails; it sets
+	 * reloadFailed when it does.
+	 */
+	background = false;
+	reloadFailed = false;
+
 	#source: EventSource | null = null;
 	#retry: ReturnType<typeof setTimeout> | null = null;
 	#timer: ReturnType<typeof setTimeout> | null = null;
 	#missed = false;
+	#holds = 0;
+	#held = false;
 
 	constructor(origin: string) {
 		this.api = new Api(origin, () => this.#sessionEnded());
@@ -169,8 +179,48 @@ export class AppState {
 		if (this.#timer) return;
 		this.#timer = setTimeout(() => {
 			this.#timer = null;
-			void invalidate(ME);
+			void this.reload();
 		}, delay);
+	}
+
+	/**
+	 * Reloads the signed-in pages for fresh data nobody asked for (live
+	 * updates, import progress). A failure keeps the page as it is instead of
+	 * showing the error page. Resolves true once fresh data is on screen, false
+	 * if it failed or is held back (see hold()).
+	 */
+	async reload(): Promise<boolean> {
+		if (this.#holds > 0) {
+			this.#held = true;
+			return false;
+		}
+		this.background = true;
+		this.reloadFailed = false;
+		try {
+			await invalidate(ME);
+		} finally {
+			this.background = false;
+		}
+		return !this.reloadFailed;
+	}
+
+	/**
+	 * Holds background reloads while a screen shows something a reload would
+	 * lose, such as an install command that hasn't been copied yet. Returns the
+	 * release; a reload held back in the meantime runs on release.
+	 */
+	hold(): () => void {
+		this.#holds++;
+		let released = false;
+		return () => {
+			if (released) return;
+			released = true;
+			this.#holds--;
+			if (this.#holds === 0 && this.#held) {
+				this.#held = false;
+				void this.reload();
+			}
+		};
 	}
 
 	async #streamRefused(): Promise<void> {

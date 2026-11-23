@@ -30,15 +30,10 @@
 		if (waiting) return waitForDevice();
 	});
 	// While Hackatime history comes in, keep its progress current and reload once
-	// it has something to show (never while an install command is on screen).
+	// it has something to show (held while an install command is on screen).
 	$effect(() => {
 		latest = null;
-		if (importing(hackatime))
-			return watchImport(
-				hackatime,
-				(l) => (latest = l),
-				() => !waiting
-			);
+		if (importing(hackatime)) return watchImport(hackatime, (l) => (latest = l));
 	});
 </script>
 

@@ -7,15 +7,25 @@ import { poll } from '#lib/poll.ts';
 import type { HackatimeLink } from '#lib/types.ts';
 import { importing } from './kind.ts';
 
-/** After an install command is made: every 5 s, look for the agent's first upload, then reload into the dashboard. */
+/**
+ * After an install command is made: hold background reloads (they could swap
+ * the screen and lose the command), and every 5 s look for the agent's first
+ * upload, then load the dashboard.
+ */
 export function waitForDevice(): () => void {
-	return poll(5000, async () => {
+	const release = app.hold();
+	const stop = poll(5000, async (alive) => {
 		const devices = await app.api.devices();
-		if (devices.length === 0) return false;
+		if (!alive() || devices.length === 0) return false;
 		app.devices = devices;
+		release();
 		await invalidate(ME);
 		return true;
 	});
+	return () => {
+		stop();
+		release();
+	};
 }
 
 const recentDone = (l: HackatimeLink) => l.linked && !!l.import?.recent_done;
@@ -23,25 +33,25 @@ const recentDone = (l: HackatimeLink) => l.linked && !!l.import?.recent_done;
 /**
  * While a Hackatime import runs: every 15 s, fetch only the link's status and
  * hand it to `onLink`, so the progress shown stays current. A failed check is
- * simply retried. The whole home reloads only when it has something new to
- * show (the last 30 days landed, or the import ended), and only if
- * `canReload()` says so: a reload can swap first run for the history view,
- * which would drop an install command the user hasn't copied yet.
+ * retried. The home reloads (in the background, see app.reload) only when it
+ * has something new to show: the last 30 days landed, or the import ended.
+ * Until that reload succeeds, it is tried again on the next tick.
  */
 export function watchImport(
 	start: HackatimeLink,
-	onLink: (link: HackatimeLink) => void,
-	canReload: () => boolean
+	onLink: (link: HackatimeLink) => void
 ): () => void {
 	let shown = start;
-	return poll(15000, async () => {
+	return poll(15000, async (alive) => {
 		const link = await app.api.hackatime();
+		if (!alive()) return true;
 		onLink(link);
 		const changed = recentDone(link) !== recentDone(shown) || !importing(link);
-		if (changed && canReload()) {
-			shown = link;
-			await invalidate(ME);
+		let ok = true;
+		if (changed) {
+			ok = await app.reload();
+			if (ok) shown = link;
 		}
-		return !importing(link);
+		return ok && !importing(link);
 	});
 }
