@@ -30,13 +30,13 @@
 	{#if top.length === 0}
 		<p class="mute px-4 py-[18px]">No project time in this range.</p>
 	{:else}
-		<ProjectListHead />
+		<ProjectListHead counting={summary.credited_seconds !== null} />
 		{#each top as p (p.name)}
 			<ProjectRow
 				href={resolve('/projects/[name]', { name: encodeURIComponent(p.name) })}
 				name={p.name}
 				keyboard={duration(p.seconds)}
-				counted={duration(p.credited_seconds)}
+				counted={p.credited_seconds === null ? '—' : duration(p.credited_seconds)}
 				live={p.name === liveName}
 			/>
 		{/each}

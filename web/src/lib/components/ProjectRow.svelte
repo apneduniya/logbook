@@ -13,10 +13,13 @@
 		note?: string;
 	}
 	let { href, name, keyboard, counted, live = false, note }: Props = $props();
+	// "—" means nothing is counted yet (no device): phones then keep the
+	// keyboard column, the only real number, and drop the counted one.
+	const raw = $derived(counted === '—');
 </script>
 
 <!-- eslint-disable-next-line svelte/no-navigation-without-resolve -- callers pass a resolve() result -->
-<a class="pr" {href} data-live={live || undefined}>
+<a class="pr" class:raw {href} data-live={live || undefined}>
 	<span class="n">
 		<span class="name">{name}</span>{#if note}<span class="note">{note}</span>{/if}
 	</span>
@@ -103,6 +106,12 @@
 			gap: 12px;
 		}
 		.kb {
+			display: none;
+		}
+		.raw .kb {
+			display: block;
+		}
+		.raw .ct {
 			display: none;
 		}
 	}

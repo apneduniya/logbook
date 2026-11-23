@@ -1,7 +1,8 @@
 <!--
   The chosen range by day (7d, 30d) or by week (year): counted time in ink
   inside a hatched box for time at the keyboard. Then best day, daily average
-  and the previous period.
+  and the previous period. With no device yet, all of it is time at the
+  keyboard.
 -->
 <script lang="ts">
 	import { resolve } from '$app/paths';
@@ -23,13 +24,15 @@
 	};
 
 	const bars = $derived(range === 'year' ? weeklyBars(summary.days) : dailyBars(summary.days));
-	const counted = $derived(summary.credited_seconds ?? 0);
+	// Before a device registers there is no counted time, only time at the
+	// keyboard (often imported from Hackatime): every figure uses that instead.
+	const counting = $derived(summary.credited_seconds !== null);
+	const of = (d: Day) => (counting ? d.credited_seconds : d.seconds);
+	const counted = $derived(summary.credited_seconds ?? summary.total_seconds);
+	const kind = $derived(counting ? 'counted' : 'at the keyboard');
 
 	const best = $derived(
-		summary.days.reduce<Day | null>(
-			(b, d) => (!b || d.credited_seconds > b.credited_seconds ? d : b),
-			null
-		)
+		summary.days.reduce<Day | null>((b, d) => (!b || of(d) > of(b) ? d : b), null)
 	);
 	const average = $derived(summary.days.length ? counted / summary.days.length : 0);
 
@@ -40,7 +43,7 @@
 		const prior = year.days.slice(-2 * n, -n);
 		if (prior.length < n) return null;
 		return {
-			counted: prior.reduce((s, d) => s + d.credited_seconds, 0),
+			counted: prior.reduce((s, d) => s + of(d), 0),
 			label: rangeLabel(prior[0].date, prior[prior.length - 1].date)
 		};
 	});
@@ -57,9 +60,14 @@
 	<div class="grid gap-5">
 		<div class="flex flex-wrap items-center justify-between gap-3">
 			<div class="text-base">
-				<span class="mono">{duration(counted)}</span> <span class="mute">counted of</span>
-				<span class="mono">{duration(summary.total_seconds)}</span>
-				<span class="mute">at the keyboard</span>
+				{#if counting}
+					<span class="mono">{duration(counted)}</span> <span class="mute">counted of</span>
+					<span class="mono">{duration(summary.total_seconds)}</span>
+					<span class="mute">at the keyboard</span>
+				{:else}
+					<span class="mono">{duration(summary.total_seconds)}</span>
+					<span class="mute">at the keyboard</span>
+				{/if}
 			</div>
 			<Segmented
 				label="Range"
@@ -76,25 +84,25 @@
 		<div>
 			<DayBars
 				{bars}
-				label="Counted time {range === 'year' ? 'per week' : 'per day'}, {rangeLabel(
-					summary.start,
-					summary.end
-				)}"
+				{counting}
+				label="{counting ? 'Counted time' : 'Time at the keyboard'} {range === 'year'
+					? 'per week'
+					: 'per day'}, {rangeLabel(summary.start, summary.end)}"
 			/>
 		</div>
 
 		<div class="stats">
 			<div>
 				<div class="lbl">Best day</div>
-				<div class="mono mt-1 text-lg">{duration(best?.credited_seconds ?? 0)}</div>
+				<div class="mono mt-1 text-lg">{duration(best ? of(best) : 0)}</div>
 				<div class="mute">
-					{best && best.credited_seconds > 0 ? dayLabel(best.date) : 'none yet'}
+					{best && of(best) > 0 ? dayLabel(best.date) : 'none yet'}
 				</div>
 			</div>
 			<div>
 				<div class="lbl">Daily average</div>
 				<div class="mono mt-1 text-lg">{duration(average)}</div>
-				<div class="mute">counted, over {summary.days.length} days</div>
+				<div class="mute">{kind}, over {summary.days.length} days</div>
 			</div>
 			{#if previous}
 				<div>

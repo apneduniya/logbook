@@ -1,7 +1,8 @@
 <!--
   Creates an API key on request and shows the one-line install command with
-  it. The key lives only in this component's state (docs/web.md, Security):
-  masked until "Show", gone on navigation.
+  it. The key lives only in component state (docs/web.md, Security): masked
+  until "Show", gone on navigation. A parent may bind `key` so it outlives a
+  swap between its child views (the home page does, across reloads).
 -->
 <script lang="ts">
 	import { app } from '#lib/app.svelte.ts';
@@ -9,11 +10,11 @@
 	import { installCommand } from '#lib/links.ts';
 	import Segmented from './Segmented.svelte';
 
-	let { onCreated }: { onCreated?: () => void } = $props();
+	let { onCreated, key = $bindable(null) }: { onCreated?: () => void; key?: string | null } =
+		$props();
 
 	type Os = 'unix' | 'windows';
 	let os = $state<Os>(navigator.userAgent.includes('Windows') ? 'windows' : 'unix');
-	let key = $state<string | null>(null);
 	let shown = $state(false);
 	let busy = $state(false);
 	let error = $state<string | null>(null);

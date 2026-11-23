@@ -51,8 +51,14 @@
 </div>
 
 <footer class="lbl foot">
-	<span>
-		{lastActivity ? `Last activity ${instantLabel(lastActivity, app.timezone)}` : 'No activity yet'}
+	<span role="status">
+		{#if app.stale}
+			Couldn’t refresh, showing earlier data. Retrying.
+		{:else}
+			{lastActivity
+				? `Last activity ${instantLabel(lastActivity, app.timezone)}`
+				: 'No activity yet'}
+		{/if}
 	</span>
 	<span>Times in {zoneAbbr(app.timezone)}</span>
 </footer>

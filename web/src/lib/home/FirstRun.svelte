@@ -4,8 +4,9 @@
   into the dashboard.
 -->
 <script lang="ts">
-	import { invalidate } from '$app/navigation';
-	import { app, ME } from '#lib/app.svelte.ts';
+	import { app } from '#lib/app.svelte.ts';
+	import { importing } from './kind.ts';
+	import { watchImport } from './setup.ts';
 	import { dayLabel } from '#lib/format.ts';
 	import { RULES_URL } from '#lib/links.ts';
 	import type { Device, HackatimeLink, Today } from '#lib/types.ts';
@@ -14,31 +15,27 @@
 	import HackatimeStatus from '#lib/components/HackatimeStatus.svelte';
 	import Rules from './Rules.svelte';
 
-	let { today, hackatime, devices }: { today: Today; hackatime: HackatimeLink; devices: Device[] } =
-		$props();
+	interface Props {
+		today: Today;
+		hackatime: HackatimeLink;
+		devices: Device[];
+		/** The install key once made; the home page owns it (and waits for the device). */
+		installKey: string | null;
+	}
+	let { today, hackatime, devices, installKey = $bindable() }: Props = $props();
+	const waiting = $derived(installKey !== null);
 
-	const name = $derived(app.user?.display_name.split(' ')[0] || app.user?.username || '');
-	const hackatimeDone = $derived(hackatime.linked && hackatime.import?.status === 'done');
+	// The import's latest status between reloads (watchImport keeps it current).
+	let latest = $state<HackatimeLink | null>(null);
+	const link = $derived(latest ?? hackatime);
+	const hackatimeDone = $derived(link.linked && link.import?.status === 'done');
 	const done = $derived((hackatimeDone ? 1 : 0) + (devices.length > 0 ? 1 : 0));
 
-	// After a key is made, check every 5 s for the agent's first upload.
-	let waiting = $state(false);
+	// While Hackatime history comes in, keep its progress current and reload once
+	// it has something to show.
 	$effect(() => {
-		if (!waiting) return;
-		const check = async () => {
-			try {
-				const d = await app.api.devices();
-				if (d.length > 0) {
-					clearInterval(t);
-					app.devices = d;
-					await invalidate(ME);
-				}
-			} catch {
-				// Keep waiting; a failed poll is retried on the next tick.
-			}
-		};
-		const t = setInterval(() => void check(), 5000);
-		return () => clearInterval(t);
+		latest = null;
+		if (importing(hackatime)) return watchImport(hackatime, (l) => (latest = l));
 	});
 </script>
 
@@ -47,7 +44,7 @@
 <div class="g2">
 	<Panel title="Set up" meta="{done} of 2 done" padded={false}>
 		<div class="intro">
-			<h1 class="px">Welcome, {name}.</h1>
+			<h1 class="px">Welcome, {app.firstName}.</h1>
 			<p class="mute mt-1.5 max-w-[60ch]">
 				One install and you’re done. After that there is nothing to start or stop: Logbook counts
 				while you work.
@@ -61,7 +58,7 @@
 					<p class="mute">
 						A small background app. It runs on Windows, macOS and Linux, including old laptops.
 					</p>
-					<InstallCommand onCreated={() => (waiting = true)} />
+					<InstallCommand bind:key={installKey} />
 				</div>
 				<span class="st mute">{waiting ? 'waiting for it' : 'to do'}</span>
 			</li>
@@ -90,7 +87,7 @@
 				<span class="n px">4</span>
 				<div>
 					<h2 class="text-base">Bring your Hackatime history</h2>
-					<div class="mt-0.5"><HackatimeStatus link={hackatime} /></div>
+					<div class="mt-0.5"><HackatimeStatus {link} /></div>
 				</div>
 				<span class="st" class:mute={!hackatimeDone}>
 					{#if hackatimeDone}

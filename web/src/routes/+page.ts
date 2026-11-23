@@ -1,7 +1,9 @@
+import { page } from '$app/state';
 import { app, ME } from '#lib/app.svelte.ts';
 import { addDays } from '#lib/format.ts';
 import type { Range } from '#lib/types.ts';
 import { loadFailed } from '#lib/load.ts';
+import { homeKind } from '#lib/home/kind.ts';
 import type { PageLoad } from './$types';
 
 const RANGE_DAYS: Record<Range, number> = { '7d': 7, '30d': 30, year: 365 };
@@ -10,14 +12,36 @@ function parseRange(v: string | null): Range {
 	return v === '30d' || v === 'year' ? v : '7d';
 }
 
+// The last home this tab showed, so a failed background reload (app.reload:
+// live updates, import progress) can keep it on screen instead of replacing
+// it with the error page. Keyed by user and URL, so it is never someone
+// else's data or another range.
+let last: { key: string; data: Awaited<ReturnType<typeof dashboard>> } | null = null;
+
 export const load: PageLoad = async ({ url, depends, parent }) => {
 	depends(ME);
 	// The layout's load checks the session; loads run in parallel unless they wait.
 	await parent();
-	if (!app.session) return { kind: 'signed-out' as const };
+	if (!app.session) {
+		last = null;
+		return { kind: 'signed-out' as const };
+	}
+	const key = `${app.session.user.username} ${url.search}`;
 	try {
-		return await dashboard(url);
+		const data = await dashboard(url);
+		last = { key, data };
+		// Fresh data, however it was loaded (navigation, reload): not stale.
+		app.stale = false;
+		return data;
 	} catch (err) {
+		// Only a background reload of the page already on screen keeps it; a
+		// navigation here (even during a background reload elsewhere) never
+		// gets old data instead of an error.
+		const onScreen = page.url.pathname === url.pathname && page.url.search === url.search;
+		if (app.background && onScreen && last?.key === key) {
+			app.reloadFailed = true;
+			return last.data;
+		}
 		loadFailed(err);
 	}
 };
@@ -26,20 +50,25 @@ async function dashboard(url: URL) {
 	const api = app.api;
 	const range = parseRange(url.searchParams.get('range'));
 	const today = await api.today();
-
-	// No device ever registered: the set-up steps instead of empty charts.
-	if (today.credited_seconds === null) {
-		const [hackatime, devices] = await Promise.all([api.hackatime(), api.devices()]);
-		return { kind: 'first-run' as const, today, hackatime, devices };
-	}
-
 	const end = today.end;
 	// The year (365 days) feeds the year grid, the 14-day streak strip and the
 	// previous period's totals; the range summary has the per-range breakdowns.
+	// It also tells a user with no device yet whether they have history to see.
 	const yearStart = addDays(end, -364);
 	const rangeStart = addDays(end, -(RANGE_DAYS[range] - 1));
-	const [year, projects, rangeSummary] = await Promise.all([
+	const setUp = today.credited_seconds === null;
+	const [year, setup] = await Promise.all([
 		api.summary({ start: yearStart, end }),
+		setUp ? Promise.all([api.hackatime(), api.devices()]) : null
+	]);
+
+	const kind = homeKind(today, year);
+	if (kind === 'first-run' && setup) {
+		const [hackatime, devices] = setup;
+		return { kind, today, hackatime, devices };
+	}
+
+	const [projects, rangeSummary] = await Promise.all([
 		api.projects(),
 		range === 'year' ? null : api.summary({ start: rangeStart, end })
 	]);
@@ -49,5 +78,9 @@ async function dashboard(url: URL) {
 	// Live refreshes reload this; keep the agent status in the header current too.
 	void app.loadDevices();
 
+	if (kind === 'history' && setup) {
+		const [hackatime] = setup;
+		return { kind, range, year, summary, projects, hackatime };
+	}
 	return { kind: 'dashboard' as const, range, today, year, summary, projects };
 }

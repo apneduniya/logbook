@@ -28,7 +28,8 @@ The browser app at `https://logbook.boogles.dev`. Code: `web/`. Design: the B3 "
 | Path | Who | Shows | API |
 |---|---|---|---|
 | `/` signed out | anyone | What Logbook does; "Sign in with Hack Club"; an example hour cut minute by minute (illustrative, labelled "example") | none |
-| `/` signed in, no device yet | user | Set-up steps: install command (creates an API key on request and shows it once), plugins and AI tools (automatic), Hackatime history (link and import progress); "What counts" rules | `POST /api/v1/api_keys`, `GET /api/v1/me/devices`, `GET /api/v1/hackatime/link` |
+| `/` signed in, no device yet, with history | user | Their editor history straight away (usually imported from Hackatime), all of it labelled "at the keyboard": the chosen range by day, languages and editors, projects, the year as a grid. On top, one strip with the single next step: the install command, and the Hackatime import's progress while it runs. Counted columns show "—" and say counting starts when the agent is installed. "What counts" rules sit beside the projects | `GET /api/v1/me/today`, `GET /api/v1/me/summary`, `GET /api/v1/me/projects`, `GET /api/v1/me/devices`, `GET /api/v1/hackatime/link`, `POST /api/v1/api_keys` |
+| `/` signed in, no device yet, no history | user | Set-up steps: install command (creates an API key on request and shows it once), plugins and AI tools (automatic), Hackatime history (link and import progress); "What counts" rules | `POST /api/v1/api_keys`, `GET /api/v1/me/devices`, `GET /api/v1/hackatime/link` |
 | `/` signed in | user | Today (counted, at the keyboard, the you / agent alone / idle split); streak and the last 14 days; this week, 30 days or year by day; languages and editors; projects; agent status; the year as a grid | `GET /api/v1/me/today`, `GET /api/v1/me/summary`, `GET /api/v1/me/projects`, `GET /api/v1/me/devices`, live |
 | `/projects` | user | All projects: counted and keyboard time, last active, hidden or archived | `GET /api/v1/me/projects` |
 | `/projects/[name]` | user | One project: totals, the last 30 days by day, languages; settings (GitHub repo, hidden, archived) | `GET /api/v1/me/projects/{name}`, `GET /api/v1/me/summary?project=`, `PATCH` |
@@ -47,7 +48,11 @@ These match the API's two kinds of time (ADR 0014):
 - **At the keyboard** is raw time from editor heartbeats (`seconds`, `total_seconds`).
 - **Agent alone** and **idle** are the agent's `agent` and `idle` minutes (`credited_labels`).
 
-When `credited_*` is `null` (no device ever registered), the UI shows the set-up steps instead of zeros.
+When `credited_*` is `null` (no device ever registered), the UI never shows counted zeros:
+
+- **With history** (any time at the keyboard in the last year, for example from a Hackatime import), it shows that history, labelled "at the keyboard", with the install strip on top. A teen sees their own work in the first seconds, and nothing raw is ever called counted.
+- **Without history**, it shows the set-up steps. While a Hackatime import is still fetching its first 30 days, there is nothing to show yet, so the set-up steps (with the import's progress) stay until the history arrives.
+- The streak and Today panels need counted time, so they appear only once a device registers.
 
 ## Security (threat-model delta)
 
