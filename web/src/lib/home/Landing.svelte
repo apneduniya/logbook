@@ -6,7 +6,7 @@
 <script lang="ts">
 	import { page } from '$app/state';
 	import { app } from '#lib/app.svelte.ts';
-	import { REPO_URL } from '#lib/links.ts';
+	import { REPO_URL, RULES_URL } from '#lib/links.ts';
 
 	type Kind = 'you' | 'agent' | 'idle';
 	interface Cut {
@@ -18,7 +18,7 @@
 
 	const cuts: Cut[] = [
 		{ kind: 'agent', from: 21, to: 26, why: 'Agent ran alone after you left' },
-		{ kind: 'idle', from: 47, to: 50, why: 'Idle' }
+		{ kind: 'idle', from: 47, to: 50, why: 'No input, no agent running' }
 	];
 	const minutes: Kind[] = Array.from(
 		{ length: 60 },
@@ -42,15 +42,15 @@
 	const points = [
 		[
 			'Nothing to start or stop',
-			'Install once. It works with your WakaTime plugins, which keep sending to Hackatime, and with Claude Code, Codex, Cursor and Copilot.'
+			'After you sign in, one command installs a small background app. Your WakaTime plugins keep sending to Hackatime, and Claude Code, Codex, Cursor and Copilot work too.'
 		],
 		[
 			'Every cut says why',
-			'Idle time, agents left running alone and AI changes accepted without reading are taken off, and each cut shows its reason.'
+			'Idle time, agents left running alone and AI changes accepted with no time to read them are taken off, and each cut shows its reason.'
 		],
 		[
-			'Only timings leave your laptop',
-			'Prompts, code and keystrokes stay on your computer. The server gets counted minutes and a signed daily hash.'
+			'Your code stays on your computer',
+			'Prompts, code and keystrokes never leave it. Like Hackatime, the server sees project, language and file names, plus your counted minutes and a signed daily hash.'
 		]
 	];
 </script>
@@ -70,10 +70,10 @@
 </section>
 
 <figure class="fig">
-	<figcaption class="lbl cap"><span>Fig. 1 · one hour</span><span>example</span></figcaption>
+	<figcaption class="lbl">Example · one hour</figcaption>
 	<p class="reading">
 		<span class="px big">{counted}m</span>
-		<span class="mute">counted out of 60 minutes at the keyboard</span>
+		<span class="mute">counted out of 60 minutes in your editor</span>
 	</p>
 	<div class="strip" role="img" aria-label={describe}>
 		{#each minutes as k, i (i)}<i class={k}></i>{/each}
@@ -92,11 +92,11 @@
 	</div>
 </figure>
 
-<ol class="points">
+<ol class="points" role="list">
 	{#each points as [title, body], i (title)}
 		<li class="row">
-			<span class="px mute">{String(i + 1).padStart(2, '0')}</span>
-			<span class="text-base">{title}</span>
+			<span class="px mute" aria-hidden="true">{String(i + 1).padStart(2, '0')}</span>
+			<h2 class="title">{title}</h2>
 			<span class="mute">{body}</span>
 		</li>
 	{/each}
@@ -104,7 +104,14 @@
 
 <footer class="lbl foot">
 	<span>Logbook · free and open source (AGPLv3)</span>
-	<a class="link" href={REPO_URL} rel="external">Source on GitHub →</a>
+	<span class="out">
+		<a class="link" href={RULES_URL} rel="external">
+			How counting works <span aria-hidden="true">→</span>
+		</a>
+		<a class="link" href={REPO_URL} rel="external">
+			Source on GitHub <span aria-hidden="true">→</span>
+		</a>
+	</span>
 </footer>
 
 <style>
@@ -119,6 +126,8 @@
 		font-size: clamp(40px, 6vw, var(--text-3xl));
 		line-height: 1;
 		letter-spacing: -0.02em;
+		/* A mono space is a full cell; at display size it splits the words apart. */
+		word-spacing: -0.25em;
 		max-width: 20ch;
 		text-wrap: balance;
 	}
@@ -140,16 +149,13 @@
 		padding-left: 12px;
 	}
 
-	/* Fig. 1: the hour as one strip, with the cuts labelled where they happen. */
+	/* The example: the hour as one strip, with the cuts labelled where they happen. */
 	.fig {
 		margin: 72px 0 0;
 		border-top: 1px solid var(--color-rule);
 		padding-top: 14px;
 	}
-	.cap {
-		display: flex;
-		justify-content: space-between;
-	}
+
 	.reading {
 		display: flex;
 		align-items: baseline;
@@ -204,9 +210,9 @@
 		color: var(--color-ink-2);
 		text-wrap: balance;
 	}
-	/* On wide screens each line of the headline stays whole, so it breaks
+	/* Above phone width each line of the headline stays whole, so it breaks
 	   after "hours". Phones let it wrap naturally. */
-	@media (min-width: 901px) {
+	@media (min-width: 600px) {
 		h1 > span {
 			display: inline-block;
 		}
@@ -219,7 +225,7 @@
 	}
 	.row {
 		display: grid;
-		grid-template-columns: 40px calc((100% - 12px) * 5 / 12 - 68px) minmax(0, 1fr);
+		grid-template-columns: 40px 18rem minmax(0, 1fr);
 		gap: 20px;
 		padding: 18px 0;
 		border-top: 1px solid var(--color-rule);
@@ -235,8 +241,18 @@
 		display: flex;
 		justify-content: space-between;
 		gap: 16px;
-		padding: 16px 0 18px;
+		flex-wrap: wrap;
+		padding: 56px 0 18px;
 		margin-top: auto;
+	}
+	.out {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 8px 24px;
+	}
+	.title {
+		font-size: var(--text-base);
+		font-weight: 400;
 	}
 	@media (max-width: 900px) {
 		.hero {
@@ -264,10 +280,6 @@
 			font-size: var(--text-xs);
 			padding-left: 6px;
 		}
-		/* Too narrow for the clock time; the strip shows where each cut is. */
-		.when {
-			display: none;
-		}
 		.row {
 			grid-template-columns: 32px 1fr;
 			gap: 6px 12px;
@@ -277,7 +289,14 @@
 		}
 		.foot {
 			flex-direction: column;
-			gap: 4px;
+			gap: 8px;
+			padding-top: 40px;
+		}
+	}
+	@media (max-width: 720px) {
+		/* Too narrow for the clock time; the strip shows where each cut is. */
+		.when {
+			display: none;
 		}
 	}
 </style>
