@@ -4,8 +4,9 @@
   into the dashboard.
 -->
 <script lang="ts">
-	import { invalidate } from '$app/navigation';
-	import { app, ME } from '#lib/app.svelte.ts';
+	import { app } from '#lib/app.svelte.ts';
+	import { importing } from './kind.ts';
+	import { refreshWhileImporting, waitForDevice } from './setup.ts';
 	import { dayLabel } from '#lib/format.ts';
 	import { RULES_URL } from '#lib/links.ts';
 	import type { Device, HackatimeLink, Today } from '#lib/types.ts';
@@ -17,28 +18,17 @@
 	let { today, hackatime, devices }: { today: Today; hackatime: HackatimeLink; devices: Device[] } =
 		$props();
 
-	const name = $derived(app.user?.display_name.split(' ')[0] || app.user?.username || '');
 	const hackatimeDone = $derived(hackatime.linked && hackatime.import?.status === 'done');
 	const done = $derived((hackatimeDone ? 1 : 0) + (devices.length > 0 ? 1 : 0));
 
-	// After a key is made, check every 5 s for the agent's first upload.
+	// After a key is made, wait for the agent's first upload (then the dashboard).
 	let waiting = $state(false);
 	$effect(() => {
-		if (!waiting) return;
-		const check = async () => {
-			try {
-				const d = await app.api.devices();
-				if (d.length > 0) {
-					clearInterval(t);
-					app.devices = d;
-					await invalidate(ME);
-				}
-			} catch {
-				// Keep waiting; a failed poll is retried on the next tick.
-			}
-		};
-		const t = setInterval(() => void check(), 5000);
-		return () => clearInterval(t);
+		if (waiting) return waitForDevice();
+	});
+	// While Hackatime history comes in, reload so it appears as soon as it lands.
+	$effect(() => {
+		if (importing(hackatime)) return refreshWhileImporting();
 	});
 </script>
 
@@ -47,7 +37,7 @@
 <div class="g2">
 	<Panel title="Set up" meta="{done} of 2 done" padded={false}>
 		<div class="intro">
-			<h1 class="px">Welcome, {name}.</h1>
+			<h1 class="px">Welcome, {app.firstName}.</h1>
 			<p class="mute mt-1.5 max-w-[60ch]">
 				One install and you’re done. After that there is nothing to start or stop: Logbook counts
 				while you work.

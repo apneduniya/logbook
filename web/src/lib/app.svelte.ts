@@ -48,6 +48,12 @@ export class AppState {
 		return this.session?.user.timezone || 'UTC';
 	}
 
+	/** What to greet the user by: the first word of their name, else their username. */
+	get firstName(): string {
+		const u = this.user;
+		return u ? u.display_name.split(' ')[0] || u.username : '';
+	}
+
 	/** True while there has been activity in the last few minutes. */
 	get live(): boolean {
 		return this.lastActivity !== null && this.now - this.lastActivity < LIVE_WINDOW_MS;

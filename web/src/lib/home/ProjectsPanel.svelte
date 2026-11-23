@@ -36,7 +36,7 @@
 				href={resolve('/projects/[name]', { name: encodeURIComponent(p.name) })}
 				name={p.name}
 				keyboard={duration(p.seconds)}
-				counted={duration(p.credited_seconds)}
+				counted={p.credited_seconds === null ? '—' : duration(p.credited_seconds)}
 				live={p.name === liveName}
 			/>
 		{/each}
