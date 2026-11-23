@@ -89,6 +89,9 @@ func keyFinding(f Facts) Finding {
 	case errors.Is(f.VerifyErr, account.ErrKeyRejected):
 		return Finding{Check: "api key", Level: Fail, Detail: "the server rejected the saved key",
 			Fix: "create a new key on the Logbook dashboard and run `logbook login --key <key>`"}
+	case errors.Is(f.VerifyErr, account.ErrNotAPI):
+		return Finding{Check: "api key", Level: Fail, Detail: "the server address isn't the Logbook API: " + f.VerifyErr.Error(),
+			Fix: "run `logbook login --server <API address> --key <key>` with the API's address, not the website's"}
 	case f.VerifyErr != nil:
 		return Finding{Check: "api key", Level: Warn, Detail: "could not check the key: " + f.VerifyErr.Error(),
 			Fix: "check your internet connection or proxy (HTTPS_PROXY); heartbeats wait in the queue meanwhile"}

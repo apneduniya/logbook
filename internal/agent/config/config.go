@@ -13,13 +13,43 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // DefaultLocalAddr is where the daemon's local HTTP server listens.
 const DefaultLocalAddr = "127.0.0.1:47231"
 
 // DefaultServerURL is the Logbook server the agent talks to.
-const DefaultServerURL = "https://logbook.boogles.dev"
+const DefaultServerURL = "https://api.logbook.boogles.dev"
+
+// retiredServerURL was DefaultServerURL until the API moved to its own origin
+// (ADR 0011). It now serves the static web UI, so nothing should send to it:
+// see MigrateRetired.
+const retiredServerURL = "https://logbook.boogles.dev"
+
+// IsRetired reports whether u is on the retired server origin.
+func IsRetired(u string) bool {
+	p, err := url.Parse(strings.TrimSpace(u))
+	if err != nil || !strings.EqualFold(p.Scheme, "https") {
+		return false
+	}
+	// Compare origins: the hostname without case, and :443 is the default port.
+	port := p.Port()
+	return "https://"+strings.ToLower(p.Hostname()) == retiredServerURL && (port == "" || port == "443")
+}
+
+// MigrateRetired moves a URL on the retired origin to the API's origin,
+// keeping its path ("https://logbook.boogles.dev/api/v1" becomes
+// "https://api.logbook.boogles.dev/api/v1"). Other URLs come back unchanged.
+func MigrateRetired(u string) string {
+	if !IsRetired(u) {
+		return u
+	}
+	p, _ := url.Parse(strings.TrimSpace(u)) // IsRetired parsed it already
+	api, _ := url.Parse(DefaultServerURL)   // a constant that parses
+	p.Host = api.Host
+	return strings.TrimRight(p.String(), "/")
+}
 
 // Config is the agent's settings, stored as JSON with mode 0600.
 type Config struct {
@@ -109,6 +139,13 @@ func Load(dir string) (Config, error) {
 	var c Config
 	if err := json.Unmarshal(b, &c); err != nil {
 		return Config{}, fmt.Errorf("parsing config: %w", err)
+	}
+	// Configs saved while the default was the retired origin: send to the
+	// API instead, and never mirror to the old address (it would be
+	// Logbook itself, counted twice, and it no longer accepts uploads).
+	c.ServerURL = MigrateRetired(c.ServerURL)
+	if IsRetired(c.Hackatime.URL) {
+		c.Hackatime = Hackatime{}
 	}
 	if err := c.Validate(); err != nil {
 		return Config{}, err

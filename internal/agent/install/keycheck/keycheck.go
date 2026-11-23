@@ -3,6 +3,7 @@ package keycheck
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -23,6 +24,10 @@ var ErrMalformed = errors.New("that is not a Logbook API key (expected xxxxxxxx-
 
 // ErrRejected means the server does not know the key.
 var ErrRejected = errors.New("the Logbook server rejected this API key; check you copied the whole key and that it hasn't been revoked")
+
+// ErrNotAPI means the server URL answered, but not with the Logbook API
+// (for example the web UI's address instead of the API's).
+var ErrNotAPI = errors.New("not a Logbook API")
 
 var keyPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
 
@@ -82,10 +87,20 @@ func (c *Checker) Check(ctx context.Context, serverURL, key string) error {
 	if err != nil {
 		return fmt.Errorf("reaching %s: %w", u.Host, err)
 	}
-	defer func() { _ = resp.Body.Close() }()                      // body drained below; close errors don't matter
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10)) // drain so the connection is reused
+	defer func() { _ = resp.Body.Close() }() // close errors don't matter
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	_, _ = io.Copy(io.Discard, resp.Body) // drain so the connection is reused
 	switch {
 	case resp.StatusCode >= 200 && resp.StatusCode < 300:
+		// A 2xx alone proves nothing: a static site (the web UI's origin, a
+		// parked domain) answers any path with 200 and HTML. The API answers
+		// with a JSON object holding "data".
+		var reply struct {
+			Data *json.RawMessage `json:"data"`
+		}
+		if json.Unmarshal(body, &reply) != nil || reply.Data == nil {
+			return fmt.Errorf("%s answered, but it is %w (is this the website's address instead of the API's?)", u.Host, ErrNotAPI)
+		}
 		return nil
 	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
 		return ErrRejected

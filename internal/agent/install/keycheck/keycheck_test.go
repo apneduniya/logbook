@@ -44,6 +44,10 @@ func TestCheck(t *testing.T) {
 			_, _ = w.Write([]byte(`{"data":{}}`))
 		case "Basic " + base64.StdEncoding.EncodeToString([]byte("boom")):
 			w.WriteHeader(http.StatusInternalServerError)
+		case "Basic " + base64.StdEncoding.EncodeToString([]byte("spa")):
+			// A static site answers every path with 200 and its HTML shell.
+			w.Header().Set("Content-Type", "text/html")
+			_, _ = w.Write([]byte(`<!doctype html><html><body>Logbook</body></html>`))
 		default:
 			w.WriteHeader(http.StatusUnauthorized)
 		}
@@ -54,6 +58,9 @@ func TestCheck(t *testing.T) {
 
 	if err := c.Check(ctx, srv.URL+"/", key); err != nil {
 		t.Fatalf("valid key: %v", err)
+	}
+	if err := c.Check(ctx, srv.URL, "spa"); !errors.Is(err, ErrNotAPI) {
+		t.Fatalf("HTML 200: %v, want ErrNotAPI", err)
 	}
 	if err := c.Check(ctx, srv.URL, "other"); !errors.Is(err, ErrRejected) {
 		t.Fatalf("bad key: %v, want ErrRejected", err)

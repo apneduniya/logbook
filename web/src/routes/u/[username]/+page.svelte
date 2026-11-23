@@ -1,0 +1,256 @@
+<script lang="ts">
+	import { resolve } from '$app/paths';
+	import { invalidate } from '$app/navigation';
+	import { app, PROFILE } from '#lib/app.svelte.ts';
+	import { duration, monthName, parseDate, percent } from '#lib/format.ts';
+	import Identicon from '#lib/components/Identicon.svelte';
+	import Panel from '#lib/components/Panel.svelte';
+	import type { PageProps } from './$types';
+
+	let { data }: PageProps = $props();
+	const p = $derived(data.profile);
+
+	// Refetch when the profile's numbers change (at most once a minute, server
+	// side). The stream follows the username only, so a refetch doesn't reopen it.
+	const username = $derived(p?.username ?? null);
+	$effect(() => {
+		if (!username) return;
+		const name = username;
+		let src: EventSource | null = null;
+		let retry: ReturnType<typeof setTimeout> | null = null;
+		let missed = false;
+		const open = () => {
+			retry = null;
+			const s = app.api.livePublic(name);
+			let opened = false;
+			s.addEventListener('minutes', () => void invalidate(PROFILE));
+			// Changes aren't replayed across a reconnect, so refetch after one.
+			s.addEventListener('ready', () => {
+				if (opened || missed) void invalidate(PROFILE);
+				opened = true;
+				missed = false;
+			});
+			// Closed for good: the profile went private (the refetch shows the
+			// 404), or the server is busy (429, 503), so try again later.
+			s.addEventListener('error', () => {
+				if (s.readyState !== EventSource.CLOSED) return;
+				s.close();
+				missed = true;
+				void invalidate(PROFILE);
+				retry = setTimeout(open, 30_000);
+			});
+			src = s;
+		};
+		open();
+		return () => {
+			src?.close();
+			if (retry) clearTimeout(retry);
+		};
+	});
+
+	const since = $derived(
+		p
+			? `${monthName(p.member_since.slice(0, 10))} ${parseDate(p.member_since.slice(0, 10)).getUTCFullYear()}`
+			: ''
+	);
+	const langTotal = $derived(p ? p.languages.reduce((s, l) => s + l.seconds, 0) : 0);
+	const counted = $derived(p?.totals.credited_all_time_seconds ?? null);
+</script>
+
+<svelte:head>
+	<title>{p ? `${p.display_name || p.username} · Logbook` : 'Profile · Logbook'}</title>
+</svelte:head>
+
+{#if !p}
+	<h1 class="sr-only">Your profile</h1>
+	<Panel title="Your profile">
+		<div class="px mute tracking-[.06em]">( PRIVATE )</div>
+		<p class="mute mt-3">Your profile is private, so nobody else can see it.</p>
+		<a class="btn mt-4 self-start" href={resolve('/settings')}>Make it public in Settings</a>
+	</Panel>
+{:else}
+	<div class="phead">
+		<Identicon seed={p.username} size={48} />
+		<div class="min-w-0">
+			<h1 class="px">{p.display_name || p.username}</h1>
+			<p class="lbl mt-1">@{p.username} · on Logbook since {since}</p>
+		</div>
+		{#if data.own}<a class="link edit" href={resolve('/settings')}>Edit profile →</a>{/if}
+	</div>
+
+	<div class="figs">
+		<div>
+			<div class="lbl">Counted, all time</div>
+			<div class="px fig">{counted === null ? '—' : duration(counted)}</div>
+		</div>
+		<div>
+			<div class="lbl">Counted, last 7 days</div>
+			<div class="px fig">
+				{p.totals.credited_last_7_days_seconds === null
+					? '—'
+					: duration(p.totals.credited_last_7_days_seconds)}
+			</div>
+		</div>
+		<div>
+			<div class="lbl">At the keyboard, all time</div>
+			<div class="mono fig-sm">{duration(p.totals.all_time_seconds)}</div>
+		</div>
+		<div>
+			<div class="lbl">At the keyboard, last 7 days</div>
+			<div class="mono fig-sm">{duration(p.totals.last_7_days_seconds)}</div>
+		</div>
+	</div>
+	{#if counted === null}
+		<p class="hint mb-3">
+			{p.display_name || p.username} hasn’t connected the Logbook agent yet, so nothing is counted; keyboard
+			time comes from editor plugins.
+		</p>
+	{/if}
+
+	<div class="g2">
+		<Panel title="Projects" meta="top {p.projects.length}, all time" padded={false}>
+			{#if p.projects.length}
+				<div class="lbl prow cols" aria-hidden="true">
+					<span>Project</span><span class="text-right">Keyboard</span><span class="text-right">
+						Counted
+					</span>
+				</div>
+			{/if}
+			{#each p.projects as pr (pr.name)}
+				<div class="prow">
+					<div class="min-w-0">
+						<div class="truncate text-base">{pr.name}</div>
+						{#if pr.repo_url.startsWith('https://github.com/')}
+							<a class="lbl link" href={pr.repo_url} rel="external noopener noreferrer">
+								{pr.repo_url.slice('https://github.com/'.length)} ↗
+							</a>
+						{/if}
+					</div>
+					<span class="mono kb">
+						{duration(pr.total_seconds)}<span class="sr-only"> at the keyboard</span>
+					</span>
+					<span class="mono">
+						{#if pr.credited_seconds === null}<span aria-hidden="true">—</span><span
+								class="sr-only"
+							>
+								not counted
+							</span>{:else}{duration(pr.credited_seconds)}<span class="sr-only">
+								counted
+							</span>{/if}
+					</span>
+				</div>
+			{:else}
+				<p class="mute px-4 py-[18px]">No projects to show yet.</p>
+			{/each}
+		</Panel>
+		<Panel title="Languages" meta="all time">
+			{#if p.languages.length === 0}
+				<p class="mute">No languages yet.</p>
+			{:else}
+				<div class="langs">
+					{#each p.languages.slice(0, 8) as l, i (i)}
+						<span class="truncate">{l.name || 'Unknown'}</span>
+						<span class="mono">{duration(l.seconds)}</span>
+						<span class="mono lbl text-right">{percent(l.seconds, langTotal)}%</span>
+					{/each}
+				</div>
+			{/if}
+		</Panel>
+	</div>
+{/if}
+
+<style>
+	.phead {
+		display: flex;
+		gap: 16px;
+		align-items: center;
+		padding: 16px 0 22px;
+	}
+	.edit {
+		margin-left: auto;
+		align-self: flex-start;
+		white-space: nowrap;
+		flex-shrink: 0;
+	}
+	h1 {
+		font-weight: 400;
+		font-size: var(--text-xl);
+		letter-spacing: -0.01em;
+		overflow-wrap: anywhere;
+	}
+	.figs {
+		display: grid;
+		grid-template-columns: repeat(4, minmax(0, 1fr));
+		gap: 12px;
+		padding: 18px 0;
+		border-top: 1px solid var(--color-rule);
+		border-bottom: 1px solid var(--color-rule);
+		margin-bottom: 12px;
+		align-items: start;
+	}
+	.fig {
+		font-size: var(--text-2xl);
+		line-height: 1;
+		margin-top: 8px;
+	}
+	.fig-sm {
+		font-size: var(--text-lg);
+		margin-top: 8px;
+	}
+	.g2 {
+		display: grid;
+		grid-template-columns: calc((100% - 12px) * 8 / 12) 1fr;
+		gap: 12px;
+	}
+	.prow {
+		display: grid;
+		grid-template-columns: minmax(0, 1fr) 72px 72px;
+		gap: 16px;
+		align-items: center;
+		padding: 10px 14px;
+		border-bottom: 1px solid var(--color-rule);
+	}
+	.prow .mono {
+		text-align: right;
+	}
+	.prow.cols {
+		padding-top: 10px;
+		padding-bottom: 10px;
+	}
+	.kb {
+		color: var(--color-ink-3);
+	}
+	.langs {
+		display: grid;
+		grid-template-columns: minmax(0, 1fr) auto 40px;
+		gap: 10px 12px;
+	}
+	@media (max-width: 480px) {
+		.phead {
+			flex-wrap: wrap;
+		}
+		.edit {
+			order: 3;
+			margin-left: 64px;
+		}
+	}
+	@media (max-width: 900px) {
+		.g2 {
+			grid-template-columns: 1fr;
+		}
+		.figs {
+			grid-template-columns: 1fr 1fr;
+			row-gap: 20px;
+		}
+		.fig {
+			font-size: 40px;
+		}
+	}
+	/* After the 900px block, so it wins on phones: one line per figure. */
+	@media (max-width: 480px) {
+		.fig {
+			font-size: var(--text-xl);
+			white-space: nowrap;
+		}
+	}
+</style>

@@ -439,3 +439,28 @@ func TestRevert(t *testing.T) {
 		}
 	})
 }
+
+// TestUninstallMovesRetiredOrigin: an editor that pointed at the retired
+// origin (Logbook's server before ADR 0011) goes back to the API's origin,
+// even when the file is unedited and an exact backup exists.
+func TestUninstallMovesRetiredOrigin(t *testing.T) {
+	m, cfg, _ := setup(t, "")
+	old := "[settings]\napi_url = https://logbook.boogles.dev/api/v1\napi_key = 11111111-1111-4111-8111-111111111111\n"
+	if err := os.WriteFile(cfg, []byte(old), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Install(localURL, logbookKey); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Uninstall(); err != nil {
+		t.Fatal(err)
+	}
+	got := string(read(t, cfg))
+	if !strings.Contains(got, "api_url = https://api.logbook.boogles.dev/api/v1") ||
+		!strings.Contains(got, "api_key = 11111111-1111-4111-8111-111111111111") {
+		t.Fatalf("restored file:\n%s", got)
+	}
+	if strings.Contains(got, "://logbook.boogles.dev") {
+		t.Fatalf("restored file still points at the retired origin:\n%s", got)
+	}
+}

@@ -24,7 +24,7 @@ func fakeLogbook(t *testing.T) *httptest.Server {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
-		_, _ = w.Write([]byte(`{}`))
+		_, _ = w.Write([]byte(`{"data":{}}`)) // the shape of the real statusbar reply
 	}))
 	t.Cleanup(srv.Close)
 	return srv

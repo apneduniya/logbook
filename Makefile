@@ -4,7 +4,7 @@ export PATH := $(HOME)/.local/go/bin:$(HOME)/go/bin:$(PATH)
 DATABASE_URL ?= postgres://logbook:logbook@127.0.0.1:54329/logbook?sslmode=disable
 export DATABASE_URL
 
-.PHONY: check fmt lint vet test vuln generate db-up db-down migrate build run
+.PHONY: check fmt lint vet test vuln generate db-up db-down migrate build run web-check
 
 check: fmt vet lint test vuln ## everything CI runs
 
@@ -40,3 +40,7 @@ build:
 
 run: build
 	./bin/logbook-server
+
+web-check: ## the web UI's checks (types, lint, unit tests, production build)
+	cd web && bun install --frozen-lockfile && bun run check && bun run lint && bun run test && \
+		LOGBOOK_API_URL=https://api.logbook.boogles.dev bun run build

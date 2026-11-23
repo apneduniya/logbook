@@ -2,6 +2,7 @@ package doctor
 
 import (
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -49,6 +50,7 @@ func TestDiagnose(t *testing.T) {
 		{"no config", func(f *Facts) { f.ConfigErr = config.ErrNotConfigured }, "config", Fail},
 		{"signed out", func(f *Facts) { f.Config.APIKey = "" }, "api key", Fail},
 		{"rejected key", func(f *Facts) { f.VerifyErr = account.ErrKeyRejected }, "api key", Fail},
+		{"website, not the API", func(f *Facts) { f.VerifyErr = fmt.Errorf("x: %w", account.ErrNotAPI) }, "api key", Fail},
 		{"offline", func(f *Facts) { f.VerifyErr = errors.New("dial tcp: timeout") }, "api key", Warn},
 		{"clock skew", func(f *Facts) { f.ServerTime = f.Now.Add(-5 * time.Minute) }, "clock", Warn},
 		{"daemon down", func(f *Facts) { f.DaemonErr = errors.New("refused") }, "agent", Fail},

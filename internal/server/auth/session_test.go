@@ -127,23 +127,32 @@ func TestOptionalSessionIgnoresSessionWithoutCSRF(t *testing.T) {
 	}
 }
 
+// TestLogout covers both sign-out routes: POST /auth/logout and DELETE
+// /api/v1/session, which the web UI uses because CORS covers /api/ only.
 func TestLogout(t *testing.T) {
-	e := newEnv(t)
-	b := e.login(fiona)
-	if rec := e.do(req{method: http.MethodPost, target: "/auth/logout", cookies: []*http.Cookie{b.cookie}}); rec.Code != http.StatusForbidden {
-		t.Fatalf("logout without CSRF = %d, want 403", rec.Code)
-	}
-	rec := b.send(e, http.MethodPost, "/auth/logout", "")
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("logout = %d", rec.Code)
-	}
-	if c := cookieNamed(rec, auth.SessionCookie); c == nil || c.MaxAge >= 0 {
-		t.Fatalf("session cookie not cleared: %+v", c)
-	}
-	if rec := b.get(e, "/api/v1/session"); rec.Code != http.StatusUnauthorized {
-		t.Fatalf("session after logout = %d", rec.Code)
-	}
-	if n := e.count("SELECT count(*) FROM audit_log WHERE action = 'auth.logout'"); n != 1 {
-		t.Fatalf("logout audit rows = %d", n)
+	for _, rt := range []struct{ method, target string }{
+		{http.MethodPost, "/auth/logout"},
+		{http.MethodDelete, "/api/v1/session"},
+	} {
+		t.Run(rt.method+" "+rt.target, func(t *testing.T) {
+			e := newEnv(t)
+			b := e.login(fiona)
+			if rec := e.do(req{method: rt.method, target: rt.target, cookies: []*http.Cookie{b.cookie}}); rec.Code != http.StatusForbidden {
+				t.Fatalf("logout without CSRF = %d, want 403", rec.Code)
+			}
+			rec := b.send(e, rt.method, rt.target, "")
+			if rec.Code != http.StatusNoContent {
+				t.Fatalf("logout = %d", rec.Code)
+			}
+			if c := cookieNamed(rec, auth.SessionCookie); c == nil || c.MaxAge >= 0 {
+				t.Fatalf("session cookie not cleared: %+v", c)
+			}
+			if rec := b.get(e, "/api/v1/session"); rec.Code != http.StatusUnauthorized {
+				t.Fatalf("session after logout = %d", rec.Code)
+			}
+			if n := e.count("SELECT count(*) FROM audit_log WHERE action = 'auth.logout'"); n != 1 {
+				t.Fatalf("logout audit rows = %d", n)
+			}
+		})
 	}
 }

@@ -3,6 +3,7 @@ package account
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -17,6 +18,9 @@ const verifyTimeout = 10 * time.Second
 
 // ErrKeyRejected means the server answered 401 or 403 for the key.
 var ErrKeyRejected = errors.New("the server rejected this API key")
+
+// ErrNotAPI means the server URL answered, but not with the Logbook API.
+var ErrNotAPI = errors.New("not a Logbook API")
 
 // Verification is the server's answer to a key check.
 type Verification struct {
@@ -50,7 +54,8 @@ func Verify(ctx context.Context, client *http.Client, serverURL, key, userAgent 
 		return Verification{}, fmt.Errorf("reaching %s: %w", serverURL, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20)) // drain so the connection is reused
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	_, _ = io.Copy(io.Discard, resp.Body) // drain so the connection is reused
 	v := Verification{}
 	if d, err := http.ParseTime(resp.Header.Get("Date")); err == nil {
 		v.ServerTime = d
@@ -60,6 +65,14 @@ func Verify(ctx context.Context, client *http.Client, serverURL, key, userAgent 
 		return v, ErrKeyRejected
 	case resp.StatusCode != http.StatusOK:
 		return v, fmt.Errorf("server answered %d", resp.StatusCode)
+	}
+	// A static site (such as the web UI's origin) answers every path with 200
+	// and HTML; the API answers with a JSON object holding "data".
+	var reply struct {
+		Data *json.RawMessage `json:"data"`
+	}
+	if json.Unmarshal(body, &reply) != nil || reply.Data == nil {
+		return v, fmt.Errorf("%s answered, but it is %w (is this the website's address instead of the API's?)", serverURL, ErrNotAPI)
 	}
 	return v, nil
 }
