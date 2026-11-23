@@ -5,7 +5,7 @@ The browser app at `https://logbook.boogles.dev`. Code: `web/`. Design: the B3 "
 ## Stack
 
 - SvelteKit 3 with Svelte 5 runes, TypeScript (strict), Tailwind 4. Built with Bun.
-- `@sveltejs/adapter-static` with a `200.html` fallback. Every route is client-rendered (`ssr = false` in the root layout). The build is plain files, so Vercel runs no functions and the Hobby plan has nothing billable.
+- `@sveltejs/adapter-static` with an `index.html` fallback. Every route is client-rendered (`ssr = false` in the root layout). The build is plain files on Cloudflare Pages (ADR 0018), with no functions and nothing billable.
 - One build-time setting: `LOGBOOK_API_URL`, the API origin (`https://api.logbook.boogles.dev`). It must be `https://`, or `http://localhost` / `127.0.0.1` for development.
 - Fonts are self-hosted, so no third-party font requests:
   - Departure Mono (SIL OFL) for big figures and panel heads;
@@ -54,7 +54,7 @@ When `credited_*` is `null` (no device ever registered), the UI shows the set-up
 - **XSS:** Svelte escapes all text. No `{@html}` anywhere.
   - Project names, display names and repo URLs come from users and are rendered as text only.
   - Links to repos are built only from the `https://github.com/<owner>/<repo>` form the API enforces, and only rendered after the app checks they start with `https://github.com/`.
-- **Headers:** `vercel.json` sends these on every response:
+- **Headers:** `static/_headers` sends these on every response (Cloudflare Pages):
   - a strict CSP: `default-src 'self'`; `connect-src` the API origin; `img-src 'self' data:` (avatars are pixel identicons drawn from the username, so no remote images); `frame-ancestors 'none'`; `base-uri 'none'`; `form-action` the API origin;
   - `Referrer-Policy: strict-origin-when-cross-origin`, `X-Content-Type-Options: nosniff`, `Permissions-Policy` off for camera, microphone and geolocation.
 - **API keys:** a new key is shown once, held only in component state, and gone on navigation. It is never written to storage or the URL. The install command shows the key masked until "Show" is pressed, and "Copy" copies the full command.

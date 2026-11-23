@@ -1,6 +1,6 @@
 # Logbook web
 
-The browser UI for Logbook: a static SvelteKit app (Svelte 5, Tailwind 4) deployed to Vercel. It talks to the Logbook API on its own origin.
+The browser UI for Logbook: a static SvelteKit app (Svelte 5, Tailwind 4) deployed to Cloudflare Pages. It talks to the Logbook API on its own origin.
 
 - **Behaviour, pages and security:** [`docs/web.md`](../docs/web.md)
 - **Look and feel:** [`DESIGN.md`](DESIGN.md)
@@ -35,4 +35,6 @@ LOGBOOK_API_URL=https://api.logbook.boogles.dev bun run build
 
 ## Deploy
 
-On Vercel, set the project's root directory to `web` and set `LOGBOOK_API_URL`. `vercel.json` holds the build command, the SPA rewrite to `200.html` and the security headers.
+The site is the Cloudflare Pages project `logbook` (ADR 0018). From the repo root, with `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` set, `make web-deploy` runs the checks, builds with the production API URL and uploads `web/build`.
+
+Pages serves `index.html` for any path that isn't a file (its SPA mode, because there is no `404.html`). `static/_headers` holds the security headers; the CSP itself is a `<meta>` tag SvelteKit writes at build time.

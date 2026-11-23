@@ -16,7 +16,7 @@ export default defineConfig(({ command }) => {
 		command === 'build'
 			? {
 					// Hashes for SvelteKit's inline boot script, written into a <meta> tag of
-					// the generated pages. frame-ancestors can't go in a meta tag; vercel.json
+					// the generated pages. frame-ancestors can't go in a meta tag; static/_headers
 					// sends it as a header with the other security headers (docs/web.md).
 					mode: 'hash' as const,
 					directives: {
@@ -43,9 +43,9 @@ export default defineConfig(({ command }) => {
 					runes: ({ filename }) =>
 						filename.split(/[/\\]/).includes('node_modules') ? undefined : true
 				},
-				// A static SPA (docs/web.md): every route renders in the browser from 200.html,
-				// which vercel.json serves for any path that isn't a file.
-				adapter: adapter({ fallback: '200.html' }),
+				// A static SPA (docs/web.md): every route renders in the browser from
+				// index.html, which Cloudflare Pages serves for any path that isn't a file.
+				adapter: adapter({ fallback: 'index.html' }),
 				csp
 			})
 		],

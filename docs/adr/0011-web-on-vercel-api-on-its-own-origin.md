@@ -1,6 +1,6 @@
 # 0011: Web UI on Vercel; API on its own origin
 
-- Status: accepted (supersedes the hosting part of ADR 0003)
+- Status: accepted (supersedes the hosting part of ADR 0003). The hosting choice (Vercel) is superseded by ADR 0018 (Cloudflare Pages); the origins, CORS and cookie decisions still hold.
 - Date: 2026-11-20
 
 ## Context
