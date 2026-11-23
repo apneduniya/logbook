@@ -7,25 +7,15 @@ import { poll } from '#lib/poll.ts';
 import type { HackatimeLink } from '#lib/types.ts';
 import { importing } from './kind.ts';
 
-/**
- * After an install command is made: hold background reloads (they could swap
- * the screen and lose the command), and every 5 s look for the agent's first
- * upload, then load the dashboard.
- */
+/** After an install command is made: every 5 s, look for the agent's first upload, then load the dashboard. */
 export function waitForDevice(): () => void {
-	const release = app.hold();
-	const stop = poll(5000, async (alive) => {
+	return poll(5000, async (alive) => {
 		const devices = await app.api.devices();
 		if (!alive() || devices.length === 0) return false;
 		app.devices = devices;
-		release();
 		await invalidate(ME);
 		return true;
 	});
-	return () => {
-		stop();
-		release();
-	};
 }
 
 const recentDone = (l: HackatimeLink) => l.linked && !!l.import?.recent_done;

@@ -17,7 +17,7 @@
 	import RangePanel from './RangePanel.svelte';
 	import YearPanel from './YearPanel.svelte';
 	import { importing } from './kind.ts';
-	import { waitForDevice, watchImport } from './setup.ts';
+	import { watchImport } from './setup.ts';
 
 	interface Props {
 		range: Range;
@@ -25,8 +25,11 @@
 		summary: Summary;
 		projects: Project[];
 		hackatime: HackatimeLink;
+		/** The install key once made; the home page owns it (and waits for the device). */
+		installKey: string | null;
 	}
-	let { range, year, summary, projects, hackatime }: Props = $props();
+	let { range, year, summary, projects, hackatime, installKey = $bindable() }: Props = $props();
+	const waiting = $derived(installKey !== null);
 
 	const rangeMeta = $derived(
 		range === '7d' ? 'last 7 days' : range === '30d' ? 'last 30 days' : 'last year'
@@ -39,10 +42,6 @@
 	let latest = $state<HackatimeLink | null>(null);
 	const link = $derived(latest ?? hackatime);
 
-	let waiting = $state(false);
-	$effect(() => {
-		if (waiting) return waitForDevice();
-	});
 	$effect(() => {
 		latest = null;
 		if (importing(hackatime)) return watchImport(hackatime, (l) => (latest = l));
@@ -61,7 +60,7 @@
 					once the agent runs on your computer.
 					<a class="link" href={RULES_URL} rel="external">What counts →</a>
 				</p>
-				<InstallCommand onCreated={() => (waiting = true)} />
+				<InstallCommand bind:key={installKey} />
 			</div>
 		</Panel>
 		<Panel title="Hackatime" meta={hackatime.linked ? 'linked' : 'not linked'}>
@@ -77,7 +76,11 @@
 </div>
 
 <footer class="lbl foot">
-	<span>All of this is time at the keyboard</span>
+	<span role="status">
+		{app.stale
+			? 'Couldn’t refresh, showing earlier data. Retrying.'
+			: 'All of this is time at the keyboard'}
+	</span>
 	<span>Times in {zoneAbbr(app.timezone)}</span>
 </footer>
 

@@ -6,7 +6,7 @@
 <script lang="ts">
 	import { app } from '#lib/app.svelte.ts';
 	import { importing } from './kind.ts';
-	import { waitForDevice, watchImport } from './setup.ts';
+	import { watchImport } from './setup.ts';
 	import { dayLabel } from '#lib/format.ts';
 	import { RULES_URL } from '#lib/links.ts';
 	import type { Device, HackatimeLink, Today } from '#lib/types.ts';
@@ -15,8 +15,15 @@
 	import HackatimeStatus from '#lib/components/HackatimeStatus.svelte';
 	import Rules from './Rules.svelte';
 
-	let { today, hackatime, devices }: { today: Today; hackatime: HackatimeLink; devices: Device[] } =
-		$props();
+	interface Props {
+		today: Today;
+		hackatime: HackatimeLink;
+		devices: Device[];
+		/** The install key once made; the home page owns it (and waits for the device). */
+		installKey: string | null;
+	}
+	let { today, hackatime, devices, installKey = $bindable() }: Props = $props();
+	const waiting = $derived(installKey !== null);
 
 	// The import's latest status between reloads (watchImport keeps it current).
 	let latest = $state<HackatimeLink | null>(null);
@@ -24,13 +31,8 @@
 	const hackatimeDone = $derived(link.linked && link.import?.status === 'done');
 	const done = $derived((hackatimeDone ? 1 : 0) + (devices.length > 0 ? 1 : 0));
 
-	// After a key is made, wait for the agent's first upload (then the dashboard).
-	let waiting = $state(false);
-	$effect(() => {
-		if (waiting) return waitForDevice();
-	});
 	// While Hackatime history comes in, keep its progress current and reload once
-	// it has something to show (held while an install command is on screen).
+	// it has something to show.
 	$effect(() => {
 		latest = null;
 		if (importing(hackatime)) return watchImport(hackatime, (l) => (latest = l));
@@ -56,7 +58,7 @@
 					<p class="mute">
 						A small background app. It runs on Windows, macOS and Linux, including old laptops.
 					</p>
-					<InstallCommand onCreated={() => (waiting = true)} />
+					<InstallCommand bind:key={installKey} />
 				</div>
 				<span class="st mute">{waiting ? 'waiting for it' : 'to do'}</span>
 			</li>

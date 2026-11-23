@@ -11,6 +11,8 @@ import type { Device, Session } from './types.ts';
 
 /** How long to wait after a live event before refetching, so bursts merge. */
 const LIVE_DEBOUNCE_MS = 5000;
+/** After a failed background reload, how long until the next try. */
+const RELOAD_RETRY_MS = 30_000;
 
 /** How long to wait before reopening a live stream the server refused. */
 const LIVE_RETRY_MS = 30_000;
@@ -31,6 +33,8 @@ export class AppState {
 	/** A clock that ticks every 30 s, so "tracking now" expires on its own. */
 	now = $state(Date.now());
 
+	/** True after a background reload failed and the page shows older data; cleared by the next success. */
+	stale = $state(false);
 	/**
 	 * True while a background reload (see reload()) is running, so the home's
 	 * load can keep showing what it has if a request fails; it sets
@@ -43,8 +47,8 @@ export class AppState {
 	#retry: ReturnType<typeof setTimeout> | null = null;
 	#timer: ReturnType<typeof setTimeout> | null = null;
 	#missed = false;
-	#holds = 0;
-	#held = false;
+	#reloading: Promise<boolean> | null = null;
+	#next: Promise<boolean> | null = null;
 
 	constructor(origin: string) {
 		this.api = new Api(origin, () => this.#sessionEnded());
@@ -179,48 +183,49 @@ export class AppState {
 		if (this.#timer) return;
 		this.#timer = setTimeout(() => {
 			this.#timer = null;
-			void this.reload();
+			// A failed reload leaves the page stale (app.stale); try again later.
+			void this.reload().then((ok) => {
+				if (!ok && this.session) this.#refresh(RELOAD_RETRY_MS);
+			});
 		}, delay);
 	}
 
 	/**
 	 * Reloads the signed-in pages for fresh data nobody asked for (live
 	 * updates, import progress). A failure keeps the page as it is instead of
-	 * showing the error page. Resolves true once fresh data is on screen, false
-	 * if it failed or is held back (see hold()).
+	 * showing the error page, and sets `stale`. Resolves true once fresh data
+	 * is on screen.
+	 *
+	 * Only one runs at a time. A call while one runs gets one more reload after
+	 * it (shared by every such caller), because the running one may have
+	 * started before the change that asked for this.
 	 */
-	async reload(): Promise<boolean> {
-		if (this.#holds > 0) {
-			this.#held = true;
-			return false;
+	reload(): Promise<boolean> {
+		if (!this.#reloading) {
+			this.#reloading = this.#runReload().finally(() => {
+				this.#reloading = null;
+			});
+			return this.#reloading;
 		}
+		this.#next ??= this.#reloading.then(() => {
+			this.#next = null;
+			return this.reload();
+		});
+		return this.#next;
+	}
+
+	async #runReload(): Promise<boolean> {
 		this.background = true;
 		this.reloadFailed = false;
 		try {
 			await invalidate(ME);
+		} catch {
+			this.reloadFailed = true;
 		} finally {
 			this.background = false;
 		}
+		this.stale = this.reloadFailed;
 		return !this.reloadFailed;
-	}
-
-	/**
-	 * Holds background reloads while a screen shows something a reload would
-	 * lose, such as an install command that hasn't been copied yet. Returns the
-	 * release; a reload held back in the meantime runs on release.
-	 */
-	hold(): () => void {
-		this.#holds++;
-		let released = false;
-		return () => {
-			if (released) return;
-			released = true;
-			this.#holds--;
-			if (this.#holds === 0 && this.#held) {
-				this.#held = false;
-				void this.reload();
-			}
-		};
 	}
 
 	async #streamRefused(): Promise<void> {
@@ -255,6 +260,7 @@ export class AppState {
 		if (this.#retry) clearTimeout(this.#retry);
 		this.#timer = this.#retry = null;
 		this.#missed = false;
+		this.stale = false;
 	}
 
 	/** The session expired or was revoked mid-use: show the signed-out home. */

@@ -1,3 +1,4 @@
+import { page } from '$app/state';
 import { app, ME } from '#lib/app.svelte.ts';
 import { addDays } from '#lib/format.ts';
 import type { Range } from '#lib/types.ts';
@@ -31,7 +32,11 @@ export const load: PageLoad = async ({ url, depends, parent }) => {
 		last = { key, data };
 		return data;
 	} catch (err) {
-		if (app.background && last?.key === key) {
+		// Only a background reload of the page already on screen keeps it; a
+		// navigation here (even during a background reload elsewhere) never
+		// gets old data instead of an error.
+		const onScreen = page.url.pathname === url.pathname && page.url.search === url.search;
+		if (app.background && onScreen && last?.key === key) {
 			app.reloadFailed = true;
 			return last.data;
 		}

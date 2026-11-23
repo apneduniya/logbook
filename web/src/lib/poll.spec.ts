@@ -6,12 +6,13 @@ describe('poll', () => {
 	afterEach(() => vi.useRealTimers());
 
 	it('stops once a check resolves true, and retries failures', async () => {
-		const results = [
-			Promise.reject(new Error('offline')),
-			Promise.resolve(false),
-			Promise.resolve(true)
+		// Each result is made when the check runs, so the rejection is never unhandled.
+		const results: (() => Promise<boolean>)[] = [
+			() => Promise.reject(new Error('offline')),
+			() => Promise.resolve(false),
+			() => Promise.resolve(true)
 		];
-		const check = vi.fn(() => results.shift() ?? Promise.resolve(false));
+		const check = vi.fn(() => (results.shift() ?? (() => Promise.resolve(false)))());
 		poll(1000, check);
 		for (let i = 0; i < 5; i++) await vi.advanceTimersByTimeAsync(1000);
 		expect(check).toHaveBeenCalledTimes(3);
