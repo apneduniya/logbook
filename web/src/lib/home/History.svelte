@@ -17,7 +17,7 @@
 	import RangePanel from './RangePanel.svelte';
 	import YearPanel from './YearPanel.svelte';
 	import { importing } from './kind.ts';
-	import { refreshWhileImporting, waitForDevice } from './setup.ts';
+	import { waitForDevice, watchImport } from './setup.ts';
 
 	interface Props {
 		range: Range;
@@ -35,12 +35,22 @@
 		hackatime.linked ? 'imported from Hackatime' : 'from your editor plugins'
 	);
 
+	// The import's latest status between reloads (watchImport keeps it current).
+	let latest = $state<HackatimeLink | null>(null);
+	const link = $derived(latest ?? hackatime);
+
 	let waiting = $state(false);
 	$effect(() => {
 		if (waiting) return waitForDevice();
 	});
 	$effect(() => {
-		if (importing(hackatime)) return refreshWhileImporting();
+		latest = null;
+		if (importing(hackatime))
+			return watchImport(
+				hackatime,
+				(l) => (latest = l),
+				() => !waiting
+			);
 	});
 </script>
 
@@ -60,7 +70,7 @@
 			</div>
 		</Panel>
 		<Panel title="Hackatime" meta={hackatime.linked ? 'linked' : 'not linked'}>
-			<HackatimeStatus link={hackatime} />
+			<HackatimeStatus {link} />
 		</Panel>
 	</div>
 	<div class="g2">

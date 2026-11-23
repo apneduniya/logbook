@@ -1,6 +1,14 @@
-<!-- Column labels above a list of ProjectRows; same grid as the row. -->
-<div class="lbl cols" aria-hidden="true">
-	<span>Project</span><span class="kb">Keyboard</span><span class="r">Counted</span><span></span>
+<!--
+  Column labels above a list of ProjectRows; same grid as the row. Without
+  counting (no device yet), phones keep "Keyboard" and drop "Counted", as the
+  rows do.
+-->
+<script lang="ts">
+	let { counting = true }: { counting?: boolean } = $props();
+</script>
+
+<div class="lbl cols" class:raw={!counting} aria-hidden="true">
+	<span>Project</span><span class="kb">Keyboard</span><span class="r ct">Counted</span><span></span>
 </div>
 
 <style>
@@ -21,6 +29,12 @@
 			gap: 12px;
 		}
 		.kb {
+			display: none;
+		}
+		.raw .kb {
+			display: block;
+		}
+		.raw .ct {
 			display: none;
 		}
 	}

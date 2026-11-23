@@ -6,7 +6,7 @@
 <script lang="ts">
 	import { app } from '#lib/app.svelte.ts';
 	import { importing } from './kind.ts';
-	import { refreshWhileImporting, waitForDevice } from './setup.ts';
+	import { waitForDevice, watchImport } from './setup.ts';
 	import { dayLabel } from '#lib/format.ts';
 	import { RULES_URL } from '#lib/links.ts';
 	import type { Device, HackatimeLink, Today } from '#lib/types.ts';
@@ -18,7 +18,10 @@
 	let { today, hackatime, devices }: { today: Today; hackatime: HackatimeLink; devices: Device[] } =
 		$props();
 
-	const hackatimeDone = $derived(hackatime.linked && hackatime.import?.status === 'done');
+	// The import's latest status between reloads (watchImport keeps it current).
+	let latest = $state<HackatimeLink | null>(null);
+	const link = $derived(latest ?? hackatime);
+	const hackatimeDone = $derived(link.linked && link.import?.status === 'done');
 	const done = $derived((hackatimeDone ? 1 : 0) + (devices.length > 0 ? 1 : 0));
 
 	// After a key is made, wait for the agent's first upload (then the dashboard).
@@ -26,9 +29,16 @@
 	$effect(() => {
 		if (waiting) return waitForDevice();
 	});
-	// While Hackatime history comes in, reload so it appears as soon as it lands.
+	// While Hackatime history comes in, keep its progress current and reload once
+	// it has something to show (never while an install command is on screen).
 	$effect(() => {
-		if (importing(hackatime)) return refreshWhileImporting();
+		latest = null;
+		if (importing(hackatime))
+			return watchImport(
+				hackatime,
+				(l) => (latest = l),
+				() => !waiting
+			);
 	});
 </script>
 
@@ -80,7 +90,7 @@
 				<span class="n px">4</span>
 				<div>
 					<h2 class="text-base">Bring your Hackatime history</h2>
-					<div class="mt-0.5"><HackatimeStatus link={hackatime} /></div>
+					<div class="mt-0.5"><HackatimeStatus {link} /></div>
 				</div>
 				<span class="st" class:mute={!hackatimeDone}>
 					{#if hackatimeDone}

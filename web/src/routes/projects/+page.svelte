@@ -50,7 +50,7 @@
 			</label>
 		{/if}
 	</div>
-	<ProjectListHead />
+	<ProjectListHead counting={data.projects.some((p) => p.credited_seconds !== null)} />
 	{#each shown as p (p.name)}
 		<ProjectRow
 			href={resolve('/projects/[name]', { name: encodeURIComponent(p.name) })}
