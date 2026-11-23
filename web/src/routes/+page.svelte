@@ -14,8 +14,11 @@
 	// still memory only and gone on navigation (docs/web.md, Security).
 	let installKey = $state<string | null>(null);
 	const settingUp = $derived(data.kind === 'first-run' || data.kind === 'history');
+	// Reading installKey here too means a key request that finishes after
+	// sign-out or the dashboard (a late write through the binding) is cleared
+	// straight away as well.
 	$effect(() => {
-		if (!settingUp) installKey = null;
+		if (!settingUp && installKey !== null) installKey = null;
 	});
 	// Once a key exists, wait for the agent's first upload, then the dashboard.
 	$effect(() => {

@@ -30,6 +30,8 @@ export const load: PageLoad = async ({ url, depends, parent }) => {
 	try {
 		const data = await dashboard(url);
 		last = { key, data };
+		// Fresh data, however it was loaded (navigation, reload): not stale.
+		app.stale = false;
 		return data;
 	} catch (err) {
 		// Only a background reload of the page already on screen keeps it; a
