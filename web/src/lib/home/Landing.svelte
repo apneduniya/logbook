@@ -1,22 +1,36 @@
 <!--
-  Signed-out home (B3 "Signed-out home"). The example hour is illustrative
-  and labelled "example"; nothing here claims real numbers.
+  Signed-out home. One promise, one action, one picture of what the promise
+  means: an example hour as a single strip, with the two cuts labelled on
+  the minutes they took. The hour is illustrative and labelled "example".
 -->
 <script lang="ts">
 	import { page } from '$app/state';
 	import { app } from '#lib/app.svelte.ts';
-	import { RULES_URL } from '#lib/links.ts';
-	import Panel from '#lib/components/Panel.svelte';
+	import { REPO_URL } from '#lib/links.ts';
 
 	type Kind = 'you' | 'agent' | 'idle';
-	const minutes: Kind[] = Array.from({ length: 60 }, (_, i) =>
-		i >= 21 && i < 26 ? 'agent' : i >= 47 && i < 50 ? 'idle' : 'you'
+	interface Cut {
+		kind: Exclude<Kind, 'you'>;
+		from: number;
+		to: number;
+		why: string;
+	}
+
+	const cuts: Cut[] = [
+		{ kind: 'agent', from: 21, to: 26, why: 'Agent ran alone after you left' },
+		{ kind: 'idle', from: 47, to: 50, why: 'Idle' }
+	];
+	const minutes: Kind[] = Array.from(
+		{ length: 60 },
+		(_, i) => cuts.find((c) => i >= c.from && i < c.to)?.kind ?? 'you'
 	);
-	const what: Record<Kind, string> = {
-		you: 'counted',
-		agent: 'agent alone, not counted',
-		idle: 'idle, not counted'
-	};
+	const counted = minutes.filter((k) => k === 'you').length;
+	const at = (m: number) => `14:${String(m).padStart(2, '0')}`;
+	const describe =
+		`An example hour from 14:00: ${counted} minutes counted. ` +
+		cuts
+			.map((c) => `${at(c.from)}, ${c.to - c.from} minutes cut: ${c.why.toLowerCase()}.`)
+			.join(' ');
 
 	const errors: Record<string, string> = {
 		invalid_state: 'That sign-in took too long or was interrupted. Please try again.',
@@ -28,81 +42,55 @@
 	const points = [
 		[
 			'Nothing to start or stop',
-			'Install once. The agent starts with your computer and works with every WakaTime plugin, plus Claude Code, Codex, Cursor and Copilot.'
+			'Install once. It works with your WakaTime plugins, which keep sending to Hackatime, and with Claude Code, Codex, Cursor and Copilot.'
 		],
 		[
 			'Every cut says why',
-			'Idle time, an agent left running alone, AI changes accepted without reading them, and the same prompt sent over and over are taken off, each with the reason shown. The rules are public.'
+			'Idle time, agents left running alone and AI changes accepted without reading are taken off, and each cut shows its reason.'
 		],
 		[
 			'Only timings leave your laptop',
-			'Prompts, code and keystrokes stay on your computer. The server gets counted minutes and a signed daily hash that proves they weren’t edited later. Evidence goes up only if you submit it.'
+			'Prompts, code and keystrokes stay on your computer. The server gets counted minutes and a signed daily hash.'
 		]
 	];
 </script>
 
 <svelte:head><title>Logbook: count the hours you actually worked</title></svelte:head>
 
-<div class="hero">
-	<div class="pitch">
-		<h1 class="px">Count the hours you actually worked.</h1>
-		<p class="mute lede">
-			Logbook runs in the background while you build, with or without AI. It counts the time you
-			were really working, takes off the rest, and tells a reviewer why each minute counted.
-		</p>
-		{#if authError}
-			<p class="err" role="alert">{authError}</p>
-		{/if}
-		<div class="actions">
-			<button class="cta" type="button" onclick={() => app.signIn()}>Sign in with Hack Club</button>
-			<a class="link" href={RULES_URL} rel="external">How counting works →</a>
-		</div>
-		<p class="hint">
-			Free and open source (AGPLv3). Your editor plugins keep working with Hackatime.
-		</p>
-	</div>
+<section class="hero">
+	<h1 class="px"><span>Count the hours</span> <span>you actually worked.</span></h1>
+	<p class="lede">
+		Logbook runs in the background while you build, with or without AI, and shows a reviewer why
+		each minute counted.
+	</p>
+	{#if authError}
+		<p class="err" role="alert">{authError}</p>
+	{/if}
+	<button class="cta" type="button" onclick={() => app.signIn()}>Sign in with Hack Club</button>
+</section>
 
-	<Panel title="One hour, minute by minute" meta="example">
-		<div class="grid gap-4">
-			<div class="flex items-baseline gap-3">
-				<span class="px text-xl">52m</span><span class="mute">counted of 60m at the keyboard</span>
-			</div>
-			<!-- 12 minutes a row; each row starts with its time. -->
-			<div
-				class="hour"
-				role="img"
-				aria-label="An example hour: 52 minutes you, 5 minutes agent alone, 3 minutes idle"
-			>
-				{#each [0, 1, 2, 3, 4] as row (row)}
-					<span class="lbl t">14:{String(row * 12).padStart(2, '0')}</span>
-					{#each minutes.slice(row * 12, row * 12 + 12) as k, i (i)}
-						<i class="m {k}" title="14:{String(row * 12 + i).padStart(2, '0')} · {what[k]}"></i>
-					{/each}
-				{/each}
-			</div>
-			<div class="cuts">
-				<span class="mono">14:21</span><span>
-					Agent working alone: it kept running after you left the desk
-				</span><span class="mono mute">−5m</span>
-				<span class="mono">14:47</span><span>Idle: no input, no agent running</span><span
-					class="mono mute"
-				>
-					−3m
+<figure class="fig">
+	<figcaption class="lbl cap"><span>Fig. 1 · one hour</span><span>example</span></figcaption>
+	<p class="reading">
+		<span class="px big">{counted}m</span>
+		<span class="mute">counted out of 60 minutes at the keyboard</span>
+	</p>
+	<div class="strip" role="img" aria-label={describe}>
+		{#each minutes as k, i (i)}<i class={k}></i>{/each}
+	</div>
+	<div class="notes" aria-hidden="true">
+		<span class="lbl start">14:00</span>
+		{#each cuts as c, i (c.from)}
+			<!-- Each label runs from its cut to the next one (or the hour's end). -->
+			<span class="note" style:grid-column="{c.from + 1} / {(cuts[i + 1]?.from ?? 60) + 1}">
+				<span class="mono">
+					<span class="when">{at(c.from)}&nbsp;·&nbsp;</span>−{c.to - c.from}m
 				</span>
-				<span class="mono">14:08</span><span>Prompting, reading the diff, fixing a test</span><span
-					class="mono"
-				>
-					counted
-				</span>
-			</div>
-			<div class="lbl flex flex-wrap gap-5">
-				<span><i class="sw bg-ink"></i>you</span>
-				<span><i class="sw hatch"></i>agent alone</span>
-				<span><i class="sw idle-sw"></i>idle</span>
-			</div>
-		</div>
-	</Panel>
-</div>
+				<span class="why">{c.why}</span>
+			</span>
+		{/each}
+	</div>
+</figure>
 
 <ol class="points">
 	{#each points as [title, body], i (title)}
@@ -115,88 +103,117 @@
 </ol>
 
 <footer class="lbl foot">
-	<span>Logbook · AGPLv3</span><span>
-		For Hack Clubbers and the programs that review their hours
-	</span>
+	<span>Logbook · free and open source (AGPLv3)</span>
+	<a class="link" href={REPO_URL} rel="external">Source on GitHub →</a>
 </footer>
 
 <style>
 	.hero {
 		display: grid;
-		grid-template-columns: calc((100% - 12px) * 5 / 12) 1fr;
-		gap: 12px;
-		padding-top: 24px;
-	}
-	.pitch {
-		display: grid;
-		align-content: start;
-		gap: 24px;
-		padding-right: 24px;
+		justify-items: start;
+		gap: 28px;
+		padding-top: 64px;
 	}
 	h1 {
 		font-weight: 400;
-		font-size: var(--text-2xl);
-		line-height: 1.02;
+		font-size: clamp(40px, 6vw, var(--text-3xl));
+		line-height: 1;
 		letter-spacing: -0.02em;
+		max-width: 20ch;
 		text-wrap: balance;
 	}
 	.lede {
-		font-size: var(--text-base);
-		max-width: 44ch;
+		font-size: var(--text-lg);
+		line-height: 1.4;
+		color: var(--color-ink-2);
+		max-width: 46ch;
 	}
-	.actions {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 20px;
-		align-items: center;
-	}
-	.actions .cta {
+	.cta {
 		border: 0;
 		cursor: pointer;
 		font-family: inherit;
-	}
-	.actions .link {
-		font-size: var(--text-base);
+		margin-top: 4px;
 	}
 	.err {
 		color: var(--color-ink);
 		border-left: 2px solid var(--color-ink);
 		padding-left: 12px;
 	}
-	.hour {
+
+	/* Fig. 1: the hour as one strip, with the cuts labelled where they happen. */
+	.fig {
+		margin: 72px 0 0;
+		border-top: 1px solid var(--color-rule);
+		padding-top: 14px;
+	}
+	.cap {
+		display: flex;
+		justify-content: space-between;
+	}
+	.reading {
+		display: flex;
+		align-items: baseline;
+		gap: 14px;
+		margin: 28px 0 20px;
+	}
+	.big {
+		font-size: var(--text-2xl);
+		line-height: 0.9;
+	}
+	.strip,
+	.notes {
 		display: grid;
-		grid-template-columns: 40px repeat(12, 1fr);
-		gap: 4px;
-		align-items: center;
+		grid-template-columns: repeat(60, minmax(0, 1fr));
+		column-gap: 3px;
 	}
-	.m {
-		height: 22px;
+	.strip i {
+		height: 44px;
 	}
-	.m.you {
+	.strip .you {
 		background: var(--color-ink);
 	}
-	.m.agent {
+	.strip .agent {
 		background: var(--hatch);
 	}
-	.m.idle {
+	.strip .idle {
 		background: var(--color-fill);
 		outline: 1px solid var(--color-ink-3);
 		outline-offset: -1px;
 	}
-	.idle-sw {
-		background: var(--color-fill);
-		outline: 1px solid var(--color-ink-3);
+	.notes {
+		grid-template-rows: auto;
 	}
-	.cuts {
-		display: grid;
-		grid-template-columns: auto 1fr auto;
-		gap: 10px 16px;
+	.notes > * {
+		grid-row: 1;
+	}
+	.start {
+		grid-column: 1 / span 10;
 		padding-top: 14px;
-		border-top: 1px solid var(--color-rule);
-		align-items: baseline;
 	}
+	/* A tick from the strip down to the label marks where the cut starts. */
+	.note {
+		display: grid;
+		align-content: start;
+		gap: 2px;
+		padding: 12px 8px 0;
+		border-left: 1px solid var(--color-ink);
+		font-size: var(--text-sm);
+		min-width: 0;
+	}
+	.why {
+		color: var(--color-ink-2);
+		text-wrap: balance;
+	}
+	/* On wide screens each line of the headline stays whole, so it breaks
+	   after "hours". Phones let it wrap naturally. */
+	@media (min-width: 901px) {
+		h1 > span {
+			display: inline-block;
+		}
+	}
+
 	.points {
-		margin-top: 28px;
+		margin-top: 72px;
 		list-style: none;
 		padding: 0;
 	}
@@ -223,14 +240,33 @@
 	}
 	@media (max-width: 900px) {
 		.hero {
-			grid-template-columns: 1fr;
-			gap: 32px;
+			padding-top: 40px;
+			gap: 22px;
 		}
-		.pitch {
-			padding-right: 0;
+		.lede {
+			font-size: var(--text-base);
 		}
-		h1 {
-			font-size: 40px;
+		.fig,
+		.points {
+			margin-top: 48px;
+		}
+		.strip,
+		.notes {
+			column-gap: 1px;
+		}
+		.strip i {
+			height: 32px;
+		}
+		.big {
+			font-size: var(--text-xl);
+		}
+		.note {
+			font-size: var(--text-xs);
+			padding-left: 6px;
+		}
+		/* Too narrow for the clock time; the strip shows where each cut is. */
+		.when {
+			display: none;
 		}
 		.row {
 			grid-template-columns: 32px 1fr;
