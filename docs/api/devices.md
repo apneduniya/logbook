@@ -139,7 +139,7 @@ Auth: API key. Uploads one link of the device's evidence chain (ADR 0010, ADR 00
 | `409 {"error": "a different record is already stored for this day"}` | A different, validly signed record exists for the day. Nothing is changed, and the conflict is written to the audit log as `evidence_conflict` with both versions' hashes. |
 | `409 {"error": "chain mismatch"}` | `prev_chain_hash` isn't the `chain_hash` of the device's latest stored day before `day` (or `""` when there is none), or a later day is already stored, so this day can't be inserted before it. |
 
-Gaps are allowed: if nothing was logged since the 17th's record when the 18th is sealed, the 19th links to the 17th.
+Gaps are allowed: if nothing was logged since the 17th's record when the 18th is sealed, the 19th links to the 17th. The agent freezes a record's `seq_to` before hashing it and then logs every path's repo mapping again, so each block's repo bucket opens with the whole mapping; a range holding only those rows is skipped as a gap (`docs/agent/crediting.md`).
 
 ---
 
