@@ -12,7 +12,7 @@ The UI is plain static files (no functions), so any static host works. The API c
 | Option | Pros | Cons |
 |---|---|---|
 | Stay on Vercel | Deploys on every push to `main` with no setup | Bot challenges we don't control; non-commercial clause; transfer cap |
-| Cloudflare Pages | Free, no transfer cap, commercial use allowed; no challenge on static sites unless enabled; the same account already hosts our other `boogles.dev` sites | Automatic deploys from GitHub need a one-time dashboard connection or a Pages-only token in CI; until then we deploy with `make web-deploy` |
+| Cloudflare Pages | Free, no transfer cap, commercial use allowed; no challenge on static sites unless enabled; the same account already hosts our other `boogles.dev` sites | No GitHub connection yet; deploys run `make web-deploy` from our server (see Consequences) |
 
 ## Decision
 
@@ -25,5 +25,5 @@ The UI is plain static files (no functions), so any static host works. The API c
 
 ## Consequences
 
-- No automatic deploys yet. Connecting the repo in the Cloudflare dashboard (or adding a Pages-only token as a GitHub secret) would restore them.
+- Deploys are automatic from the maintainer's server: a timer checks `main` every 3 minutes and runs `make web-deploy` when `web/` or the Makefile changed, retrying on failure. The Cloudflare token stays on that server (it only works from its IPs), so it is never a GitHub secret. Connecting the repo in the Cloudflare dashboard would replace this.
 - `vercel.json` is gone. The Vercel project no longer serves the domain.

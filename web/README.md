@@ -35,6 +35,6 @@ LOGBOOK_API_URL=https://api.logbook.boogles.dev bun run build
 
 ## Deploy
 
-The site is the Cloudflare Pages project `logbook` (ADR 0018). From the repo root, with `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` set, `make web-deploy` runs the checks, builds with the production API URL and uploads `web/build`.
+The site is the Cloudflare Pages project `logbook` (ADR 0018). From the repo root, with `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` set, `make web-deploy` runs the checks, builds with the production API URL and uploads `web/build`. Pushes to `main` that touch `web/` are deployed within a few minutes by a timer on the maintainer's server, so running it by hand is only needed for a deploy outside that.
 
 Pages serves `index.html` for any path that isn't a file (its SPA mode, because there is no `404.html`). `static/_headers` holds the security headers; the CSP itself is a `<meta>` tag SvelteKit writes at build time.
