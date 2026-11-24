@@ -6,7 +6,7 @@
 
 ## Context
 
-A submission must let the server re-run the engine for each submitted minute on exactly the events the run at its key `(T, H)` read, and check those are events the device sealed on the day (ADR 0010, ADR 0017, ADR 0020). Today a block's `content_hash` is SHA-256 over the whole block's lines, so checking any row needs the whole day: every project, file path and AI session. Teens in the bounty thread were clear that nothing beyond what's needed should leave the laptop.
+A submission must let the server re-run the engine for each submitted minute on exactly the events the run at its key `(T, H)` read, and check those are events the device sealed on the day (ADR 0010, ADR 0017, ADR 0020). Today a block's `content_hash` is SHA-256 over the whole block's lines, so checking any row needs the whole day: every project, file path and AI session. Nothing beyond what's needed should leave the laptop (PRD, privacy).
 
 A design review (25 Nov) showed that revealing *some* rows under a plain per-row Merkle tree isn't enough:
 1. **Completeness.** Membership proofs don't show that nothing was left out. A user could hide the activity samples of a minute (focus on another app) and the replay of what's left would credit it. Freezing the uploaded value doesn't help, because the uploaded value is what's being checked.

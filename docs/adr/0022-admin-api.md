@@ -7,7 +7,7 @@
 
 Requirement 10 asks for hours "auditable by an external party". Fraud Squad and HQ audit hours after programs approve them, and their tools (Sidekick, Telescreen, Fallen, Ari) read Hackatime's admin API: `user/info`, `user/heartbeats` (paged, `has_more`), `user/projects`, `user/trust_logs` and a few searches (research, 19 Nov).
 
-In the bounty thread, the strongest objection to client-side trackers was that their numbers are self-reported. The answer is that every counted minute can be traced to signed raw events, and Fraud Squad should be able to do that tracing themselves, not take our page's word for it.
+The strongest objection to client-side trackers is that their numbers are self-reported. The answer is that every counted minute can be traced to signed raw events, and Fraud Squad should be able to do that tracing themselves, not take our page's word for it.
 
 ## Decision
 

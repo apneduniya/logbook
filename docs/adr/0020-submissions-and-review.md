@@ -7,9 +7,9 @@
 ## Context
 
 The bounty is won when programs approve hours from Logbook into the Unified YSWS DB (1,000 weighted projects, about 10,000 hours). What stands between us and that is review:
-- Stardance approved about 27,600 of 123,400 submitted hours, by hand. Reviewers want to see "what that hour is made of", fast, with time linked to commits (bounty thread, Nov 21).
+- Stardance approved about 27,600 of 123,400 submitted hours, by hand. Reviewers need to see quickly what an hour was spent on, with time linked to commits.
 - Reviewers won't watch footage or read 100 hours of anything.
-- The Hackatime maintainer's objection to every client-side tracker is that its numbers are "just self report". Our answer has to be visible on the page: the server re-runs the rules on the device's signed logs.
+- The common objection to any client-side tracker is that its numbers are self-reported. Our answer has to be visible on the page: the server re-runs the rules on the device's signed logs.
 - Programs record hours in their own Airtable, with a "Justification - Alternate Tracking Method" field, and HQ removes rows whose evidence can't be found later. A link must keep working after review.
 
 ## Decision
