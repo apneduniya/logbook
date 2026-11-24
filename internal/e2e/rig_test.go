@@ -189,6 +189,7 @@ func newRig(t testing.TB, start time.Time, opts ...option) *rig {
 		Repos:    r, Compute: r.compute, TZ: time.UTC, Now: r.clock,
 		Jitter: func() float64 { return 0 },
 		Settle: -1,
+		Salts:  zeroSalts{},
 	}
 	for _, fn := range c.runner {
 		fn(&r.opts)

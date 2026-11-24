@@ -84,6 +84,8 @@ func (e *env) open() {
 		// Tests jump the clock between runs; the settle period after a
 		// start or gap has tests of its own (settle_test.go).
 		Settle: -1,
+		// Fixed salts, so a test can re-hash a sealed block from the log.
+		Salts: zeroSalts{},
 	}
 	if e.options != nil {
 		e.options(&o)
@@ -526,11 +528,17 @@ func (e *env) replayHash(d localdb.EvidenceDay) string {
 	if err != nil {
 		e.t.Fatalf("ReplayBlock(%s): %v", d.Day, err)
 	}
-	h, err := evidence.ContentHash(rows)
+	return rehash(e.t, rows)
+}
+
+// rehash hashes a block's rows with the zero salts tests seal with.
+func rehash(t testing.TB, rows []evidence.Row) string {
+	t.Helper()
+	blk, _, err := evidence.HashBlock(rows, zeroSalts{})
 	if err != nil {
-		e.t.Fatal(err)
+		t.Fatal(err)
 	}
-	return h
+	return blk.ContentHash
 }
 
 // Each day's block seals the log rows logged since the previous block,

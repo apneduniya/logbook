@@ -134,10 +134,11 @@ func (r *rig) replayBlock(e localdb.EvidenceDay) []evidence.Row {
 	if err != nil {
 		r.t.Fatalf("replaying block %s: %v", e.Day, err)
 	}
-	h, err := evidence.ContentHash(rows)
+	blk, _, err := evidence.HashBlock(rows, zeroSalts{})
 	if err != nil {
 		r.t.Fatal(err)
 	}
+	h := blk.ContentHash
 	if h != e.ContentHash || h != r.serverContentHash(e.Day) {
 		r.t.Fatalf("block %s re-hashes to %s; signed %s, server %s", e.Day, h, e.ContentHash, r.serverContentHash(e.Day))
 	}
@@ -379,4 +380,13 @@ func (r *rig) rebuild() *localdb.DB {
 		i = j
 	}
 	return d
+}
+
+// zeroSalts gives every evidence bucket a zero salt, so a test can re-hash
+// a sealed block from the log.
+type zeroSalts struct{}
+
+func (zeroSalts) Read(p []byte) (int, error) {
+	clear(p)
+	return len(p), nil
 }

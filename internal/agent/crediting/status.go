@@ -68,9 +68,6 @@ const (
 	// keyEvidenceCursor is "<device id> <day>": every day up to and
 	// including <day> has been sealed or found empty for that device.
 	keyEvidenceCursor = "evidence.cursor"
-	// keyEvidenceProgress holds a large block's hashing progress between
-	// runs (sealProgress), "" when none.
-	keyEvidenceProgress = "evidence.progress"
 )
 
 // Status is what the status page and `logbook status` show about crediting.

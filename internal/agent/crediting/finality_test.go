@@ -348,8 +348,8 @@ func TestFinalMinutesAgreeWithServerAndReplay(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if h, err := evidence.ContentHash(rows); err != nil || h != day.ContentHash {
-				t.Fatalf("replayed block hash = %s, %v; signed %s", h, err, day.ContentHash)
+			if h := rehash(t, rows); h != day.ContentHash {
+				t.Fatalf("replayed block hash = %s; signed %s", h, day.ContentHash)
 			}
 			_, dayEnd, _ := evidence.DayBounds(day.Day)
 			for _, r := range local {

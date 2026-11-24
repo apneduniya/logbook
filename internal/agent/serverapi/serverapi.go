@@ -262,6 +262,14 @@ type EvidenceDayRequest struct {
 	Signature    []byte         `json:"signature"`
 	RulesVersion string         `json:"rules_version"`
 	EventCounts  map[string]int `json:"event_counts"`
+	// The block's signed fields (ADR 0019): its rows have SeqFrom < seq <=
+	// SeqTo, it has Buckets leaves, and its minute buckets span
+	// [TimeFrom, TimeTo] (both null for a block with only its repo bucket).
+	SeqFrom  int64      `json:"seq_from"`
+	SeqTo    int64      `json:"seq_to"`
+	Buckets  int        `json:"buckets"`
+	TimeFrom *time.Time `json:"time_from"`
+	TimeTo   *time.Time `json:"time_to"`
 }
 
 // UploadEvidenceDay uploads one link of the device's evidence chain. An

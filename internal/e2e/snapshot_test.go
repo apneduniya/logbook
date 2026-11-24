@@ -184,7 +184,8 @@ func legacyDB(day string) func(r *rig) {
 			at := d.Add(22*time.Hour + time.Duration(i)*10*time.Second).UnixMilli()
 			exec(`INSERT INTO activity_samples (time, idle_seconds, focus_kind, arrived_at) VALUES (?, 1, 'editor', ?)`, at, at)
 		}
-		e := evidence.Day{DeviceID: r.device.String(), Day: day, ContentHash: strings.Repeat("ab", 32), RulesVersion: struggle.RulesVersion}
+		e := evidence.Day{DeviceID: r.device.String(), Day: day, ContentHash: strings.Repeat("ab", 32), RulesVersion: struggle.RulesVersion,
+			SeqTo: 3, Buckets: 1}
 		chain, sig, err := r.key.Sign(e)
 		if err != nil {
 			r.t.Fatal(err)
@@ -192,6 +193,7 @@ func legacyDB(day string) func(r *rig) {
 		counts := map[string]int{evidence.TypeActivity: 3}
 		if err := r.client.UploadEvidenceDay(ctx, r.target, e.DeviceID, serverapi.EvidenceDayRequest{
 			Day: day, ContentHash: e.ContentHash, ChainHash: chain, Signature: sig, RulesVersion: e.RulesVersion, EventCounts: counts,
+			SeqTo: e.SeqTo, Buckets: e.Buckets,
 		}); err != nil {
 			r.t.Fatal(err)
 		}

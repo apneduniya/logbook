@@ -70,10 +70,7 @@ func TestSealedBlockRebuildsIdentically(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := evidence.ContentHash(rows)
-	if err != nil {
-		t.Fatal(err)
-	}
+	got := rehash(t, rows)
 	if got != sealed.ContentHash || got != days[0].ContentHash {
 		t.Fatalf("rebuilt content hash = %s, sealed %s", got, sealed.ContentHash)
 	}

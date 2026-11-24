@@ -3,6 +3,7 @@ package crediting
 import (
 	"context"
 	"errors"
+	"io"
 	"log/slog"
 	"math/rand/v2"
 	"strconv"
@@ -124,14 +125,10 @@ type Options struct {
 	Batch int
 	// Jitter returns a value in [0, 1).
 	Jitter func() float64
+	// Salts is where evidence bucket salts come from (crypto/rand when
+	// nil). Tests pass a fixed source so they can re-hash a sealed block.
+	Salts io.Reader
 }
-
-// Evidence blocks are read and hashed in chunks of sealChunk sequence
-// numbers, at most sealChunks per run (sealDay).
-const (
-	defaultSealChunk  = 20_000
-	defaultSealChunks = 25
-)
 
 // Runner computes, stores and uploads credited minutes and evidence days.
 type Runner struct {
@@ -165,11 +162,6 @@ type Runner struct {
 	// for lateness (lateKnown once read or set).
 	late      int64
 	lateKnown bool
-
-	// sealChunk and sealChunks bound one run's evidence hashing (tests
-	// make them small).
-	sealChunk  int64
-	sealChunks int
 
 	mu    sync.Mutex
 	gate  gate
@@ -211,7 +203,7 @@ func New(o Options) *Runner {
 	if o.Settle == 0 {
 		o.Settle = DefaultSettle
 	}
-	return &Runner{opt: o, batch: o.Batch, sealChunk: defaultSealChunk, sealChunks: defaultSealChunks}
+	return &Runner{opt: o, batch: o.Batch}
 }
 
 // Run runs the pipeline every Interval (a few seconds past each minute with

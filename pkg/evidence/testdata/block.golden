@@ -5,6 +5,7 @@
 {"s":5,"t":"2026-11-19T09:00:03.25Z","type":"heartbeat","v":{"entity":"/home/me/app/main.go","type":"file","category":"coding","time":1795078803.25,"project":"app","language":"Go","lineno":12,"cursorpos":4,"is_write":true}}
 {"s":6,"t":"2026-11-19T09:00:05Z","type":"ai","v":{"time":"2026-11-19T09:00:05Z","harness":"claude-code","kind":"prompt_submit","session_id":"s1","project":"app","cwd":"/home/me/app","prompt_chars":42,"prompt_hash":"ab12"}}
 {"s":7,"t":"2026-11-19T09:01:00Z","type":"active_time","v":{"from":"2026-11-19T09:00:00Z","to":"2026-11-19T09:01:00Z","session_id":"s1","user_secs":30,"cli_secs":12.5,"harness":"claude-code"}}
+{"s":8,"t":"2026-11-19T09:00:30Z","type":"repo","v":{"path":"/home/me/lib","project":"lib"}}
 {"s":9,"t":"2026-11-19T09:00:10Z","type":"activity","v":{"time":"2026-11-19T09:00:10Z","idle_seconds":2,"focus_app":"Code","focus_kind":"editor"}}
 {"s":10,"t":"2026-11-18T23:01:00Z","type":"ai","v":{"time":"2026-11-18T23:01:00Z","harness":"claude-code","kind":"turn_end","session_id":"s1"}}
 {"s":11,"t":"2026-11-19T09:30:00Z","type":"git","v":{"time":"2026-11-19T09:30:00Z","project":"app","kind":"commit","commit_hash":"0123abcd","files_changed":2,"insertions":10,"deletions":1}}
