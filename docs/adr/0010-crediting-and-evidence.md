@@ -1,6 +1,6 @@
 # 0010: Minute crediting, device keys and the signed evidence chain
 
-- Status: accepted
+- Status: accepted (the submission part is replaced by ADR 0020; the content hash by ADR 0019)
 - Date: 2026-11-20
 
 ## Context

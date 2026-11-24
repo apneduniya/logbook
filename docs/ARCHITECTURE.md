@@ -27,6 +27,7 @@ laptop                                     server (Go + Postgres)
 | `pkg/struggle` | Pure rules engine: events in, labelled minutes and cuts out |
 | `pkg/evidence` | Canonical encoding of the agent's logged rows (hashed whole or in resumable chunks), hash chain, ed25519 signing and verification |
 | `pkg/projectname` | Project name normalisation shared by heartbeat ingest and credited minutes |
+| `pkg/replay` | Turns evidence rows and a computation key into engine input; shared by the agent's replay and the server's submission re-check (ADR 0020) |
 | `internal/server/config` | Typed env config |
 | `internal/server/store` | sqlc-generated queries and transaction helpers |
 | `internal/server/auth` | HCA sign-in, sessions, API keys, CSRF |
@@ -37,6 +38,10 @@ laptop                                     server (Go + Postgres)
 | `internal/server/credited` | Credited-minute uploads from the agent |
 | `internal/server/ledger` | Signed daily evidence chain per device |
 | `internal/server/live` | SSE fan-out |
+| `internal/server/submissions` | Submission upload, the re-check job, review packets, review links and decisions (ADR 0020) |
+| `internal/server/oauth` | OAuth 2 provider: apps, consent requests, codes, tokens, grants (ADR 0021) |
+| `internal/server/programs` | Program members (reviewers) and the submissions addressed to a program |
+| `internal/server/admin` | Read-only admin API for Fraud Squad, admin keys (ADR 0022) |
 | `internal/server/httpapi` | HTTP handlers and middleware; thin, calls services |
 | `internal/server/jobs` | River workers |
 | `internal/agent/...` | Agent: proxy, sensors, harness plugins, git, local store (an append-only event log, ADR 0017), crediting, uploader, tray |
