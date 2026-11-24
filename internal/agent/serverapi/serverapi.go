@@ -273,8 +273,10 @@ type EvidenceDayRequest struct {
 }
 
 // UploadEvidenceDay uploads one link of the device's evidence chain. An
-// identical re-upload succeeds.
+// identical re-upload succeeds. TimeFrom and TimeTo are sent in UTC, which
+// the server requires.
 func (c *Client) UploadEvidenceDay(ctx context.Context, t Target, deviceID string, req EvidenceDayRequest) error {
+	req.TimeFrom, req.TimeTo = utcPtr(req.TimeFrom), utcPtr(req.TimeTo)
 	_, err := c.post(ctx, t, "/api/v1/devices/"+url.PathEscape(deviceID)+"/evidence-days", req, nil,
 		http.StatusOK, http.StatusCreated)
 	return err
@@ -387,4 +389,13 @@ func redactURLError(err error) error {
 		return fmt.Errorf("%s: %w", ue.Op, ue.Err)
 	}
 	return err
+}
+
+// utcPtr returns a copy of *t in UTC, or nil.
+func utcPtr(t *time.Time) *time.Time {
+	if t == nil {
+		return nil
+	}
+	u := t.UTC()
+	return &u
 }

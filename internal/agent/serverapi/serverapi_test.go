@@ -237,7 +237,9 @@ func TestUploadEvidenceDay(t *testing.T) {
 	if v, ok := rec.body["time_from"]; !ok || v != nil || rec.body["seq_from"] != 0.0 || rec.body["buckets"] != 0.0 {
 		t.Fatalf("body = %v, want time_from null", rec.body)
 	}
-	from, to := time.Date(2026, 11, 19, 9, 0, 0, 0, time.UTC), time.Date(2026, 11, 19, 10, 0, 0, 0, time.UTC)
+	// A time in another zone is sent as the same instant in UTC.
+	ist := time.FixedZone("IST", 5*3600+1800)
+	from, to := time.Date(2026, 11, 19, 14, 30, 0, 0, ist), time.Date(2026, 11, 19, 10, 0, 0, 0, time.UTC)
 	srv, rec = server(t, 201, `{}`)
 	err = New(srv.Client(), "ua").UploadEvidenceDay(t.Context(), Target{BaseURL: srv.URL, APIKey: "k"}, "d",
 		EvidenceDayRequest{Day: "2026-11-19", SeqFrom: 12, SeqTo: 40, Buckets: 3, TimeFrom: &from, TimeTo: &to})
