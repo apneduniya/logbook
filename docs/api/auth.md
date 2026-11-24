@@ -188,3 +188,5 @@ Routes guarded by `RequireAPIKey` (WakaTime-compatible ingest, agent endpoints) 
 If an `Authorization` header is present, it is the only form checked. A bad key, a malformed key, a revoked key or no key gets `401 {"error": "invalid API key"}`. Each client (IPv4 address or IPv6 `/64`) may make 60 failed attempts in a burst, refilled at 60 per minute. Past that, further **failed** attempts from that client get `429` with `Retry-After` instead of `401`. A request with a valid key always succeeds, even from a client that is over its failure budget, so one misconfigured editor on a shared network can't block everyone else's heartbeats.
 
 Behind a reverse proxy, set `LOGBOOK_TRUST_PROXY=true` so rate limits use the last `X-Forwarded-For` hop instead of the proxy's address.
+
+The program API also takes a user API key where Hackatime takes its own: `users/{id}/*` (`Bearer` only) and `my/heartbeats` (`Bearer` or `Basic base64(key)`). It looks keys up through `auth.Service.APIKeyOwner` and applies its own rate limit (see [programs.md](programs.md#the-program-api)); `authenticated/*` never accepts an API key.

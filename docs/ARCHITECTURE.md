@@ -31,9 +31,10 @@ laptop                                     server (Go + Postgres)
 | `internal/server/config` | Typed env config |
 | `internal/server/store` | sqlc-generated queries and transaction helpers |
 | `internal/server/auth` | HCA sign-in, sessions, API keys, CSRF |
-| `internal/server/hackatime` | Hackatime client: OAuth, trust level, history import |
+| `internal/server/hackatime` | Hackatime client: OAuth, trust level (and its history), history import |
 | `internal/server/ingest` | Heartbeat validation, dedup, rollups |
-| `internal/server/stats` | Dashboard and program-API aggregates |
+| `internal/server/stats` | Dashboard aggregates and streaks (the program API reuses the streak) |
+| `internal/server/programapi` | The Hackatime-shaped program read API (ADR 0021): `authenticated/*`, `users/{id}/*`, `my/heartbeats`; identifier resolution, trust masking, counted versus raw time. Credentials come through an injected `Authenticator` |
 | `internal/server/devices` | Agent device keys: register, list, revoke |
 | `internal/server/credited` | Credited-minute uploads from the agent |
 | `internal/server/ledger` | Signed daily evidence chain per device: checks uploads (signature, chain and seq continuity) and reads stored records for the submission re-check |
