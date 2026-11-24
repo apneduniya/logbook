@@ -2,12 +2,14 @@ package crediting
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"math/rand/v2"
 	"slices"
 	"testing"
 	"time"
 
+	"github.com/apneduniya/logbook/internal/agent/config"
 	"github.com/apneduniya/logbook/internal/agent/localdb"
 	"github.com/apneduniya/logbook/pkg/evidence"
 	"github.com/apneduniya/logbook/pkg/replay"
@@ -155,6 +157,67 @@ func TestProofsUnbackedOutsideTheChain(t *testing.T) {
 	}
 	if rows := recheck(t, e, p, []replay.Key{later}); len(rows) != 1 || !rows[0].Time.Equal(after) {
 		t.Fatalf("rows = %+v", rows)
+	}
+}
+
+// A block that follows one sealed before the agent kept bucket lists (an
+// accepted pre-0019 day) doesn't open with a repo snapshot, so its repo
+// bucket lacks paths mapped before it started: a key whose H it holds is
+// unbacked, even though every row its window read is in the block. The
+// next block opens with a snapshot and backs its keys again.
+func TestProofsUnbackedAfterPre0019Block(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t, time.Date(2026, 11, 19, 8, 0, 5, 0, time.UTC))
+	e.run()
+	if err := e.db.RecordRepos(ctx, e.clock(), []struggle.Repo{{Path: "/src/app", Project: "app"}}); err != nil {
+		t.Fatal(err)
+	}
+	keys := map[string]replay.Key{}
+	for _, day := range []string{"2026-11-19", "2026-11-20", "2026-11-21"} {
+		addDay(t, e.db, day)
+		start, end, err := evidence.DayBounds(day)
+		if err != nil {
+			t.Fatal(err)
+		}
+		e.set(end.Add(time.Hour + 5*time.Second))
+		d := untilSealed(t, e, day)
+		keys[day] = replay.Key{T: start.Add(9*time.Hour + 30*time.Minute), H: d.SeqTo}
+	}
+	all := []replay.Key{keys["2026-11-20"], keys["2026-11-21"]}
+	if p, err := BuildProofs(ctx, e.db, e.deviceID(), all); err != nil || len(p.Unbacked) != 0 {
+		t.Fatalf("before = %+v, %v; want both keys backed", p, err)
+	}
+
+	// Make the 19th what local migration 0008 leaves of a day sealed by the
+	// previous agent: accepted, with no bucket list.
+	raw, err := sql.Open("sqlite", config.DBPath(e.dir)+"?_busy_timeout=5000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = raw.Close() })
+	for _, q := range []string{
+		"UPDATE evidence_days SET buckets = 0, time_from = NULL, time_to = NULL WHERE day = '2026-11-19'",
+		"DELETE FROM evidence_buckets WHERE day = '2026-11-19'",
+	} {
+		if _, err := raw.ExecContext(ctx, q); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	p, err := BuildProofs(ctx, e.db, e.deviceID(), all)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(p.Unbacked, []replay.Key{keys["2026-11-20"]}) {
+		t.Fatalf("unbacked = %+v; want only the key in the block after the pre-0019 day", p.Unbacked)
+	}
+	if len(p.Blocks) != 1 || p.Blocks[0].Record.Day != "2026-11-21" {
+		t.Fatalf("proofs = %+v; want only the 21st's", p.Blocks)
+	}
+	if rows := recheck(t, e, p, []replay.Key{keys["2026-11-21"]}); !slices.ContainsFunc(rows, func(r evidence.Row) bool {
+		repo, ok := r.Value.(evidence.Repo)
+		return ok && repo.Path == "/src/app"
+	}) {
+		t.Fatalf("rows = %+v; want the 21st's repo snapshot of /src/app", rows)
 	}
 }
 

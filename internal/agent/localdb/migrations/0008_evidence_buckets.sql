@@ -5,7 +5,9 @@
 -- and last minute bucket, both NULL for a block with only its repo
 -- bucket). seq_from stays the first sequence number the block holds (the
 -- signed seq_from is one less). A block sealed before this migration has
--- buckets = 0 and no bucket list: it can't be re-hashed or proven.
+-- buckets = 0 and no bucket list: it can't be re-hashed or proven, and no
+-- repo snapshot opens the block after it, so proofs leave that block's
+-- keys unbacked (crediting.BuildProofs).
 ALTER TABLE evidence_days ADD COLUMN buckets INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE evidence_days ADD COLUMN time_from INTEGER;
 ALTER TABLE evidence_days ADD COLUMN time_to INTEGER;

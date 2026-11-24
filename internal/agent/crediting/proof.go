@@ -27,10 +27,11 @@ type Proofs struct {
 	// [T - 120 min, T) and the repo bucket of the block holding H.
 	Blocks []BlockProof
 	// Unbacked are the keys, in the order given, that no proof backs: the
-	// block holding H isn't sealed and accepted yet, rows the run read lie
-	// outside the device's provable blocks (before its chain started, or in
-	// a day sealed before the agent kept bucket lists), or a bucket that
-	// must be opened has lost rows to pruning. Their minutes go without
+	// block holding H isn't sealed and accepted yet, or doesn't open with a
+	// repo snapshot (it follows a day sealed before the agent kept bucket
+	// lists), rows the run read lie outside the device's provable blocks
+	// (before its chain started, or in such a day), or a bucket that must
+	// be opened has lost rows to pruning. Their minutes go without
 	// evidence.
 	Unbacked []replay.Key
 }
@@ -102,23 +103,35 @@ type sealedBlock struct {
 	day  localdb.EvidenceDay
 	rec  evidence.Day
 	list []evidence.Bucket
-	rows map[uint64][]evidence.Row
+	// mapped is true when the block's repo bucket holds the whole mapping
+	// at every H in its range (see provableBlocks).
+	mapped bool
+	rows   map[uint64][]evidence.Row
 	// bad are the indexes of read buckets whose rows don't hash to them.
 	bad map[int]bool
 }
 
 // provableBlocks returns the device's accepted blocks that have a bucket
 // list, in chain order.
+//
+// A block's repo bucket holds the whole mapping (ADR 0019 point 4) when
+// the block is the device's first (it starts at 0, or at the takeover's
+// snapshot), follows a legacy day (it starts again at 0), or follows a
+// block sealed with a bucket list (whose reservation logged the snapshot
+// that opens it). A block that follows one sealed before the agent kept
+// bucket lists has no snapshot: paths mapped before it started are missing
+// from its repo bucket.
 func provableBlocks(ctx context.Context, s *localdb.Snapshot, deviceID string) ([]*sealedBlock, error) {
 	days, err := s.EvidenceDays(ctx, deviceID)
 	if err != nil {
 		return nil, err
 	}
 	var out []*sealedBlock
-	for _, d := range days {
+	for i, d := range days {
 		if d.State != localdb.EvidenceAccepted || !d.Provable() {
 			continue
 		}
+		mapped := i == 0 || days[i-1].Legacy || days[i-1].Provable()
 		list, err := s.Buckets(ctx, deviceID, d.Day)
 		if err != nil {
 			return nil, err
@@ -126,7 +139,7 @@ func provableBlocks(ctx context.Context, s *localdb.Snapshot, deviceID string) (
 		if len(list) != d.Buckets {
 			return nil, fmt.Errorf("%s has %d stored buckets, signed %d", d.Day, len(list), d.Buckets)
 		}
-		out = append(out, &sealedBlock{day: d, rec: d.Record(), list: list})
+		out = append(out, &sealedBlock{day: d, rec: d.Record(), list: list, mapped: mapped})
 	}
 	slices.SortFunc(out, func(a, b *sealedBlock) int { return cmp.Compare(a.rec.SeqFrom, b.rec.SeqFrom) })
 	return out, nil
@@ -142,10 +155,11 @@ func window(k replay.Key) evidence.MinuteRange {
 func holds(d evidence.Day, h int64) bool { return d.SeqFrom < h && h <= d.SeqTo }
 
 // covered reports whether provable blocks can back a run at k: one of them
-// holds k.H, and no row the run read (an engine event of its window with
-// a sequence number at or below k.H) lies outside them.
+// holds k.H and its repo bucket holds the whole mapping, and no row the run
+// read (an engine event of its window with a sequence number at or below
+// k.H) lies outside them.
 func covered(ctx context.Context, s *localdb.Snapshot, blocks []*sealedBlock, k replay.Key) (bool, error) {
-	if !slices.ContainsFunc(blocks, func(b *sealedBlock) bool { return holds(b.rec, k.H) }) {
+	if !slices.ContainsFunc(blocks, func(b *sealedBlock) bool { return b.mapped && holds(b.rec, k.H) }) {
 		return false, nil
 	}
 	w := window(k)
