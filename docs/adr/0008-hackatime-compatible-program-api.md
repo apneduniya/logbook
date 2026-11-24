@@ -1,6 +1,6 @@
 # 0008: Programs read hours through a Hackatime-compatible API
 
-- Status: accepted (OAuth provider library to be chosen in step 5)
+- Status: accepted (the OAuth provider is settled in ADR 0021)
 - Date: 2026-11-20
 
 ## Context

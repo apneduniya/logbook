@@ -44,6 +44,12 @@ There are four trust boundaries:
 | Privilege escalation | Roles (`user`, `reviewer` per program, `admin`) are checked in middleware and again in services | planned (step 1, 5) |
 | Token leakage | Third-party tokens encrypted with AES-GCM using a key from env; our API keys and OAuth tokens stored as SHA-256 hashes (an open issue on Hackatime); least-privilege scopes | planned (step 1) |
 | Import stalls | River retries with backoff, per-user import state, resumable day cursors | planned (step 1) |
+| Review link leaks | 128-bit tokens looked up by hash, kept only encrypted; pages `noindex`, `no-referrer`; the packet holds no file paths, other projects or prompt hashes; withdrawable until a decision | step 5 (ADR 0020) |
+| Forged or replayed submission | Every revealed minute bucket is proven against the signed daily root, and each replay window is proven complete (ADR 0019); every counted minute is re-run on the server at its recorded key; mismatches shown to reviewers | step 5 |
+| Over-sharing in a bundle | Only rows inside the replay windows are revealed; the agent lists other projects' rows by name before upload and asks to confirm | step 5 |
+| Self-approval / fake reviewers | Decisions only from program members, never the submitter; every decision audited | step 5 |
+| OAuth abuse (B4) | Exact redirect URIs, single-use hashed codes, PKCE for public clients, hashed tokens, scopes checked per endpoint, per-user grants revocable; tests for another user's and another client's data | step 5 (ADR 0021) |
+| Admin credential theft | Admin keys made only on the server's command line, separate from user keys (`lba_` prefix), hashed, revocable, dropped with the role; no session or user key can reach the admin API; read-only and every call audited | step 5 (ADR 0022) |
 | Supply chain | Pinned dependency versions, `go.sum` committed, `govulncheck` and `golangci-lint` in CI, signed release checksums | planned (step 0, 6) |
 
 ## 4. Did we do a good job?

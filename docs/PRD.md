@@ -68,8 +68,8 @@ What remains is **credited** time. The rules are public, versioned and covered b
 3. **Self-improvement.** Focus time, streaks, the split between you and the agent, a weekly recap, and personal projects.
 4. **Submit.**
    - The user picks a project and a date range.
-   - The agent builds an evidence bundle, which the user reviews before uploading.
-   - The program receives a review link, and its hours API returns the credited hours.
+   - The agent builds an evidence bundle that reveals only the rows needed to re-check those minutes (ADR 0019), lists what it includes, and uploads it once the user confirms.
+   - The server re-runs the rules on it (ADR 0020). The program receives a review link, and its hours API returns the credited hours.
 5. **Review.** A reviewer opens the link and sees:
    - credited vs raw hours, with each cut explained;
    - a timeline of you / agent / idle;

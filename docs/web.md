@@ -34,11 +34,14 @@ The browser app at `https://logbook.boogles.dev`. Code: `web/`. Design: the B3 "
 | `/projects` | user | All projects: counted and keyboard time, last active, hidden or archived | `GET /api/v1/me/projects` |
 | `/projects/[name]` | user | One project: totals, the last 30 days by day, languages; settings (GitHub repo, hidden, archived) | `GET /api/v1/me/projects/{name}`, `GET /api/v1/me/summary?project=`, `PATCH` |
 | `/u/[username]` | public | Public profile: totals, top projects, languages; live while open | `GET /api/v1/users/{username}/profile`, public live |
-| `/settings` | user | Profile (display name, time zone, public or private); API keys; devices; Hackatime link; sign out | session, profile, api_keys, devices, hackatime |
+| `/settings` | user | Profile (display name, time zone, public or private); API keys; devices; Hackatime link; apps with access; admin keys (admins only); sign out | session, profile, api_keys, devices, hackatime, grants, admin_keys |
+| `/submissions` | user | Their submissions: project, dates, program, status, counted hours, evidence counts, decision; copy the review link; withdraw before a decision. On a project page, "Submit these hours" shows the one command to run (`logbook submit …`) with the dates filled in | `GET /api/v1/me/submissions`, `DELETE` |
+| `/r/[token]` | anyone with the link | The review page (ADR 0020): headline counts against time at the keyboard and the one-third rule; the evidence line; what the hours are made of; cuts and flags with reasons; one strip per day with commits; AI sessions; the justification text with a copy button; the decision. Program members also get approve / adjust / reject. `noindex` | `GET /api/v1/review/{token}`, `POST …/decision` |
+| `/apps`, `/apps/[id]` | user | Programs: register an app (client id, secret shown once, redirect URIs, public or not), rotate the secret, add reviewers; the program's submission inbox for members | `/api/v1/me/apps…` |
+| `/oauth/authorize` | user | Consent: the app, its owner, what each scope lets it read; Allow / Deny | `GET`/`POST /api/v1/oauth/requests/{id}` |
 
 **Leaving out what the API can't back.** The B3 mock had a "longest run", a programs panel and the dates of the best streak.
 - The API has no endpoint for the first or the last, so those are dropped.
-- Programs come with the program API (build step 5). Until then the dashboard shows the agent's status in that slot.
 
 ## Words
 
