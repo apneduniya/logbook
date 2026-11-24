@@ -39,6 +39,8 @@ type env struct {
 	active  ActiveTimeSource
 	runner  *Runner
 	options func(*Options)
+	// dbOptions are extra local database options for open.
+	dbOptions []localdb.Option
 }
 
 func newEnv(t *testing.T, start time.Time) *env {
@@ -59,7 +61,7 @@ func (e *env) open() {
 	if e.db != nil {
 		_ = e.db.Close()
 	}
-	db, err := localdb.Open(context.Background(), config.DBPath(e.dir), localdb.WithClock(e.clock))
+	db, err := localdb.Open(context.Background(), config.DBPath(e.dir), append([]localdb.Option{localdb.WithClock(e.clock)}, e.dbOptions...)...)
 	if err != nil {
 		e.t.Fatal(err)
 	}
