@@ -1,0 +1,14 @@
+# Crossroads: spans by username
+# GET /api/v1/users/orpheus/heartbeats/spans?start_date=2026-06-01&end_date=2026-06-30&filter_by_project=logbook
+status: 200
+cache-control: private, max-age=300
+
+{
+  "spans": [
+    {
+      "start_time": 1781082000,
+      "end_time": 1781084340,
+      "duration": 2340
+    }
+  ]
+}

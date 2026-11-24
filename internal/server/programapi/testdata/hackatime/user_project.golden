@@ -1,0 +1,20 @@
+# users/{id}/project/{name}
+# GET /api/v1/users/100000001/project/logbook
+status: 200
+cache-control: no-store
+
+{
+  "name": "logbook",
+  "total_seconds": 1200,
+  "languages": [
+    "Go"
+  ],
+  "repo_url": "https://github.com/orpheus/logbook",
+  "total_heartbeats": 40,
+  "first_heartbeat": "2026-06-10T09:00:00Z",
+  "last_heartbeat": "2026-06-10T09:39:00Z",
+  "most_recent_heartbeat": "2026-06-10T09:39:00Z",
+  "archived": false,
+  "credited_seconds": 1200,
+  "raw_seconds": 2400
+}

@@ -1,0 +1,52 @@
+# Ari, Stardance: projects/details
+# GET /api/v1/users/100000001/projects/details
+status: 200
+cache-control: no-store
+
+{
+  "projects": [
+    {
+      "name": "logbook",
+      "total_seconds": 1200,
+      "languages": [
+        "Go"
+      ],
+      "repo_url": "https://github.com/orpheus/logbook",
+      "total_heartbeats": 40,
+      "first_heartbeat": "2026-06-10T09:00:00Z",
+      "last_heartbeat": "2026-06-10T09:39:00Z",
+      "most_recent_heartbeat": "2026-06-10T09:39:00Z",
+      "archived": false,
+      "credited_seconds": 1200,
+      "raw_seconds": 2400
+    },
+    {
+      "name": "agent-only",
+      "total_seconds": 180,
+      "languages": [],
+      "repo_url": null,
+      "total_heartbeats": 0,
+      "first_heartbeat": "2026-06-10T13:00:00Z",
+      "last_heartbeat": "2026-06-10T13:03:00Z",
+      "most_recent_heartbeat": "2026-06-10T13:03:00Z",
+      "archived": false,
+      "credited_seconds": 180,
+      "raw_seconds": 0
+    },
+    {
+      "name": "site",
+      "total_seconds": 90,
+      "languages": [
+        "Svelte"
+      ],
+      "repo_url": null,
+      "total_heartbeats": 2,
+      "first_heartbeat": "2026-06-10T10:00:00Z",
+      "last_heartbeat": "2026-06-10T10:00:30Z",
+      "most_recent_heartbeat": "2026-06-10T10:00:30Z",
+      "archived": false,
+      "credited_seconds": 90,
+      "raw_seconds": 300
+    }
+  ]
+}

@@ -1,0 +1,46 @@
+# Crossroads: stats by username
+# GET /api/v1/users/orpheus/stats?start_date=2026-06-01T00:00:00Z&end_date=2026-06-30T00:00:00Z&filter_by_project=logbook&features=projects
+status: 200
+cache-control: private, max-age=300
+
+{
+  "data": {
+    "username": "Name orpheus",
+    "user_id": "100000001",
+    "is_coding_activity_visible": true,
+    "is_other_usage_visible": true,
+    "status": "ok",
+    "start": "2026-06-01T00:00:00Z",
+    "end": "2026-06-30T00:00:00Z",
+    "range": "all_time",
+    "human_readable_range": "All Time",
+    "total_seconds": 1200,
+    "daily_average": 41,
+    "human_readable_total": "20m",
+    "human_readable_daily_average": "41s",
+    "projects": [
+      {
+        "name": "logbook",
+        "total_seconds": 1200,
+        "text": "20m",
+        "hours": 0,
+        "minutes": 20,
+        "percent": 100,
+        "digital": "00:20:00",
+        "credited_seconds": 1200,
+        "raw_seconds": 2400
+      }
+    ],
+    "unique_total_seconds": 1200,
+    "streak": 0,
+    "credited_seconds": 1200,
+    "raw_seconds": 2400
+  },
+  "trust_factor": {
+    "trust_level": "green",
+    "trust_value": 2
+  },
+  "logbook": {
+    "trust_verified": true
+  }
+}
