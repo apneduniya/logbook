@@ -48,6 +48,8 @@ type rig struct {
 	key    *devicekey.Key
 	// registered is the UTC day the device was registered.
 	registered time.Time
+	// identity is the device the agent runs as; takeover replaces it.
+	identity *identity
 
 	mu  sync.Mutex
 	now time.Time
@@ -108,15 +110,27 @@ func registeredOn(day time.Time) option {
 // beforeOpen runs fn before the local database is opened.
 func beforeOpen(fn func(r *rig)) option { return func(c *config) { c.prepare = fn } }
 
-// identity is a registered device that never changes.
-type identity struct{ dev devicekey.Device }
+// identity is the registered device the agent runs as. It changes only
+// when a test replaces the device (rig.takeover).
+type identity struct {
+	mu  sync.Mutex
+	dev devicekey.Device
+}
 
-func (i identity) Ensure(context.Context, serverapi.Target) (devicekey.Device, error) {
+func (i *identity) Ensure(context.Context, serverapi.Target) (devicekey.Device, error) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
 	return i.dev, nil
 }
-func (identity) MarkRevoked(context.Context, serverapi.Target) (bool, error) { return false, nil }
-func (identity) Confirm(context.Context, serverapi.Target) error             { return nil }
-func (identity) Forget(context.Context) error                                { return nil }
+func (*identity) MarkRevoked(context.Context, serverapi.Target) (bool, error) { return false, nil }
+func (*identity) Confirm(context.Context, serverapi.Target) error             { return nil }
+func (*identity) Forget(context.Context) error                                { return nil }
+
+func (i *identity) set(dev devicekey.Device) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.dev = dev
+}
 
 // newRig starts a rig whose agent clock reads start, with no settle period
 // after a start (Settle < 0) unless an option sets one.
@@ -182,9 +196,10 @@ func newRig(t testing.TB, start time.Time, opts ...option) *rig {
 		c.prepare(r)
 	}
 	r.db = r.openDB(r.dbPath)
+	r.identity = &identity{dev: devicekey.Device{ID: r.device.String(), RegisteredAt: r.registered, Key: r.key}}
 	r.opts = crediting.Options{
 		Store: r.db, Server: r.client,
-		Identity: identity{devicekey.Device{ID: r.device.String(), RegisteredAt: r.registered, Key: r.key}},
+		Identity: r.identity,
 		Target:   func() crediting.Target { return crediting.Target{Target: r.target} },
 		Repos:    r, Compute: r.compute, TZ: time.UTC, Now: r.clock,
 		Jitter: func() float64 { return 0 },
@@ -196,6 +211,27 @@ func newRig(t testing.TB, start time.Time, opts ...option) *rig {
 	}
 	r.runner = crediting.New(r.opts)
 	return r
+}
+
+// takeover registers a new device for the same user, with a new key, on
+// the UTC day of the agent's clock, and makes the agent run as it from the
+// next run on, as when the previous device's key was replaced (ADR 0017
+// point 5). The rig's checks then look at the new device.
+func (r *rig) takeover() {
+	r.t.Helper()
+	key, err := devicekey.Create(filepath.Join(r.t.TempDir(), "device-2.key"))
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	day := r.clock().UTC().Truncate(24 * time.Hour)
+	id, err := r.st.SeedTestDevice(context.Background(), db.SeedTestDeviceParams{
+		UserID: r.user, Name: "new laptop", PublicKey: key.Public(), CreatedAt: day,
+	})
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	r.device, r.key, r.registered = id, key, day
+	r.identity.set(devicekey.Device{ID: id.String(), RegisteredAt: day, Key: key})
 }
 
 // openDB opens a local database at path on the agent's clock.

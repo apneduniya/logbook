@@ -3,6 +3,7 @@ package e2e
 import (
 	"cmp"
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"maps"
@@ -145,10 +146,18 @@ func (r *rig) replayBlock(e localdb.EvidenceDay) []evidence.Row {
 	return rows
 }
 
-// finish runs the agent, with both clocks right and the server up, from
-// the end of day plus the grace hour (or now, if later) until day is
-// sealed, then checks the end state.
+// finish runs the agent until day is sealed (sealDay), then checks the end
+// state.
 func (r *rig) finish(day string) checked {
+	r.t.Helper()
+	r.sealDay(day)
+	return r.check()
+}
+
+// sealDay runs the agent once a minute, with both clocks right and the
+// server up, from the end of day plus the grace hour (or now, if later)
+// until the server holds day's evidence.
+func (r *rig) sealDay(day string) {
 	r.t.Helper()
 	r.with(func(r *rig) { r.serverOffset, r.down, r.date = 0, false, "" })
 	d, err := time.Parse(time.DateOnly, day)
@@ -166,7 +175,6 @@ func (r *rig) finish(day string) checked {
 		r.set(at.Add(5 * time.Second))
 		r.run()
 	}
-	return r.check()
 }
 
 // checked counts what check verified.
@@ -319,7 +327,10 @@ func (r *rig) wantReplay(log crediting.LogReader, from string, at time.Time, key
 // captured when each was accepted), inserting the rows in sequence order
 // the way the agent logs them, and checks every row gets back its own
 // sequence number. It returns nil when nothing is sealed. A replay from it
-// uses nothing but what the evidence chain signed.
+// uses nothing but what the evidence chain signed. Repo rows are written
+// as they are, even when one repeats its path's latest mapping: the repo
+// snapshot that opens each block does (ADR 0019 point 4), and
+// RecordRepos would skip it.
 func (r *rig) rebuild() *localdb.DB {
 	r.t.Helper()
 	var rows []evidence.Row
@@ -334,7 +345,13 @@ func (r *rig) rebuild() *localdb.DB {
 		r.t.Fatalf("the sealed blocks start at row %d, not the log's first", rows[0].Seq)
 	}
 	ctx := context.Background()
-	d := r.openDB(filepath.Join(r.t.TempDir(), "rebuilt.db"))
+	path := filepath.Join(r.t.TempDir(), "rebuilt.db")
+	d := r.openDB(path)
+	raw, err := sql.Open("sqlite", path+"?_busy_timeout=5000")
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	defer func() { _ = raw.Close() }()
 	for i := 0; i < len(rows); {
 		j := i + 1
 		for j < len(rows) && rows[j].Type == rows[i].Type && rows[i].Type != evidence.TypeRepo {
@@ -350,7 +367,11 @@ func (r *rig) rebuild() *localdb.DB {
 			err = d.Enqueue(ctx, hbs, false)
 		case evidence.TypeRepo:
 			repo := group[0].Value.(evidence.Repo)
-			err = d.RecordRepos(ctx, group[0].Time, []struggle.Repo{{Path: repo.Path, Project: repo.Project}})
+			if _, err = raw.ExecContext(ctx, `INSERT INTO repo_map (seq, since, path, project) VALUES (?, ?, ?, ?)`,
+				group[0].Seq, group[0].Time.UnixMilli(), repo.Path, repo.Project); err == nil {
+				_, err = raw.ExecContext(ctx, `INSERT INTO kv (key, value, updated_at) VALUES ('log.seq', ?, 0)
+					ON CONFLICT (key) DO UPDATE SET value = excluded.value`, fmt.Sprint(group[0].Seq))
+			}
 		case evidence.TypeActivity, evidence.TypeAI, evidence.TypeGit:
 			evs := make([]wire.LocalEvent, len(group))
 			for k, row := range group {
