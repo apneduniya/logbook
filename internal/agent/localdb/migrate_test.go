@@ -158,7 +158,7 @@ func TestMigration0007(t *testing.T) {
 		t.Fatalf("old watermark kept: %q", v)
 	}
 	e, ok, err := d.LastEvidenceDay(ctx, "dev")
-	if err != nil || !ok || !e.Legacy || e.SeqTo != 0 {
+	if err != nil || !ok || !e.Legacy || e.SeqTo != 0 || e.Buckets != 0 || e.Provable() {
 		t.Fatalf("legacy day = %+v, %v, %v", e, ok, err)
 	}
 	if n, _ := d.Counter(ctx, KeySealed); n != 0 {
@@ -170,5 +170,61 @@ func TestMigration0007(t *testing.T) {
 	}
 	if h := high(ctx, t, d); h != 8 {
 		t.Fatalf("next row took %d, want 8", h)
+	}
+}
+
+// Migration 0008 keeps accepted blocks (not provable: no bucket list) and
+// drops a block sealed before it that the server hasn't accepted (pending,
+// or refused, as the new server refuses every old record), which can never
+// be sent: its rows count as unsealed again, and the refusal is cleared so
+// the chain goes on.
+func TestMigration0008(t *testing.T) {
+	day := func(d, state string, from, to int) string {
+		return fmt.Sprintf(`INSERT INTO evidence_days (device_id, day, prev_chain_hash, content_hash, chain_hash, signature,
+			rules_version, event_counts, seq_from, seq_to, state, created_at, updated_at)
+			VALUES ('dev', '%s', '', 'c', 'h', x'01', 'v1', '{}', %d, %d, '%s', 0, 0)`, d, from, to, state)
+	}
+	for _, state := range []string{EvidencePending, EvidenceRejected, EvidenceConflict} {
+		t.Run(state, func(t *testing.T) {
+			d := openAt(t, 7,
+				day("2026-11-18", EvidenceAccepted, 1, 10),
+				day("2026-11-19", state, 11, 20),
+				"INSERT INTO kv (key, value, updated_at) VALUES ('crediting.device', 'dev', 0), ('log.sealed', '20', 0)",
+				"INSERT INTO kv (key, value, updated_at) VALUES ('evidence.state', '"+state+"', 0), ('evidence.error', 'refused', 0)")
+			ctx := context.Background()
+			last, ok, err := d.LastEvidenceDay(ctx, "dev")
+			if err != nil || !ok || last.Day != "2026-11-18" || last.Provable() || last.Buckets != 0 || last.TimeFrom != nil {
+				t.Fatalf("last day after migrating = %+v, %v, %v", last, ok, err)
+			}
+			if n, _ := d.Counter(ctx, KeySealed); n != 10 {
+				t.Fatalf("sealed = %d, want 10", n)
+			}
+			if _, ok, _ := d.Sealing(ctx); ok {
+				t.Fatal("a block is being sealed after migrating")
+			}
+			for _, k := range []string{"evidence.state", "evidence.error"} {
+				if v, err := d.Get(ctx, k); err != nil || v != "" {
+					t.Fatalf("%s = %q, %v; want it cleared", k, v, err)
+				}
+			}
+		})
+	}
+}
+
+// Migration 0008 keeps a refused legacy day (the old server refused it for
+// a reason of its own, not for its format) and the refusal status shows.
+func TestMigration0008KeepsLegacyRefusal(t *testing.T) {
+	ctx := context.Background()
+	d := openAt(t, 7,
+		`INSERT INTO evidence_days (device_id, day, prev_chain_hash, content_hash, chain_hash, signature,
+			rules_version, event_counts, seq_from, seq_to, legacy, state, created_at, updated_at)
+			VALUES ('dev', '2026-11-18', '', 'c', 'h', x'01', 'v1', '{}', 0, 0, 1, 'rejected', 0, 0)`,
+		"INSERT INTO kv (key, value, updated_at) VALUES ('crediting.device', 'dev', 0), ('evidence.state', 'rejected', 0)")
+	last, ok, err := d.LastEvidenceDay(ctx, "dev")
+	if err != nil || !ok || last.State != EvidenceRejected || !last.Legacy {
+		t.Fatalf("last day after migrating = %+v, %v, %v", last, ok, err)
+	}
+	if v, _ := d.Get(ctx, "evidence.state"); v != EvidenceRejected {
+		t.Fatalf("evidence.state = %q, want rejected", v)
 	}
 }

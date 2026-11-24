@@ -70,12 +70,19 @@ type Querier interface {
 	DeviceRevoke(ctx context.Context, arg DeviceRevokeParams) (Device, error)
 	// Records upload activity, at most once a minute per device.
 	DeviceTouch(ctx context.Context, arg DeviceTouchParams) error
+	// The device's earliest stored day after day: a new record for day must be
+	// the link it continues.
+	EvidenceDayAfter(ctx context.Context, arg EvidenceDayAfterParams) (EvidenceDay, error)
+	// The device's latest stored day before day: the link a new record for day
+	// must continue.
+	EvidenceDayBefore(ctx context.Context, arg EvidenceDayBeforeParams) (EvidenceDay, error)
 	EvidenceDayGet(ctx context.Context, arg EvidenceDayGetParams) (EvidenceDay, error)
 	EvidenceDayInsert(ctx context.Context, arg EvidenceDayInsertParams) error
-	// The chain hash of the device's latest stored day before day (empty if
-	// none), and whether a later day is stored and, if so, the prev_chain_hash
-	// of the earliest one.
-	EvidenceDayNeighbours(ctx context.Context, arg EvidenceDayNeighboursParams) (EvidenceDayNeighboursRow, error)
+	// The stored evidence days, oldest first, of one of the user's devices
+	// between first_day and last_day (inclusive). Empty when the device isn't
+	// the user's. The submission re-check (ADR 0020) reads the signed block
+	// fields from here.
+	EvidenceDaysOfUserDevice(ctx context.Context, arg EvidenceDaysOfUserDeviceParams) ([]EvidenceDay, error)
 	// The device's stored evidence days between first and last (inclusive).
 	// Minutes of those days are sealed: no new rows are accepted for them.
 	EvidenceDaysSealed(ctx context.Context, arg EvidenceDaysSealedParams) ([]pgtype.Date, error)

@@ -39,6 +39,8 @@ type env struct {
 	active  ActiveTimeSource
 	runner  *Runner
 	options func(*Options)
+	// dbOptions are extra local database options for open.
+	dbOptions []localdb.Option
 }
 
 func newEnv(t *testing.T, start time.Time) *env {
@@ -59,7 +61,7 @@ func (e *env) open() {
 	if e.db != nil {
 		_ = e.db.Close()
 	}
-	db, err := localdb.Open(context.Background(), config.DBPath(e.dir), localdb.WithClock(e.clock))
+	db, err := localdb.Open(context.Background(), config.DBPath(e.dir), append([]localdb.Option{localdb.WithClock(e.clock)}, e.dbOptions...)...)
 	if err != nil {
 		e.t.Fatal(err)
 	}
@@ -84,6 +86,8 @@ func (e *env) open() {
 		// Tests jump the clock between runs; the settle period after a
 		// start or gap has tests of its own (settle_test.go).
 		Settle: -1,
+		// Fixed salts, so a test can re-hash a sealed block from the log.
+		Salts: zeroSalts{},
 	}
 	if e.options != nil {
 		e.options(&o)
@@ -526,11 +530,27 @@ func (e *env) replayHash(d localdb.EvidenceDay) string {
 	if err != nil {
 		e.t.Fatalf("ReplayBlock(%s): %v", d.Day, err)
 	}
-	h, err := evidence.ContentHash(rows)
+	return rehash(e.t, rows)
+}
+
+// rehash hashes a block's rows in one go with the zero salts tests seal
+// with: what a reviewer holding every row computes.
+func rehash(t testing.TB, rows []evidence.Row) string {
+	t.Helper()
+	blk, _, err := evidence.HashBlock(rows, zeroSalts{})
 	if err != nil {
-		e.t.Fatal(err)
+		t.Fatal(err)
 	}
-	return h
+	return blk.ContentHash
+}
+
+// zeroSalts gives every evidence bucket a zero salt, so a test can re-hash
+// a sealed block on its own.
+type zeroSalts struct{}
+
+func (zeroSalts) Read(p []byte) (int, error) {
+	clear(p)
+	return len(p), nil
 }
 
 // Each day's block seals the log rows logged since the previous block,
@@ -687,25 +707,6 @@ func TestMinuteRows(t *testing.T) {
 	z := removal(rows[0].Minute, rows[0].Project)
 	if z.Credited != 0 || z.Label != "idle" || len(z.Cuts) != 0 || z.Flags == nil || z.Digest == rows[0].Digest {
 		t.Fatalf("removal = %+v", z)
-	}
-}
-
-func TestIsAIHeartbeat(t *testing.T) {
-	n := 3
-	tests := []struct {
-		h    wire.Heartbeat
-		want bool
-	}{
-		{wire.Heartbeat{Category: "coding"}, false},
-		{wire.Heartbeat{Category: "AI Coding"}, true},
-		{wire.Heartbeat{AIModel: "m"}, true},
-		{wire.Heartbeat{AILineChanges: &n}, true},
-		{wire.Heartbeat{HumanLineChanges: &n}, false},
-	}
-	for i, tt := range tests {
-		if got := isAIHeartbeat(tt.h); got != tt.want {
-			t.Errorf("case %d: isAIHeartbeat = %v", i, got)
-		}
 	}
 }
 

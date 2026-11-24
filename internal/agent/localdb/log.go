@@ -270,35 +270,77 @@ func (s *Snapshot) Repos(ctx context.Context, upto int64) ([]struggle.Repo, erro
 // the evidence encoding covers it (ADR 0017), in no particular order.
 // Active time is the stored point without derived fields.
 func (s *Snapshot) Rows(ctx context.Context, after, upto int64) ([]evidence.Row, error) {
+	return s.readRows(ctx, rowsBySeq, []any{after, upto})
+}
+
+// RepoRows returns the repo mapping rows with a sequence number in
+// (after, upto]: the rows of that range's repo bucket (ADR 0019).
+func (s *Snapshot) RepoRows(ctx context.Context, after, upto int64) ([]evidence.Row, error) {
+	return s.readRows(ctx, rowQueries{repo: qRepoRows}, []any{after, upto})
+}
+
+// MinuteRows returns every row with a sequence number in (after, upto]
+// whose minute bucket (evidence.BucketKey) is a minute of [from, to): all
+// rows but repo rows, by their evidence time (active time by its end).
+// from and to should be whole minutes.
+func (s *Snapshot) MinuteRows(ctx context.Context, after, upto int64, from, to time.Time) ([]evidence.Row, error) {
+	return s.readRows(ctx, rowsByTime, []any{after, upto, from.UnixMilli(), to.UnixMilli()})
+}
+
+// NextMinuteRow returns the evidence time, truncated to the minute, of the
+// earliest row with a sequence number in (after, upto] and a time at or
+// after from, not counting repo rows. ok is false when there is none.
+func (s *Snapshot) NextMinuteRow(ctx context.Context, after, upto int64, from time.Time) (next time.Time, ok bool, err error) {
+	var ms sql.NullInt64
+	if err := s.tx.QueryRowContext(ctx, qNextRowTime, after, upto, from.UnixMilli()).Scan(&ms); err != nil {
+		return time.Time{}, false, fmt.Errorf("finding the next logged minute: %w", err)
+	}
+	if !ms.Valid {
+		return time.Time{}, false, nil
+	}
+	return time.UnixMilli(ms.Int64).UTC().Truncate(time.Minute), true, nil
+}
+
+// rowQueries is one evidence row query per logged table; "" skips a table.
+type rowQueries struct{ heartbeats, ai, activity, git, active, repo string }
+
+var (
+	rowsBySeq  = rowQueries{qHeartbeatRows, qAIRows, qActivityRows, qGitRows, qActiveRows, qRepoRows}
+	rowsByTime = rowQueries{qHeartbeatRowsIn, qAIRowsIn, qActivityRowsIn, qGitRowsIn, qActiveRowsIn, ""}
+)
+
+// readRows runs q's queries with args and returns their rows as evidence
+// rows. Heartbeats that no longer decode are skipped (they can't have come
+// from Enqueue).
+func (s *Snapshot) readRows(ctx context.Context, q rowQueries, args []any) ([]evidence.Row, error) {
 	var out []evidence.Row
-	args := []any{after, upto}
 	reads := []struct {
 		name, query string
 		scan        func(*sql.Rows) error
 	}{
-		{"heartbeats", qHeartbeatRows, func(r *sql.Rows) error {
+		{"heartbeats", q.heartbeats, func(r *sql.Rows) error {
 			h, seq, ok, err := scanHeartbeat(r)
 			if ok {
 				out = append(out, evidence.HeartbeatRow(seq, h))
 			}
 			return err
 		}},
-		{"ai events", qAIRows, func(r *sql.Rows) error {
+		{"ai events", q.ai, func(r *sql.Rows) error {
 			e, seq, err := scanAI(r)
 			out = append(out, evidence.AIRow(seq, e))
 			return err
 		}},
-		{"activity samples", qActivityRows, func(r *sql.Rows) error {
+		{"activity samples", q.activity, func(r *sql.Rows) error {
 			e, seq, err := scanActivity(r)
 			out = append(out, evidence.ActivityRow(seq, e))
 			return err
 		}},
-		{"git events", qGitRows, func(r *sql.Rows) error {
+		{"git events", q.git, func(r *sql.Rows) error {
 			e, seq, err := scanGit(r)
 			out = append(out, evidence.GitRow(seq, e))
 			return err
 		}},
-		{"active time", qActiveRows, func(r *sql.Rows) error {
+		{"active time", q.active, func(r *sql.Rows) error {
 			var (
 				seq, from, to int64
 				typ           string
@@ -317,7 +359,7 @@ func (s *Snapshot) Rows(ctx context.Context, after, upto int64) ([]evidence.Row,
 			out = append(out, evidence.ActiveTimeRow(seq, a))
 			return nil
 		}},
-		{"repo mapping", qRepoRows, func(r *sql.Rows) error {
+		{"repo mapping", q.repo, func(r *sql.Rows) error {
 			var (
 				seq, since int64
 				repo       evidence.Repo
@@ -330,6 +372,9 @@ func (s *Snapshot) Rows(ctx context.Context, after, upto int64) ([]evidence.Row,
 		}},
 	}
 	for _, rd := range reads {
+		if rd.query == "" {
+			continue
+		}
 		if err := queryRows(ctx, s.tx, rd.query, args, rd.scan); err != nil {
 			return nil, fmt.Errorf("reading logged %s: %w", rd.name, err)
 		}

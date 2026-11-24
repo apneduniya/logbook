@@ -75,6 +75,11 @@ type EvidenceDay struct {
 	RulesVersion  string
 	EventCounts   []byte
 	CreatedAt     time.Time
+	SeqFrom       pgtype.Int8
+	SeqTo         pgtype.Int8
+	Buckets       pgtype.Int4
+	TimeFrom      *time.Time
+	TimeTo        *time.Time
 }
 
 type HackatimeImport struct {

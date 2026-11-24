@@ -195,6 +195,9 @@ func printCrediting(p func(string, ...any), c crediting.Status) {
 	default:
 		p("Evidence:   no day sealed yet")
 	}
+	if c.Evidence.Sealing != "" {
+		p("            sealing %s: closed to new minutes, its evidence is being hashed", c.Evidence.Sealing)
+	}
 	if c.Evidence.LocalError != "" {
 		p("            sealing failed (retrying): %s", c.Evidence.LocalError)
 	}

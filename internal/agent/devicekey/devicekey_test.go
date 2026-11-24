@@ -52,7 +52,7 @@ func TestKeyCreateLoad(t *testing.T) {
 	}
 
 	d := evidence.Day{DeviceID: "0b7c2f1e-3a4d-4e5f-8a9b-0c1d2e3f4a5b", Day: "2026-11-19",
-		ContentHash: strings.Repeat("ab", 32), RulesVersion: "v1"}
+		ContentHash: strings.Repeat("ab", 32), RulesVersion: "v1", SeqTo: 12, Buckets: 1}
 	ch, sig, err := k.Sign(d)
 	if err != nil {
 		t.Fatal(err)

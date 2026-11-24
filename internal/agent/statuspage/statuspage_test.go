@@ -49,7 +49,7 @@ func TestRender(t *testing.T) {
 			}},
 			want: []string{"0b7c2f1e-3a4d-4e5f-8a9b-0c1d2e3f4a5b", "Revoked", "device revoked", "signed through 2026-11-19",
 				"4592bad6f724<", "Evidence stopped", "refused &lt;x&gt;", ">12<", ">3<"},
-			not: []string{"<x>", "Minutes on hold", "Sealing failed"},
+			not: []string{"<x>", "Minutes on hold", "Sealing failed", "Sealing day"},
 		},
 		{
 			name: "crediting held and sealing failing",
@@ -58,6 +58,13 @@ func TestRender(t *testing.T) {
 				Evidence: crediting.EvidenceStatus{LocalError: "reading active time: disk I/O error"},
 			}},
 			want: []string{"Minutes on hold", "unknown rules_version", "Sealing failed (retrying)", "disk I/O error"},
+		},
+		{
+			name: "a day being sealed",
+			snap: status.Snapshot{Crediting: crediting.Status{
+				Evidence: crediting.EvidenceStatus{LastDay: "2026-11-18", Sealing: "2026-11-19"},
+			}},
+			want: []string{"Sealing day", "2026-11-19", "closed to new minutes"},
 		},
 		{
 			name: "clock behind the last sealed day",

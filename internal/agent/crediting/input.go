@@ -4,12 +4,15 @@ import (
 	"cmp"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/apneduniya/logbook/internal/agent/localdb"
+	"github.com/apneduniya/logbook/pkg/evidence"
+	"github.com/apneduniya/logbook/pkg/replay"
 	"github.com/apneduniya/logbook/pkg/struggle"
 	"github.com/apneduniya/logbook/pkg/wire"
 )
@@ -17,11 +20,11 @@ import (
 // Window arithmetic (ADR 0010, ADR 0017).
 const (
 	// Window is how far back each run recomputes minutes.
-	Window = 60 * time.Minute
+	Window = replay.Window
 	// History is the extra context before the window the engine reads: the
 	// engine's whole look-back, so every minute in the window is computed
 	// from all the events its rules read.
-	History = struggle.ContextBefore
+	History = replay.History
 	// FinalAfter is the age at which the server takes no more rewrites of
 	// a minute it has seen.
 	FinalAfter = 30 * time.Minute
@@ -51,9 +54,8 @@ type span struct {
 // spanAt returns the ranges of the run whose window ends at T, the whole
 // minute now is in (that minute hasn't ended, so it isn't computed yet).
 func spanAt(now time.Time) span {
-	to := now.UTC().Truncate(time.Minute)
-	from := to.Add(-Window)
-	return span{from: from, to: to, history: from.Add(-History)}
+	s := replay.SpanAt(now)
+	return span{from: s.From, to: s.To, history: s.History}
 }
 
 // finalBefore returns where a settled run at T makes minutes final: every
@@ -69,35 +71,32 @@ func serverFinalBefore(now time.Time) time.Time {
 	return now.UTC().Add(-FinalAfter).Truncate(time.Minute).Add(time.Minute)
 }
 
-// engineInput builds the engine's Input for the run whose window is s, from
-// logged events (all at or below the run's high-water mark) and the repo
-// mapping at the same mark. Events outside [s.history, s.to) are left out.
-// It is pure: a replay at the same key gets the same Input, except for the
-// optional active time, which feeds only flags.
-func engineInput(s span, ev localdb.Events, active []struggle.ActiveTime, repos []struggle.Repo, tz *time.Location) struggle.Input {
-	var hbs []struggle.Heartbeat
-	for _, h := range values(ev.Heartbeats, s, heartbeatTime) {
-		hbs = append(hbs, engineHeartbeat(h))
+// engineInput builds the engine's Input for the run at key from the
+// logged events of its snapshot (all at or below key.H) and the repo
+// mapping at key.H, with pkg/replay: the same code a replay of its minutes
+// runs, here or on the server. Claude Code active time is added after:
+// replays leave it out, since it feeds only flags (ADR 0019 point 8).
+func engineInput(key localdb.Key, ev localdb.Events, active []struggle.ActiveTime, repos []struggle.Repo, tz *time.Location) (struggle.Input, error) {
+	in, err := replay.InputWithRepos(eventRows(ev), repos, replay.Key{T: key.T, H: key.H}, tz)
+	if err != nil {
+		return struggle.Input{}, fmt.Errorf("building the engine input: %w", err)
 	}
-	return struggle.Input{
-		Window:     struggle.Window{From: s.from, To: s.to},
-		DataEnd:    s.to,
-		Activity:   values(ev.Activity, s, activityTime),
-		Heartbeats: hbs,
-		AI:         values(ev.AI, s, aiTime),
-		ActiveTime: active,
-		Repos:      repos,
-		TZ:         tz,
-	}
+	in.ActiveTime = active
+	return in, nil
 }
 
-// values returns the events of evs with time in [s.history, s.to).
-func values[T any](evs []localdb.Logged[T], s span, at func(T) time.Time) []T {
-	out := make([]T, 0, len(evs))
-	for _, e := range evs {
-		if t := at(e.Event); !t.Before(s.history) && t.Before(s.to) {
-			out = append(out, e.Event)
-		}
+// eventRows are the engine's logged events as evidence rows. Git events
+// are left out: the engine never reads them.
+func eventRows(ev localdb.Events) []evidence.Row {
+	out := make([]evidence.Row, 0, len(ev.Activity)+len(ev.Heartbeats)+len(ev.AI))
+	for _, e := range ev.Activity {
+		out = append(out, evidence.ActivityRow(e.Seq, e.Event))
+	}
+	for _, e := range ev.Heartbeats {
+		out = append(out, evidence.HeartbeatRow(e.Seq, e.Event))
+	}
+	for _, e := range ev.AI {
+		out = append(out, evidence.AIRow(e.Seq, e.Event))
 	}
 	return out
 }
@@ -110,21 +109,6 @@ func aiTime(e wire.AIEvent) time.Time              { return e.Time }
 func gitTime(e wire.GitEvent) time.Time            { return e.Time }
 func heartbeatTime(h wire.Heartbeat) time.Time {
 	return time.UnixMilli(h.Timestamp().UnixMilli()).UTC()
-}
-
-// engineHeartbeat is the part of a heartbeat the engine reads.
-func engineHeartbeat(h wire.Heartbeat) struggle.Heartbeat {
-	return struggle.Heartbeat{
-		Time: h.Timestamp(), Project: h.Project, Entity: h.Entity, IsWrite: h.IsWrite,
-		Lineno: h.Lineno, Cursorpos: h.Cursorpos, AI: isAIHeartbeat(h),
-	}
-}
-
-// isAIHeartbeat reports whether the editor attributed the heartbeat to an
-// AI tool: category "ai coding" or any of Hackatime's ai_* fields.
-func isAIHeartbeat(h wire.Heartbeat) bool {
-	return strings.EqualFold(h.Category, "ai coding") || h.AIModel != "" || h.AISession != "" ||
-		h.AIInputTokens != nil || h.AIOutputTokens != nil || h.AIPromptLength != nil || h.AILineChanges != nil
 }
 
 // minuteRows turns the engine's result into the rows to store, sorted by

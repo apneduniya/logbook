@@ -25,9 +25,9 @@ laptop                                     server (Go + Postgres)
 | `cmd/logbook` | Agent daemon and CLI (`logbook login`, `status`, `submit`, ...) |
 | `pkg/wire` | Wire types shared by server and agent (heartbeats, minute batches, evidence) |
 | `pkg/struggle` | Pure rules engine: events in, labelled minutes and cuts out |
-| `pkg/evidence` | Canonical encoding of the agent's logged rows (hashed whole or in resumable chunks), hash chain, ed25519 signing and verification |
+| `pkg/evidence` | Canonical encoding of the agent's logged rows, salted minute buckets under a Merkle root (resumable hasher), proofs that reveal some buckets and the completeness of minute ranges, hash chain, ed25519 signing and verification |
 | `pkg/projectname` | Project name normalisation shared by heartbeat ingest and credited minutes |
-| `pkg/replay` | Turns evidence rows and a computation key into engine input; shared by the agent's replay and the server's submission re-check (ADR 0020) |
+| `pkg/replay` | Turns evidence rows and a computation key into engine input, and says what a replay compares; shared by the agent's live runs and replays and the server's submission re-check (ADR 0020) |
 | `internal/server/config` | Typed env config |
 | `internal/server/store` | sqlc-generated queries and transaction helpers |
 | `internal/server/auth` | HCA sign-in, sessions, API keys, CSRF |
@@ -36,7 +36,7 @@ laptop                                     server (Go + Postgres)
 | `internal/server/stats` | Dashboard and program-API aggregates |
 | `internal/server/devices` | Agent device keys: register, list, revoke |
 | `internal/server/credited` | Credited-minute uploads from the agent |
-| `internal/server/ledger` | Signed daily evidence chain per device |
+| `internal/server/ledger` | Signed daily evidence chain per device: checks uploads (signature, chain and seq continuity) and reads stored records for the submission re-check |
 | `internal/server/live` | SSE fan-out |
 | `internal/server/submissions` | Submission upload, the re-check job, review packets, review links and decisions (ADR 0020) |
 | `internal/server/oauth` | OAuth 2 provider: apps, consent requests, codes, tokens, grants (ADR 0021) |
@@ -45,7 +45,7 @@ laptop                                     server (Go + Postgres)
 | `internal/server/httpapi` | HTTP handlers and middleware; thin, calls services |
 | `internal/server/jobs` | River workers |
 | `internal/agent/...` | Agent: proxy, sensors, harness plugins, git, local store (an append-only event log, ADR 0017), crediting, uploader, tray |
-| `internal/e2e` | Tests only: the agent's crediting pipeline against the real minutes and evidence-day endpoints and Postgres, ending each test with the ADR 0017 checks (agent, server and replays at each minute's key agree; sealed blocks re-hash). The one place importing both sides |
+| `internal/e2e` | Tests only: the agent's crediting pipeline against the real minutes and evidence-day endpoints and Postgres, ending each test with the ADR 0017 checks (agent, server and replays at each minute's key agree; sealed blocks re-hash), plus the ADR 0019 checks (stored block fields and seq continuity; agent proofs verify against stored records, prove windows complete and replay to the stored rows). The one place importing both sides |
 | `web/` | SvelteKit UI |
 | `migrations/` | goose SQL migrations |
 

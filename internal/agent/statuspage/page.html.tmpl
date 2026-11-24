@@ -66,6 +66,7 @@ code { font-size: .9em; }
 {{if .Minutes.LateIgnored}}<tr><th>Late events ignored</th><td>{{.Minutes.LateIgnored}} <span class="muted">latest {{ago .Minutes.LateLatest}}</span></td></tr>{{end}}
 <tr><th>Evidence chain</th><td>{{if .Evidence.LastDay}}signed through {{.Evidence.LastDay}} <span class="muted"><code>{{printf "%.12s" .Evidence.ChainHash}}</code></span>{{else}}<span class="muted">no day sealed yet</span>{{end}}</td></tr>
 {{if .Evidence.State}}<tr><th>Evidence stopped</th><td class="bad">{{.Evidence.Error}}</td></tr>{{end}}
+{{if .Evidence.Sealing}}<tr><th>Sealing day</th><td>{{.Evidence.Sealing}} <span class="muted">(closed to new minutes; its evidence is being hashed)</span></td></tr>{{end}}
 {{if .Evidence.LocalError}}<tr><th>Sealing failed (retrying)</th><td class="bad">{{.Evidence.LocalError}}</td></tr>{{end}}
 {{end}}
 </table>

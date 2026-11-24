@@ -110,24 +110,39 @@ ORDER BY day;
 -- name: EvidenceDayGet :one
 SELECT * FROM evidence_days WHERE device_id = $1 AND day = $2;
 
--- name: EvidenceDayNeighbours :one
--- The chain hash of the device's latest stored day before day (empty if
--- none), and whether a later day is stored and, if so, the prev_chain_hash
--- of the earliest one.
-SELECT
-    coalesce((SELECT e.chain_hash FROM evidence_days e
-              WHERE e.device_id = sqlc.arg(device_id) AND e.day < sqlc.arg(day)
-              ORDER BY e.day DESC LIMIT 1), '')::text AS before_chain_hash,
-    EXISTS (SELECT 1 FROM evidence_days e
-            WHERE e.device_id = sqlc.arg(device_id) AND e.day > sqlc.arg(day)) AS has_after,
-    coalesce((SELECT e.prev_chain_hash FROM evidence_days e
-              WHERE e.device_id = sqlc.arg(device_id) AND e.day > sqlc.arg(day)
-              ORDER BY e.day LIMIT 1), '')::text AS after_prev_chain_hash;
+-- name: EvidenceDayBefore :one
+-- The device's latest stored day before day: the link a new record for day
+-- must continue.
+SELECT * FROM evidence_days
+WHERE device_id = sqlc.arg(device_id) AND day < sqlc.arg(day)
+ORDER BY day DESC LIMIT 1;
+
+-- name: EvidenceDayAfter :one
+-- The device's earliest stored day after day: a new record for day must be
+-- the link it continues.
+SELECT * FROM evidence_days
+WHERE device_id = sqlc.arg(device_id) AND day > sqlc.arg(day)
+ORDER BY day LIMIT 1;
 
 -- name: EvidenceDayInsert :exec
 INSERT INTO evidence_days (
-    device_id, day, prev_chain_hash, content_hash, chain_hash, signature, rules_version, event_counts
+    device_id, day, prev_chain_hash, content_hash, chain_hash, signature, rules_version, event_counts,
+    seq_from, seq_to, buckets, time_from, time_to
 ) VALUES (
     sqlc.arg(device_id), sqlc.arg(day), sqlc.arg(prev_chain_hash), sqlc.arg(content_hash),
-    sqlc.arg(chain_hash), sqlc.arg(signature), sqlc.arg(rules_version), sqlc.arg(event_counts)
+    sqlc.arg(chain_hash), sqlc.arg(signature), sqlc.arg(rules_version), sqlc.arg(event_counts),
+    sqlc.arg(seq_from)::bigint, sqlc.arg(seq_to)::bigint, sqlc.arg(buckets)::integer,
+    sqlc.narg(time_from)::timestamptz, sqlc.narg(time_to)::timestamptz
 );
+
+-- name: EvidenceDaysOfUserDevice :many
+-- The stored evidence days, oldest first, of one of the user's devices
+-- between first_day and last_day (inclusive). Empty when the device isn't
+-- the user's. The submission re-check (ADR 0020) reads the signed block
+-- fields from here.
+SELECT e.* FROM evidence_days e
+JOIN devices d ON d.id = e.device_id
+WHERE e.device_id = sqlc.arg(device_id)
+  AND d.user_id = sqlc.arg(user_id)
+  AND e.day BETWEEN sqlc.arg(first_day)::date AND sqlc.arg(last_day)::date
+ORDER BY e.day;

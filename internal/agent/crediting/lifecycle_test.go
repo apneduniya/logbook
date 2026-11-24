@@ -12,6 +12,7 @@ import (
 
 	"github.com/apneduniya/logbook/internal/agent/devicekey"
 	"github.com/apneduniya/logbook/internal/agent/localdb"
+	"github.com/apneduniya/logbook/pkg/evidence"
 	"github.com/apneduniya/logbook/pkg/struggle"
 )
 
@@ -81,11 +82,11 @@ type flakyStore struct {
 	fail *bool
 }
 
-func (s flakyStore) InsertEvidenceDay(ctx context.Context, e localdb.EvidenceDay) error {
+func (s flakyStore) CompleteSeal(ctx context.Context, b localdb.Sealing, closed []evidence.Bucket, e localdb.EvidenceDay, marks ...localdb.KV) error {
 	if *s.fail {
 		return errors.New("disk full")
 	}
-	return s.DB.InsertEvidenceDay(ctx, e)
+	return s.DB.CompleteSeal(ctx, b, closed, e, marks...)
 }
 
 func TestLocalSealErrorDoesNotBackOff(t *testing.T) {

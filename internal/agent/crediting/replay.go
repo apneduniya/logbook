@@ -30,9 +30,10 @@ var ErrNotReproducible = errors.New("can no longer be rebuilt from local data")
 // stored minute's rows (removals aside) must match them on label, project,
 // credit and cuts.
 //
-// Claude Code active time is not replayed: it feeds only flags, as does the
-// time zone (tz, UTC when nil). compute is the engine (struggle.Compute
-// when nil).
+// The input is built by pkg/replay, as for the live run and the server's
+// re-check. Claude Code active time is not replayed: it feeds only flags,
+// as does the time zone (tz, UTC when nil). compute is the engine
+// (struggle.Compute when nil).
 func ReplayMinute(ctx context.Context, log LogReader, m time.Time, key localdb.Key,
 	compute func(struggle.Input) struggle.Result, tz *time.Location) ([]localdb.CreditedMinute, error) {
 	if compute == nil {
@@ -66,8 +67,12 @@ func ReplayMinute(ctx context.Context, log LogReader, m time.Time, key localdb.K
 	if err != nil {
 		return nil, fmt.Errorf("reading the log to replay %s: %w", m.UTC().Format(time.RFC3339), err)
 	}
+	in, err := engineInput(key, ev, nil, repos, tz)
+	if err != nil {
+		return nil, err
+	}
 	var out []localdb.CreditedMinute
-	for _, row := range minuteRows(s, compute(engineInput(s, ev, nil, repos, tz))) {
+	for _, row := range minuteRows(s, compute(in)) {
 		if row.Minute.Equal(m.UTC()) {
 			out = append(out, row)
 		}
@@ -75,20 +80,36 @@ func ReplayMinute(ctx context.Context, log LogReader, m time.Time, key localdb.K
 	return out, nil
 }
 
-// ReplayBlock rebuilds the rows a sealed evidence block covers: every
-// logged row with a sequence number in [e.SeqFrom, e.SeqTo]. Rows are never
-// updated, so hashing the result (evidence.ContentHash) gives the sealed
-// content hash. It returns ErrNotReproducible when local data no longer
-// holds the block (rows deleted since, checked against the sealed counts)
-// or the day was sealed before the event log (legacy).
+// ErrBlockMismatch is returned by ReplayBlock when the block's rows are all
+// there but don't hash to what was sealed.
+var ErrBlockMismatch = errors.New("does not hash to the sealed content hash")
+
+// ReplayBlock re-hashes a sealed evidence block from the local log and
+// returns its rows: every logged row with a sequence number in [e.SeqFrom,
+// e.SeqTo]. Rows are never updated, so grouped into buckets and hashed
+// with the bucket salts the agent stored when it sealed the block, they
+// give the stored bucket list and its root, the sealed content hash; if
+// they don't, it returns ErrBlockMismatch. It returns ErrNotReproducible
+// when local data no longer holds the block (rows deleted since, checked
+// against the sealed counts), or never could: a day sealed before the
+// event log (legacy) or before the agent kept bucket lists.
 func ReplayBlock(ctx context.Context, log LogReader, e localdb.EvidenceDay) ([]evidence.Row, error) {
 	if e.Legacy {
 		return nil, fmt.Errorf("%s was sealed before the event log: %w", e.Day, ErrNotReproducible)
 	}
-	var rows []evidence.Row
+	if !e.Provable() {
+		return nil, fmt.Errorf("%s was sealed before the agent kept bucket lists: %w", e.Day, ErrNotReproducible)
+	}
+	var (
+		rows []evidence.Row
+		list []evidence.Bucket
+	)
 	err := log.View(ctx, func(s *localdb.Snapshot) error {
 		var err error
-		rows, err = s.Rows(ctx, e.SeqFrom-1, e.SeqTo)
+		if rows, err = s.Rows(ctx, e.SeqFrom-1, e.SeqTo); err != nil {
+			return err
+		}
+		list, err = s.Buckets(ctx, e.DeviceID, e.Day)
 		return err
 	})
 	if err != nil {
@@ -97,5 +118,38 @@ func ReplayBlock(ctx context.Context, log LogReader, e localdb.EvidenceDay) ([]e
 	if got := evidence.Counts(rows); !maps.Equal(got, e.EventCounts) {
 		return nil, fmt.Errorf("%s: row counts %v, sealed %v: %w", e.Day, got, e.EventCounts, ErrNotReproducible)
 	}
+	if err := checkBlock(rows, list, e.ContentHash); err != nil {
+		return nil, fmt.Errorf("%s %w (%w)", e.Day, ErrBlockMismatch, err)
+	}
 	return rows, nil
+}
+
+// checkBlock checks that rows, grouped into buckets, are exactly the buckets
+// of list, and that list hashes to root.
+func checkBlock(rows []evidence.Row, list []evidence.Bucket, root string) error {
+	byKey := map[uint64][]evidence.Row{}
+	for _, r := range rows {
+		k, err := evidence.BucketKey(r)
+		if err != nil {
+			return err
+		}
+		byKey[k] = append(byKey[k], r)
+	}
+	for _, b := range list {
+		if err := b.Check(byKey[b.Key]); err != nil {
+			return err
+		}
+		delete(byKey, b.Key)
+	}
+	if len(byKey) > 0 {
+		return fmt.Errorf("%d buckets of rows aren't in the bucket list", len(byKey))
+	}
+	got, err := evidence.Root(list)
+	if err != nil {
+		return err
+	}
+	if got.String() != root {
+		return fmt.Errorf("bucket list root %s", got)
+	}
+	return nil
 }

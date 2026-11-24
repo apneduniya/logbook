@@ -85,6 +85,11 @@ type storedDay struct {
 	Signature     []byte         `json:"signature"`
 	RulesVersion  string         `json:"rules_version"`
 	EventCounts   map[string]int `json:"event_counts"`
+	SeqFrom       int64          `json:"seq_from"`
+	SeqTo         int64          `json:"seq_to"`
+	Buckets       int            `json:"buckets"`
+	TimeFrom      *time.Time     `json:"time_from"`
+	TimeTo        *time.Time     `json:"time_to"`
 }
 
 func newFakeServer(now func() time.Time) *fakeServer {
@@ -365,7 +370,8 @@ func (f *fakeServer) handleDay(w http.ResponseWriter, r *http.Request, id string
 		writeErr(w, http.StatusBadRequest, "bad body")
 		return
 	}
-	ed := evidence.Day{DeviceID: id, Day: d.Day, PrevChainHash: d.PrevChainHash, ContentHash: d.ContentHash, RulesVersion: d.RulesVersion}
+	ed := evidence.Day{DeviceID: id, Day: d.Day, PrevChainHash: d.PrevChainHash, ContentHash: d.ContentHash, RulesVersion: d.RulesVersion,
+		SeqFrom: d.SeqFrom, SeqTo: d.SeqTo, Buckets: d.Buckets, TimeFrom: d.TimeFrom, TimeTo: d.TimeTo}
 	if err := evidence.Verify(f.keys[id], ed, d.ChainHash, d.Signature); err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
@@ -394,7 +400,8 @@ func (f *fakeServer) handleDay(w http.ResponseWriter, r *http.Request, id string
 			latest, want = day, s.ChainHash
 		}
 	}
-	if d.PrevChainHash != want {
+	// Each block starts where the previous one ended (ADR 0019 point 2).
+	if d.PrevChainHash != want || latest != "" && d.SeqFrom != days[latest].SeqTo {
 		writeErr(w, http.StatusConflict, "chain mismatch")
 		return
 	}

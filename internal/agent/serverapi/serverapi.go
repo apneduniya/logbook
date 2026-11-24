@@ -262,11 +262,21 @@ type EvidenceDayRequest struct {
 	Signature    []byte         `json:"signature"`
 	RulesVersion string         `json:"rules_version"`
 	EventCounts  map[string]int `json:"event_counts"`
+	// The block's signed fields (ADR 0019): its rows have SeqFrom < seq <=
+	// SeqTo, it has Buckets leaves, and its minute buckets span
+	// [TimeFrom, TimeTo] (both null for a block with only its repo bucket).
+	SeqFrom  int64      `json:"seq_from"`
+	SeqTo    int64      `json:"seq_to"`
+	Buckets  int        `json:"buckets"`
+	TimeFrom *time.Time `json:"time_from"`
+	TimeTo   *time.Time `json:"time_to"`
 }
 
 // UploadEvidenceDay uploads one link of the device's evidence chain. An
-// identical re-upload succeeds.
+// identical re-upload succeeds. TimeFrom and TimeTo are sent in UTC, which
+// the server requires.
 func (c *Client) UploadEvidenceDay(ctx context.Context, t Target, deviceID string, req EvidenceDayRequest) error {
+	req.TimeFrom, req.TimeTo = utcPtr(req.TimeFrom), utcPtr(req.TimeTo)
 	_, err := c.post(ctx, t, "/api/v1/devices/"+url.PathEscape(deviceID)+"/evidence-days", req, nil,
 		http.StatusOK, http.StatusCreated)
 	return err
@@ -379,4 +389,13 @@ func redactURLError(err error) error {
 		return fmt.Errorf("%s: %w", ue.Op, ue.Err)
 	}
 	return err
+}
+
+// utcPtr returns a copy of *t in UTC, or nil.
+func utcPtr(t *time.Time) *time.Time {
+	if t == nil {
+		return nil
+	}
+	u := t.UTC()
+	return &u
 }

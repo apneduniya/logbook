@@ -165,6 +165,36 @@ const (
 		FROM git_events WHERE seq > ? AND seq <= ?`
 	qActiveRows = `SELECT seq, from_ms, to_ms, session_id, type, secs FROM active_time WHERE seq > ? AND seq <= ?`
 	qRepoRows   = `SELECT seq, since, path, project FROM repo_map WHERE seq > ? AND seq <= ?`
+	// The same rows by sequence range (?1, ?2] and a time in [?3, ?4): a
+	// range of minute buckets (ADR 0019). Active time is timed by its end.
+	// "+" before seq makes SQLite walk the (time, seq) index over the short
+	// time range, checking seq in the index: a block's sequence range can
+	// hold months of rows, and sealing reads it an hour at a time.
+	qHeartbeatRowsIn = `SELECT seq, payload FROM heartbeats WHERE +seq > ?1 AND +seq <= ?2 AND time >= ?3 AND time < ?4`
+	qAIRowsIn        = `SELECT seq, time, harness, kind, session_id, project, cwd, model, tool, prompt_chars, decision, prompt_hash
+		FROM ai_events WHERE +seq > ?1 AND +seq <= ?2 AND time >= ?3 AND time < ?4`
+	qActivityRowsIn = `SELECT seq, time, idle_seconds, focus_app, focus_kind FROM activity_samples
+		WHERE +seq > ?1 AND +seq <= ?2 AND time >= ?3 AND time < ?4`
+	qGitRowsIn = `SELECT seq, time, project, kind, commit_hash, files_changed, insertions, deletions
+		FROM git_events WHERE +seq > ?1 AND +seq <= ?2 AND time >= ?3 AND time < ?4`
+	qActiveRowsIn = `SELECT seq, from_ms, to_ms, session_id, type, secs FROM active_time
+		WHERE +seq > ?1 AND +seq <= ?2 AND to_ms >= ?3 AND to_ms < ?4`
+	// qNextRowTime is the earliest time at or after ?3 of a row other than
+	// a repo row in the sequence range (?1, ?2]. Each MIN walks a (time,
+	// seq) index from ?3 to the first entry in the range, never a row.
+	qNextRowTime = `SELECT MIN(t) FROM (
+		SELECT MIN(time) AS t FROM heartbeats WHERE time >= ?3 AND +seq > ?1 AND +seq <= ?2 UNION ALL
+		SELECT MIN(time) FROM ai_events WHERE time >= ?3 AND +seq > ?1 AND +seq <= ?2 UNION ALL
+		SELECT MIN(time) FROM activity_samples WHERE time >= ?3 AND +seq > ?1 AND +seq <= ?2 UNION ALL
+		SELECT MIN(time) FROM git_events WHERE time >= ?3 AND +seq > ?1 AND +seq <= ?2 UNION ALL
+		SELECT MIN(to_ms) FROM active_time WHERE to_ms >= ?3 AND +seq > ?1 AND +seq <= ?2)`
+	// qHasEventRows is 1 when a row other than a repo row has a sequence
+	// number in (?1, ?2].
+	qHasEventRows = `SELECT EXISTS (SELECT 1 FROM heartbeats WHERE seq > ?1 AND seq <= ?2)
+		OR EXISTS (SELECT 1 FROM ai_events WHERE seq > ?1 AND seq <= ?2)
+		OR EXISTS (SELECT 1 FROM activity_samples WHERE seq > ?1 AND seq <= ?2)
+		OR EXISTS (SELECT 1 FROM git_events WHERE seq > ?1 AND seq <= ?2)
+		OR EXISTS (SELECT 1 FROM active_time WHERE seq > ?1 AND seq <= ?2)`
 	// qOldestSeq is the smallest sequence number still stored above a mark.
 	qOldestSeq = `SELECT MIN(s) FROM (
 		SELECT MIN(seq) AS s FROM heartbeats WHERE seq > ?1 UNION ALL
@@ -252,15 +282,37 @@ const (
 	qSpansPrune    = `DELETE FROM final_spans WHERE to_minute <= ?`
 )
 
-// Evidence days (migrations 0002 and 0007).
+// Evidence days and blocks (migrations 0002, 0007 and 0008).
 const (
 	qEvidenceInsert = `INSERT INTO evidence_days (device_id, day, prev_chain_hash, content_hash, chain_hash,
-		signature, rules_version, event_counts, seq_from, seq_to, legacy, state, error,
-		created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+		signature, rules_version, event_counts, seq_from, seq_to, buckets, time_from, time_to, legacy, state, error,
+		created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)`
 	qEvidenceColumns = `SELECT device_id, day, prev_chain_hash, content_hash, chain_hash, signature,
-		rules_version, event_counts, seq_from, seq_to, legacy, state, error,
+		rules_version, event_counts, seq_from, seq_to, buckets, time_from, time_to, legacy, state, error,
 		created_at, updated_at FROM evidence_days`
 	qEvidenceLast     = qEvidenceColumns + ` WHERE device_id = ? ORDER BY day DESC LIMIT 1`
 	qEvidenceDay      = qEvidenceColumns + ` WHERE device_id = ? AND day = ?`
+	qEvidenceAll      = qEvidenceColumns + ` WHERE device_id = ? ORDER BY day`
 	qEvidenceSetState = `UPDATE evidence_days SET state = ?, error = ?, updated_at = ? WHERE device_id = ? AND day = ?`
+
+	qBucketInsert = `INSERT INTO evidence_buckets (device_id, day, i, key, salt, bucket_hash) VALUES (?, ?, ?, ?, ?, ?)`
+	qBucketList   = `SELECT i, key, salt, bucket_hash FROM evidence_buckets WHERE device_id = ? AND day = ? ORDER BY i`
+	qBucketsDrop  = `DELETE FROM evidence_buckets WHERE device_id = ? AND day = ?`
+
+	qSealingInsert = `INSERT INTO evidence_sealing (id, device_id, day, prev_chain_hash, seq_from, seq_to, reserved_at)
+		VALUES (1, ?, ?, ?, ?, ?, ?)`
+	qSealingGet = `SELECT device_id, day, prev_chain_hash, seq_from, seq_to, cursor, hasher, buckets, reserved_at
+		FROM evidence_sealing WHERE id = 1`
+	qSealingStep   = `UPDATE evidence_sealing SET cursor = ?, hasher = ?, buckets = ? WHERE id = 1`
+	qSealingDelete = `DELETE FROM evidence_sealing WHERE id = 1`
+
+	qBaselineSet = `INSERT INTO evidence_baselines (device_id, seq_from) VALUES (?, ?)
+		ON CONFLICT (device_id) DO UPDATE SET seq_from = excluded.seq_from`
+	qBaselineGet = `SELECT seq_from FROM evidence_baselines WHERE device_id = ?`
+
+	// qRepoSnapshot logs each path's latest mapping at ?1 again, in path
+	// order, as new rows dated ?2 (ADR 0019 point 4); the caller numbers
+	// them.
+	qRepoSnapshotRows = `SELECT path, project FROM repo_map r WHERE seq = (SELECT MAX(seq) FROM repo_map n
+		WHERE n.path = r.path AND n.seq <= ?) ORDER BY path`
 )

@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/apneduniya/logbook/internal/agent/crediting"
-	"github.com/apneduniya/logbook/internal/agent/serverapi"
 	"github.com/apneduniya/logbook/pkg/evidence"
 	"github.com/apneduniya/logbook/pkg/struggle"
 	"github.com/apneduniya/logbook/pkg/wire"
@@ -184,15 +183,20 @@ func legacyDB(day string) func(r *rig) {
 			at := d.Add(22*time.Hour + time.Duration(i)*10*time.Second).UnixMilli()
 			exec(`INSERT INTO activity_samples (time, idle_seconds, focus_kind, arrived_at) VALUES (?, 1, 'editor', ?)`, at, at)
 		}
-		e := evidence.Day{DeviceID: r.device.String(), Day: day, ContentHash: strings.Repeat("ab", 32), RulesVersion: struggle.RulesVersion}
+		// The server stored the record before ADR 0019, so its row has no
+		// block fields and doesn't constrain the next day's seq_from. The
+		// v1 chain hash is gone; any signed hash stands in for it, since
+		// the next day only has to link to it.
+		e := evidence.Day{DeviceID: r.device.String(), Day: day, ContentHash: strings.Repeat("ab", 32), RulesVersion: struggle.RulesVersion,
+			SeqTo: 1, Buckets: 1}
 		chain, sig, err := r.key.Sign(e)
 		if err != nil {
 			r.t.Fatal(err)
 		}
-		counts := map[string]int{evidence.TypeActivity: 3}
-		if err := r.client.UploadEvidenceDay(ctx, r.target, e.DeviceID, serverapi.EvidenceDayRequest{
-			Day: day, ContentHash: e.ContentHash, ChainHash: chain, Signature: sig, RulesVersion: e.RulesVersion, EventCounts: counts,
-		}); err != nil {
+		if _, err := r.st.Pool.Exec(ctx, `INSERT INTO evidence_days
+			(device_id, day, prev_chain_hash, content_hash, chain_hash, signature, rules_version, event_counts)
+			VALUES ($1, $2::date, '', $3, $4, $5, $6, '{"activity":3}')`,
+			r.device, day, e.ContentHash, chain, sig, e.RulesVersion); err != nil {
 			r.t.Fatal(err)
 		}
 		exec(`INSERT INTO evidence_days (device_id, day, prev_chain_hash, content_hash, chain_hash, signature, rules_version,
