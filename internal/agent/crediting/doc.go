@@ -16,19 +16,19 @@
 // /api/v1/devices/{id}/minutes with their keys; when the server refuses a
 // minute as final it returns the rows it holds, and the agent adopts them;
 // a final row refused for any other reason is dropped. After each UTC day
-// ends, plus an hour's
-// grace, the agent seals the log rows logged since its previous block: the
-// canonical content hash, chained to the previous day and signed with the
-// device key, uploaded to POST /api/v1/devices/{id}/evidence-days.
-// ReplayMinute and ReplayBlock reproduce a minute at its key and a block's
-// rows from the log.
+// ends, plus an hour's grace, the agent seals the log rows logged since its
+// previous block: salted minute buckets under a Merkle root (ADR 0019),
+// chained to the previous day and signed with the device key, uploaded to
+// POST /api/v1/devices/{id}/evidence-days. ReplayMinute and ReplayBlock
+// reproduce a minute at its key and a block's rows from the log.
 //
-// It owns: the window arithmetic, converting logged events into the
-// engine's Input, which minutes are kept, final and uploaded, the evidence
-// chain's progress, and backoff and pausing for these uploads (the same
-// rules as the heartbeat uploader). It does not own the engine
-// (pkg/struggle), the encoding and signature formats (pkg/evidence), the
-// device key and registration (internal/agent/devicekey), the HTTP calls
+// It owns: when runs happen and what they read from the log, which minutes
+// are kept, final and uploaded, the evidence chain's progress, and backoff
+// and pausing for these uploads (the same rules as the heartbeat uploader).
+// It does not own the engine (pkg/struggle), turning logged rows into the
+// engine's Input for a key (pkg/replay, shared with the server's re-check),
+// the evidence and signature formats (pkg/evidence), the device key and
+// registration (internal/agent/devicekey), the HTTP calls
 // (internal/agent/serverapi) or storage (internal/agent/localdb). Raw events
 // never leave the device here: only labelled minutes with their keys and
 // signed hashes are uploaded.

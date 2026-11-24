@@ -698,25 +698,6 @@ func TestMinuteRows(t *testing.T) {
 	}
 }
 
-func TestIsAIHeartbeat(t *testing.T) {
-	n := 3
-	tests := []struct {
-		h    wire.Heartbeat
-		want bool
-	}{
-		{wire.Heartbeat{Category: "coding"}, false},
-		{wire.Heartbeat{Category: "AI Coding"}, true},
-		{wire.Heartbeat{AIModel: "m"}, true},
-		{wire.Heartbeat{AILineChanges: &n}, true},
-		{wire.Heartbeat{HumanLineChanges: &n}, false},
-	}
-	for i, tt := range tests {
-		if got := isAIHeartbeat(tt.h); got != tt.want {
-			t.Errorf("case %d: isAIHeartbeat = %v", i, got)
-		}
-	}
-}
-
 func TestRunsNeverOverlap(t *testing.T) {
 	e := newEnv(t, t0)
 	release := make(chan struct{})

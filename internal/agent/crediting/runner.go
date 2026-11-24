@@ -358,7 +358,11 @@ func (r *Runner) compute(ctx context.Context, now, through time.Time, st settleS
 			active = nil
 		}
 	}
-	res := r.opt.Compute(engineInput(s, r.cache.before(s.to), active, repos, r.opt.TZ))
+	in, err := engineInput(key, r.cache.before(s.to), active, repos, r.opt.TZ)
+	if err != nil {
+		return err
+	}
+	res := r.opt.Compute(in)
 	keep := s
 	if keep.from.Before(through) {
 		keep.from = through

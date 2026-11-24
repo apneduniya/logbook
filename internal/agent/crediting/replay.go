@@ -30,9 +30,10 @@ var ErrNotReproducible = errors.New("can no longer be rebuilt from local data")
 // stored minute's rows (removals aside) must match them on label, project,
 // credit and cuts.
 //
-// Claude Code active time is not replayed: it feeds only flags, as does the
-// time zone (tz, UTC when nil). compute is the engine (struggle.Compute
-// when nil).
+// The input is built by pkg/replay, as for the live run and the server's
+// re-check. Claude Code active time is not replayed: it feeds only flags,
+// as does the time zone (tz, UTC when nil). compute is the engine
+// (struggle.Compute when nil).
 func ReplayMinute(ctx context.Context, log LogReader, m time.Time, key localdb.Key,
 	compute func(struggle.Input) struggle.Result, tz *time.Location) ([]localdb.CreditedMinute, error) {
 	if compute == nil {
@@ -66,8 +67,12 @@ func ReplayMinute(ctx context.Context, log LogReader, m time.Time, key localdb.K
 	if err != nil {
 		return nil, fmt.Errorf("reading the log to replay %s: %w", m.UTC().Format(time.RFC3339), err)
 	}
+	in, err := engineInput(key, ev, nil, repos, tz)
+	if err != nil {
+		return nil, err
+	}
 	var out []localdb.CreditedMinute
-	for _, row := range minuteRows(s, compute(engineInput(s, ev, nil, repos, tz))) {
+	for _, row := range minuteRows(s, compute(in)) {
 		if row.Minute.Equal(m.UTC()) {
 			out = append(out, row)
 		}
