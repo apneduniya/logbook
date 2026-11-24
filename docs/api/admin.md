@@ -21,9 +21,9 @@ These match Hackatime at `43bde10` (`config/routes.rb` lines 287–302, `app/con
 | `GET /api/admin/v1/user/info_batch?ids=1,2,3` | Comma list, at most 2,000; `{"users": [...]}` |
 | `GET /api/admin/v1/user/heartbeats?id=&limit=&offset=&…` | Hackatime's filters, `limit` 1–5,000 (default 1,000), `include_ai`, and its paging fields including `total_count` and `has_more` |
 | `GET /api/admin/v1/user/projects?id=&start_date=&end_date=` | Hackatime's shape; `logbook` adds credited seconds per project |
-| `GET /api/admin/v1/user/trust_logs?id=` | Every trust level we have read for the user from Hackatime (a history table kept from step 5 on), in Hackatime's shape |
+| `GET /api/admin/v1/user/trust_logs?id=` | The newest 25 trust levels we have read for the user from Hackatime (a history table kept from step 5 on), newest first, in Hackatime's shape |
 | `POST /api/admin/v1/user/get_user_by_email` | `email` |
-| `POST /api/admin/v1/user/search_fuzzy` | `query`, at most 10 results, by username and display name |
+| `POST /api/admin/v1/user/search_fuzzy` | `query`, at most 10 results, ranked as Hackatime ranks them, over `public_id`, email, username and display name. GitHub username isn't stored, so it isn't searched (exception) |
 
 Not provided (they have no meaning for us, or need data we don't keep): `user/heartbeat_values`, `get_users_by_ip`, `get_users_by_machine`, `user/stats` (use the program API), `user/convict` and other writes, `timeline`, `heartbeats/by_user_agent_segment`. A tool that needs one gets `404` and we document the patch.
 

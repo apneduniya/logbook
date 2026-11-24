@@ -67,14 +67,14 @@ RFC 7009. Always `200`.
 
 Bearer token from OAuth, or none where marked public.
 
-**User ids.** Hackatime ids are integers, and typed clients (including our own Hackatime client) decode `id` as one. Every user gets a numeric `public_id` (a `bigint` identity column, never reused), and every Hackatime-shaped response puts it in `id`. A `{id}` / `{username}` in a path is resolved in this order:
-1. `my` (and `current`, as Hackatime accepts): the user of the bearer token, which needs `read`;
-2. digits only: `public_id`;
+**User ids.** Hackatime ids are integers, and typed clients (including our own Hackatime client) decode `id` as one. Every user gets a numeric `public_id` (a `bigint` identity column, never reused), and every Hackatime-shaped response puts it in `id`. A path identifier is resolved as Hackatime does at `43bde10` (`StatsController#set_user`, `User.lookup_by_identifier`):
+1. on the stats-controller endpoints, `my` is the user of the bearer token (which needs `read`); no other alias;
+2. digits only: `public_id`, and if no user has it, a username equal to those digits;
 3. otherwise a username (case-insensitive).
 
-Slack ids and HCA ids aren't accepted in V1 (HCA doesn't give us the Slack id); Crossroads, which looks users up by Slack id, needs a small patch.
+Compatibility exceptions, documented and covered by tests: Slack ids and HCA ids aren't accepted in V1 (HCA doesn't give us the Slack id), so Crossroads, which looks users up by Slack id, needs a small patch. `my` is reserved and can't be a username.
 
-**Trust.** `trust_level` and `trust_value` follow Hackatime's enum (`blue` 0, `red` 1, `green` 2, `yellow` 3). Responses to programs are masked as Hackatime masks them publicly (`yellow` reads as `blue`). A user with no Hackatime link reads as `blue`, Hackatime's level for an account nobody has judged. The unmasked level is used only inside Logbook (ADR 0020, the admin API).
+**Trust.** `trust_level` and `trust_value` follow Hackatime's enum (`blue` 0, `red` 1, `green` 2, `yellow` 3). Responses to programs are masked as Hackatime masks them publicly (`yellow` reads as `blue`). A user with no Hackatime link, or a link whose level we couldn't read (`unknown`, after a rejected token), reads as `blue`, Hackatime's level for an account nobody has judged; `red` stays `red` once seen. Responses add `logbook.trust_verified` (false for those two cases). The unmasked level is used only inside Logbook (ADR 0020, the admin API).
 
 | Call | Scope | Notes |
 |---|---|---|

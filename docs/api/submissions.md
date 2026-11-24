@@ -113,7 +113,7 @@ Auth: none (the token is the credential). `Cache-Control: no-store`, `Referrer-P
   "packet": {
     "rules_version": "1",
     "counted_seconds": 44640,
-    "trust": {"at_submission": "green", "now": "green", "hackatime_linked": true},
+    "trust": {"at_submission": "green", "now": "green", "checked_at": "…", "hackatime_linked": true},
     "raw_seconds": 61200,
     "raw_ai_seconds": 9000,
     "one_third_rule_seconds": 55200,
@@ -132,7 +132,7 @@ Auth: none (the token is the credential). `Cache-Control: no-store`, `Referrer-P
 }
 ```
 - `strip`: one character per minute of the UTC day: `y` counted, `a` AI ran alone, `c` cut (counted label but 0 credit), `i` idle or nothing, `u` counted but unbacked, `m` mismatch.
-- `counted_seconds` and everything derived from it use the frozen **capped** seconds (ADR 0020). `trust` levels are masked as Hackatime masks them publicly (`yellow` shows as `blue`).
+- `counted_seconds` and everything derived from it use the frozen **capped** seconds (ADR 0020). `trust` levels are masked as Hackatime masks them publicly (`yellow` and `unknown` show as `blue`). `trust.now` and `checked_at` are read when the response is made; the stored packet has only `at_submission`.
 - `justification` is built when the response is made (it contains the link); it isn't stored.
 - `one_third_rule_seconds` = `raw_seconds − raw_ai_seconds + raw_ai_seconds / 3`, rounded down. `raw_*` come from heartbeats for the same project and days, the same way `/api/v1/me/summary` counts time at the keyboard.
 - `made_of` splits `counted_seconds` by the revealed rows of each counted minute: `editing` (a human heartbeat for the project), else `with_ai` (a prompt, a permission answer, or a turn of the person's AI session), else `other`. Unbacked minutes go to `other`.
@@ -166,8 +166,8 @@ Auth: session + CSRF; the caller must be a member of the submission's program (A
 
 For each part:
 1. Load the stored `evidence_days` of the part's device. Every block in the part must match one, by day; verify its proof against `content_hash` (ADR 0019).
-2. Decode the opened lines with `pkg/evidence`. Reject the part if a line doesn't decode, a line's minute doesn't match its bucket key, or sequence numbers don't increase within a bucket.
-3. Group the part's minutes by key. A minute is `unbacked` unless every block whose signed time span overlaps its window `[T − 120 min, T)` and whose range starts at or below `H` proves completeness for that window, and the repo bucket of `H`'s block is opened. For each key, build the engine input with `pkg/replay` from those rows and run `pkg/struggle` at the minute's recorded rules version. Compare label, project, credit and cuts with the frozen rows.
+2. Decode the opened lines with `pkg/evidence`. Reject the part if a line doesn't decode, its `seq` is outside the block's `(seq_from, seq_to]`, a repo row is outside the repo bucket (key `0`) or another row isn't in the minute bucket of its time, or sequence numbers don't increase within a bucket.
+3. Group the part's minutes by key. A minute is `unbacked` unless every block whose signed time span overlaps its window `[T − 120 min, T)` and whose `seq_from` is below `H` proves completeness for that window, and the repo bucket of `H`'s block is opened. For each key, build the engine input with `pkg/replay` from those rows and run `pkg/struggle` at the minute's recorded rules version. Compare label, project, credit and cuts with the frozen rows.
 4. Mark each frozen row `verified` or `mismatch`; rows of devices with no part stay `unbacked`.
 
 Then build the packet and set `ready`. A part that fails step 1 or 2 sets the submission to `failed` with the reason. The job is idempotent: re-running it gives the same packet.
@@ -177,5 +177,6 @@ Then build the packet and set `ready`. A part that fails step 1 or 2 sets the su
 - `submissions`: id, user, project, range, program, status, token hash and encrypted token, trust level at submission, packet (`jsonb`, no link in it), counts, created and decided times.
 - `submission_minutes`: the frozen device rows, with `result` (`verified`, `mismatch`, `unbacked`) and the server's result on mismatch.
 - `submission_capped`: the frozen capped seconds per minute for the project.
+- `submission_cap_inputs`: every credited row of the user (any project, any device) for the submitted minutes, frozen, so the cap can be recomputed offline.
 - `submission_parts`: device, gzip bundle (`bytea`), uploaded time, raw rows deleted time.
 - `submission_decisions`: every decision, newest wins.

@@ -29,7 +29,7 @@ A submission is one project, one UTC date range of whole days, and optionally on
 `logbook submit <project> --from D1 --to D2 [--program <slug>]`:
 1. Asks the server for the minute rows it holds for the range (`GET /api/v1/me/submissions/plan`), with each row's device and key `(T, H)`.
 2. For each of this device's minutes, takes the window its run read, minutes `[T − 120 min, T)` (the 60-minute window and its 60 minutes of context; the run's data ends at `T`), and merges the windows into ranges.
-3. Builds one proof (ADR 0019) per sealed block that matters: it opens every minute bucket in those ranges with their edges (completeness), for each block whose signed time span overlaps a range and whose range starts at or below the largest `H`, and the repo bucket of each block holding some minute's `H`. If a bucket it must open has lost rows to pruning, the minutes that need it are sent without evidence and show as unbacked.
+3. Builds one proof (ADR 0019) per sealed block that matters: it opens every minute bucket in those ranges with their edges (completeness), for each block whose signed time span overlaps a range and whose `seq_from` is below the largest `H`, and the repo bucket of each block holding some minute's `H`. If a bucket it must open has lost rows to pruning, the minutes that need it are sent without evidence and show as unbacked.
 4. Prints what will be uploaded, then asks for confirmation (`--yes` skips it):
    - minutes, days and blocks included;
    - how many rows from **other projects** are inside the replay windows (their file names and AI session metadata are revealed too, because the engine needs them to split a minute), listed by project name, and the repo folders in the opened repo buckets;
@@ -43,7 +43,7 @@ Minutes from other devices are part of the submission but have no evidence until
 
 A River job verifies each bundle part, then builds the review packet:
 1. **Blocks:** every proof's root equals the stored `content_hash` for that device and day, whose signature and chain were checked when it was uploaded. Every block that must show completeness for a minute's window (by its signed time span) does; otherwise that minute is unbacked.
-2. **Minutes:** for each distinct key `(T, H)`, it runs `pkg/struggle` with the rules version the minute recorded, over the opened rows with `seq ≤ H` in the window ending at `T` and the repo rows with `seq ≤ H` from the repo bucket of `H`'s block, and compares label, project, credit and cuts with the frozen rows (flags are advisory, as in ADR 0017). Minutes sharing a key are replayed in one run, so 100 hours take seconds.
+2. **Minutes:** for each distinct key `(T, H)`, it runs `pkg/struggle` with the rules version the minute recorded, over the opened rows with `seq ≤ H` in the window ending at `T` and the repo rows with `seq ≤ H` from the repo bucket of `H`'s block (reduced to the highest `seq` per path), and compares label, project, credit and cuts with the frozen rows (flags are advisory, as in ADR 0017). Minutes sharing a key are replayed in one run, so 100 hours take seconds.
 3. The code that turns evidence rows into engine input moves from `internal/agent/crediting` to a new package, `pkg/replay`. The agent's own replay and the server use the same function, so they can't drift.
 
 Each minute ends up `verified`, `mismatch` (with the server's result next to the device's), or `unbacked` (no evidence part yet, or its block was never sealed). The packet counts each.
@@ -74,12 +74,12 @@ The packet never shows other projects, file paths outside the project, or anythi
 
 - A member of the submission's program (ADR 0021) can **approve**, **adjust** (approved hours, which can only be lower than counted, plus a reason) or **reject** (a reason). The latest decision is shown on the packet with who and when. Every decision goes into `audit_log`.
 - The submitter can never decide on their own submission.
-- The review page shows the submitter's Hackatime trust level (masked as Hackatime masks it publicly) at submission and now. Approving or adjusting a submission whose submitter is banned now is refused (`409`); rejecting is allowed.
+- The review page shows the submitter's Hackatime trust level (masked as Hackatime masks it publicly) at submission, stored, and now, read when the page is served, with when it was last checked. Recording a decision first refreshes the trust level if it's more than 24 hours old (the last known level decides if Hackatime can't be reached; `red` is sticky, as `TrustRefresher` already keeps it). Approving or adjusting while the submitter is banned is refused (`409`); rejecting is allowed.
 - A submission with no program has no decisions. Its link is evidence only.
 
 ### Checking it without us
 
-`logbook verify <bundle>` (a subcommand of the agent binary, using only `pkg/` code) takes the verification bundle that the admin API exports (ADR 0022): the parts as uploaded, the signed evidence records, the devices' public keys and the frozen minutes. It checks the signatures and chain, every proof and every replay offline, and prints the same counts as the packet. An outside auditor doesn't have to trust our server.
+`logbook verify <bundle>` (a subcommand of the agent binary, using only `pkg/` code) takes the verification bundle that the admin API exports (ADR 0022): the parts as uploaded, the signed evidence records, the devices' public keys, the frozen minutes, and the cap inputs: every credited row, of every project and device of the user, for each submitted minute. It checks the signatures and chain, every proof and every replay, recomputes the cap, and prints the same counts as the packet. An outside auditor doesn't have to trust our server. The submission therefore freezes the cap inputs too, not just the capped result.
 
 ### Retention
 
