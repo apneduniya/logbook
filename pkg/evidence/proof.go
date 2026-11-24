@@ -175,7 +175,9 @@ func VerifyProof(p Proof, d Day) (Verified, error) {
 	if err != nil {
 		return Verified{}, fmt.Errorf("%w: %w", ErrInvalidProof, err)
 	}
-	if p.Buckets < 1 || p.Buckets != d.Buckets {
+	// One leaf per minute fits in 2^32 for 8,000 years; the bound keeps the
+	// tree arithmetic far from overflow.
+	if p.Buckets < 1 || int64(p.Buckets) > 1<<32 || p.Buckets != d.Buckets {
 		return Verified{}, fmt.Errorf("%w: %d buckets, the record has %d", ErrInvalidProof, p.Buckets, d.Buckets)
 	}
 	leaves := make(map[int]Hash, len(p.Opened)+len(p.Edges))
