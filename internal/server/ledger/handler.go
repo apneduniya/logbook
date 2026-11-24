@@ -65,6 +65,10 @@ func (h *Handler) put(w http.ResponseWriter, r *http.Request) error {
 
 func mapError(err error) error {
 	switch {
+	case errors.Is(err, ErrOutdatedAgent):
+		return httpapi.Errorf(http.StatusBadRequest, err, "%s", ErrOutdatedAgent.Error())
+	case errors.Is(err, ErrSeqMismatch):
+		return httpapi.Errorf(http.StatusConflict, err, "%s", ErrSeqMismatch.Error())
 	case errors.Is(err, ErrInvalid):
 		return httpapi.Errorf(http.StatusBadRequest, err, "%s", strings.TrimPrefix(err.Error(), ErrInvalid.Error()+": "))
 	case errors.Is(err, ErrConflict):

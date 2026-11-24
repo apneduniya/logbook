@@ -337,8 +337,78 @@ func (q *Queries) DeviceTouch(ctx context.Context, arg DeviceTouchParams) error 
 	return err
 }
 
+const evidenceDayAfter = `-- name: EvidenceDayAfter :one
+SELECT device_id, day, prev_chain_hash, content_hash, chain_hash, signature, rules_version, event_counts, created_at, seq_from, seq_to, buckets, time_from, time_to FROM evidence_days
+WHERE device_id = $1 AND day > $2
+ORDER BY day LIMIT 1
+`
+
+type EvidenceDayAfterParams struct {
+	DeviceID uuid.UUID
+	Day      pgtype.Date
+}
+
+// The device's earliest stored day after day: a new record for day must be
+// the link it continues.
+func (q *Queries) EvidenceDayAfter(ctx context.Context, arg EvidenceDayAfterParams) (EvidenceDay, error) {
+	row := q.db.QueryRow(ctx, evidenceDayAfter, arg.DeviceID, arg.Day)
+	var i EvidenceDay
+	err := row.Scan(
+		&i.DeviceID,
+		&i.Day,
+		&i.PrevChainHash,
+		&i.ContentHash,
+		&i.ChainHash,
+		&i.Signature,
+		&i.RulesVersion,
+		&i.EventCounts,
+		&i.CreatedAt,
+		&i.SeqFrom,
+		&i.SeqTo,
+		&i.Buckets,
+		&i.TimeFrom,
+		&i.TimeTo,
+	)
+	return i, err
+}
+
+const evidenceDayBefore = `-- name: EvidenceDayBefore :one
+SELECT device_id, day, prev_chain_hash, content_hash, chain_hash, signature, rules_version, event_counts, created_at, seq_from, seq_to, buckets, time_from, time_to FROM evidence_days
+WHERE device_id = $1 AND day < $2
+ORDER BY day DESC LIMIT 1
+`
+
+type EvidenceDayBeforeParams struct {
+	DeviceID uuid.UUID
+	Day      pgtype.Date
+}
+
+// The device's latest stored day before day: the link a new record for day
+// must continue.
+func (q *Queries) EvidenceDayBefore(ctx context.Context, arg EvidenceDayBeforeParams) (EvidenceDay, error) {
+	row := q.db.QueryRow(ctx, evidenceDayBefore, arg.DeviceID, arg.Day)
+	var i EvidenceDay
+	err := row.Scan(
+		&i.DeviceID,
+		&i.Day,
+		&i.PrevChainHash,
+		&i.ContentHash,
+		&i.ChainHash,
+		&i.Signature,
+		&i.RulesVersion,
+		&i.EventCounts,
+		&i.CreatedAt,
+		&i.SeqFrom,
+		&i.SeqTo,
+		&i.Buckets,
+		&i.TimeFrom,
+		&i.TimeTo,
+	)
+	return i, err
+}
+
 const evidenceDayGet = `-- name: EvidenceDayGet :one
-SELECT device_id, day, prev_chain_hash, content_hash, chain_hash, signature, rules_version, event_counts, created_at FROM evidence_days WHERE device_id = $1 AND day = $2
+SELECT device_id, day, prev_chain_hash, content_hash, chain_hash, signature, rules_version, event_counts, created_at, seq_from, seq_to, buckets, time_from, time_to FROM evidence_days WHERE device_id = $1 AND day = $2
 `
 
 type EvidenceDayGetParams struct {
@@ -359,16 +429,24 @@ func (q *Queries) EvidenceDayGet(ctx context.Context, arg EvidenceDayGetParams) 
 		&i.RulesVersion,
 		&i.EventCounts,
 		&i.CreatedAt,
+		&i.SeqFrom,
+		&i.SeqTo,
+		&i.Buckets,
+		&i.TimeFrom,
+		&i.TimeTo,
 	)
 	return i, err
 }
 
 const evidenceDayInsert = `-- name: EvidenceDayInsert :exec
 INSERT INTO evidence_days (
-    device_id, day, prev_chain_hash, content_hash, chain_hash, signature, rules_version, event_counts
+    device_id, day, prev_chain_hash, content_hash, chain_hash, signature, rules_version, event_counts,
+    seq_from, seq_to, buckets, time_from, time_to
 ) VALUES (
     $1, $2, $3, $4,
-    $5, $6, $7, $8
+    $5, $6, $7, $8,
+    $9::bigint, $10::bigint, $11::integer,
+    $12::timestamptz, $13::timestamptz
 )
 `
 
@@ -381,6 +459,11 @@ type EvidenceDayInsertParams struct {
 	Signature     []byte
 	RulesVersion  string
 	EventCounts   []byte
+	SeqFrom       int64
+	SeqTo         int64
+	Buckets       int32
+	TimeFrom      *time.Time
+	TimeTo        *time.Time
 }
 
 func (q *Queries) EvidenceDayInsert(ctx context.Context, arg EvidenceDayInsertParams) error {
@@ -393,41 +476,73 @@ func (q *Queries) EvidenceDayInsert(ctx context.Context, arg EvidenceDayInsertPa
 		arg.Signature,
 		arg.RulesVersion,
 		arg.EventCounts,
+		arg.SeqFrom,
+		arg.SeqTo,
+		arg.Buckets,
+		arg.TimeFrom,
+		arg.TimeTo,
 	)
 	return err
 }
 
-const evidenceDayNeighbours = `-- name: EvidenceDayNeighbours :one
-SELECT
-    coalesce((SELECT e.chain_hash FROM evidence_days e
-              WHERE e.device_id = $1 AND e.day < $2
-              ORDER BY e.day DESC LIMIT 1), '')::text AS before_chain_hash,
-    EXISTS (SELECT 1 FROM evidence_days e
-            WHERE e.device_id = $1 AND e.day > $2) AS has_after,
-    coalesce((SELECT e.prev_chain_hash FROM evidence_days e
-              WHERE e.device_id = $1 AND e.day > $2
-              ORDER BY e.day LIMIT 1), '')::text AS after_prev_chain_hash
+const evidenceDaysOfUserDevice = `-- name: EvidenceDaysOfUserDevice :many
+SELECT e.device_id, e.day, e.prev_chain_hash, e.content_hash, e.chain_hash, e.signature, e.rules_version, e.event_counts, e.created_at, e.seq_from, e.seq_to, e.buckets, e.time_from, e.time_to FROM evidence_days e
+JOIN devices d ON d.id = e.device_id
+WHERE e.device_id = $1
+  AND d.user_id = $2
+  AND e.day BETWEEN $3::date AND $4::date
+ORDER BY e.day
 `
 
-type EvidenceDayNeighboursParams struct {
+type EvidenceDaysOfUserDeviceParams struct {
 	DeviceID uuid.UUID
-	Day      pgtype.Date
+	UserID   uuid.UUID
+	FirstDay pgtype.Date
+	LastDay  pgtype.Date
 }
 
-type EvidenceDayNeighboursRow struct {
-	BeforeChainHash    string
-	HasAfter           bool
-	AfterPrevChainHash string
-}
-
-// The chain hash of the device's latest stored day before day (empty if
-// none), and whether a later day is stored and, if so, the prev_chain_hash
-// of the earliest one.
-func (q *Queries) EvidenceDayNeighbours(ctx context.Context, arg EvidenceDayNeighboursParams) (EvidenceDayNeighboursRow, error) {
-	row := q.db.QueryRow(ctx, evidenceDayNeighbours, arg.DeviceID, arg.Day)
-	var i EvidenceDayNeighboursRow
-	err := row.Scan(&i.BeforeChainHash, &i.HasAfter, &i.AfterPrevChainHash)
-	return i, err
+// The stored evidence days, oldest first, of one of the user's devices
+// between first_day and last_day (inclusive). Empty when the device isn't
+// the user's. The submission re-check (ADR 0020) reads the signed block
+// fields from here.
+func (q *Queries) EvidenceDaysOfUserDevice(ctx context.Context, arg EvidenceDaysOfUserDeviceParams) ([]EvidenceDay, error) {
+	rows, err := q.db.Query(ctx, evidenceDaysOfUserDevice,
+		arg.DeviceID,
+		arg.UserID,
+		arg.FirstDay,
+		arg.LastDay,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []EvidenceDay{}
+	for rows.Next() {
+		var i EvidenceDay
+		if err := rows.Scan(
+			&i.DeviceID,
+			&i.Day,
+			&i.PrevChainHash,
+			&i.ContentHash,
+			&i.ChainHash,
+			&i.Signature,
+			&i.RulesVersion,
+			&i.EventCounts,
+			&i.CreatedAt,
+			&i.SeqFrom,
+			&i.SeqTo,
+			&i.Buckets,
+			&i.TimeFrom,
+			&i.TimeTo,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const evidenceDaysSealed = `-- name: EvidenceDaysSealed :many
