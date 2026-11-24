@@ -27,6 +27,13 @@ type Querier interface {
 	// the backfill has nothing left before the recent segment, next_date and
 	// recent_from move with it.
 	AdvanceHackatimeRecent(ctx context.Context, arg AdvanceHackatimeRecentParams) (int64, error)
+	// Adds a member. 0 rows: already a member.
+	AppMemberInsert(ctx context.Context, arg AppMemberInsertParams) (int64, error)
+	// An app's members, owner first, then reviewers in the order they were added.
+	AppMembers(ctx context.Context, appID uuid.UUID) ([]AppMembersRow, error)
+	AppReviewerCount(ctx context.Context, appID uuid.UUID) (int64, error)
+	// Removes a reviewer. The owner can't be removed. No row: not a reviewer.
+	AppReviewerDelete(ctx context.Context, arg AppReviewerDeleteParams) (uuid.UUID, error)
 	CountActiveAPIKeys(ctx context.Context, userID uuid.UUID) (int64, error)
 	CreateAPIKey(ctx context.Context, arg CreateAPIKeyParams) (ApiKey, error)
 	CreateSession(ctx context.Context, arg CreateSessionParams) error
@@ -133,6 +140,62 @@ type Querier interface {
 	// Serialises ingest batches for one user until the transaction ends.
 	// 1001 namespaces the lock so it can't collide with other advisory locks.
 	LockUserIngest(ctx context.Context, userID uuid.UUID) error
+	// A live app with its owner's username, for client authentication and
+	// the authorize endpoint.
+	OAuthAppByID(ctx context.Context, id uuid.UUID) (OAuthAppByIDRow, error)
+	// Queries for internal/server/oauth: apps and their members, consent
+	// requests, grants, codes and tokens (ADR 0021). Reads of a user's data are
+	// scoped to that user_id; writes to an app are scoped to its owner_id.
+	OAuthAppCountOwned(ctx context.Context, ownerID uuid.UUID) (int64, error)
+	OAuthAppDelete(ctx context.Context, arg OAuthAppDeleteParams) (OauthApp, error)
+	// A live app as one of its members sees it. No row: no such app, deleted,
+	// or the user isn't a member.
+	OAuthAppForMember(ctx context.Context, arg OAuthAppForMemberParams) (OAuthAppForMemberRow, error)
+	// Returns no row when the slug is taken (by any app, deleted ones included).
+	OAuthAppInsert(ctx context.Context, arg OAuthAppInsertParams) (OauthApp, error)
+	// Locks a live app owned by owner_id for the rest of the transaction.
+	OAuthAppLockOwned(ctx context.Context, arg OAuthAppLockOwnedParams) (uuid.UUID, error)
+	// Replaces a confidential app's secret. No row for public apps.
+	OAuthAppSetSecret(ctx context.Context, arg OAuthAppSetSecretParams) (OauthApp, error)
+	OAuthAppUpdate(ctx context.Context, arg OAuthAppUpdateParams) (OauthApp, error)
+	// Live apps the user owns or reviews for, newest first.
+	OAuthAppsForMember(ctx context.Context, userID uuid.UUID) ([]OAuthAppsForMemberRow, error)
+	OAuthCodeForUpdate(ctx context.Context, codeHash []byte) (OauthCode, error)
+	OAuthCodeInsert(ctx context.Context, arg OAuthCodeInsertParams) error
+	OAuthCodeMarkUsed(ctx context.Context, arg OAuthCodeMarkUsedParams) error
+	OAuthCodesBurnForApp(ctx context.Context, arg OAuthCodesBurnForAppParams) error
+	// Marks the user's unused codes for the app as used, so none can be exchanged.
+	OAuthCodesBurnForGrant(ctx context.Context, arg OAuthCodesBurnForGrantParams) error
+	// Tokens that can no longer be used: both halves expired, or revoked.
+	OAuthDeleteDeadTokens(ctx context.Context, before time.Time) (int64, error)
+	OAuthDeleteExpiredCodes(ctx context.Context, expiresAt time.Time) (int64, error)
+	OAuthDeleteExpiredRequests(ctx context.Context, expiresAt time.Time) (int64, error)
+	OAuthGrantActive(ctx context.Context, arg OAuthGrantActiveParams) (OauthGrant, error)
+	OAuthGrantForUpdate(ctx context.Context, arg OAuthGrantForUpdateParams) (OauthGrant, error)
+	OAuthGrantRevoke(ctx context.Context, arg OAuthGrantRevokeParams) (OauthGrant, error)
+	OAuthGrantUpsert(ctx context.Context, arg OAuthGrantUpsertParams) error
+	// The user's active grants to live apps, newest first.
+	OAuthGrantsForUser(ctx context.Context, userID uuid.UUID) ([]OAuthGrantsForUserRow, error)
+	OAuthGrantsRevokeApp(ctx context.Context, arg OAuthGrantsRevokeAppParams) error
+	// Returns an unexpired pending request for user_id, binding it to that user
+	// if nobody has opened it yet. No row: unknown, expired or another user's.
+	OAuthRequestClaim(ctx context.Context, arg OAuthRequestClaimParams) (OauthRequest, error)
+	// Removes and returns a pending request, as OAuthRequestClaim matches it.
+	OAuthRequestConsume(ctx context.Context, arg OAuthRequestConsumeParams) (OauthRequest, error)
+	OAuthRequestInsert(ctx context.Context, arg OAuthRequestInsertParams) error
+	OAuthRequestsDeleteForApp(ctx context.Context, appID uuid.UUID) error
+	// A usable access token: unrevoked, unexpired, of a live app. username and
+	// role are null for client-credentials tokens.
+	OAuthTokenByAccess(ctx context.Context, arg OAuthTokenByAccessParams) (OAuthTokenByAccessRow, error)
+	OAuthTokenByRefreshForUpdate(ctx context.Context, refreshHash []byte) (OauthToken, error)
+	OAuthTokenInsert(ctx context.Context, arg OAuthTokenInsertParams) (uuid.UUID, error)
+	OAuthTokenRevoke(ctx context.Context, arg OAuthTokenRevokeParams) error
+	// Revokes the app's token whose access or refresh token hashes to hash.
+	// No row: unknown, another app's, or already revoked.
+	OAuthTokenRevokeByHash(ctx context.Context, arg OAuthTokenRevokeByHashParams) (OAuthTokenRevokeByHashRow, error)
+	OAuthTokensRevokeApp(ctx context.Context, arg OAuthTokensRevokeAppParams) (int64, error)
+	OAuthTokensRevokeFamily(ctx context.Context, arg OAuthTokensRevokeFamilyParams) (int64, error)
+	OAuthTokensRevokeGrant(ctx context.Context, arg OAuthTokensRevokeGrantParams) (int64, error)
 	ProfileGetByID(ctx context.Context, id uuid.UUID) (ProfileGetByIDRow, error)
 	// Locks the user row until the transaction ends (see ProjectsSettingsGetForUpdate).
 	ProfileGetByIDForUpdate(ctx context.Context, id uuid.UUID) (ProfileGetByIDForUpdateRow, error)
@@ -160,6 +223,7 @@ type Querier interface {
 	ProjectsSettingsList(ctx context.Context, userID uuid.UUID) ([]Project, error)
 	// Partial update: a NULL argument keeps the current (or default) value.
 	ProjectsSettingsUpsert(ctx context.Context, arg ProjectsSettingsUpsertParams) (Project, error)
+	PublicPrograms(ctx context.Context) ([]PublicProgramsRow, error)
 	// Makes the 'you' rows inside the given windows equal to the supplied set in
 	// one round trip: upserts the fresh rows and deletes every other 'you' row in
 	// the windows. Both parts see the same snapshot and touch disjoint rows.
