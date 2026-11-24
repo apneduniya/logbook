@@ -17,10 +17,14 @@
 // minute as final it returns the rows it holds, and the agent adopts them;
 // a final row refused for any other reason is dropped. After each UTC day
 // ends, plus an hour's grace, the agent seals the log rows logged since its
-// previous block: salted minute buckets under a Merkle root (ADR 0019),
-// chained to the previous day and signed with the device key, uploaded to
-// POST /api/v1/devices/{id}/evidence-days. ReplayMinute and ReplayBlock
-// reproduce a minute at its key and a block's rows from the log.
+// previous block: it freezes the block's upper bound and closes the day to
+// minutes in one transaction, hashes the rows as salted minute buckets
+// under a Merkle root (ADR 0019) over as many runs as it needs, keeps the
+// bucket list, chains the record to the previous day, signs it with the
+// device key and uploads it to POST /api/v1/devices/{id}/evidence-days.
+// ReplayMinute and ReplayBlock reproduce a minute at its key and a block's
+// hash from the log; BuildProofs builds the proofs a submission uploads
+// for a set of keys (ADR 0020).
 //
 // It owns: when runs happen and what they read from the log, which minutes
 // are kept, final and uploaded, the evidence chain's progress, and backoff
