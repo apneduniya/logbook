@@ -87,13 +87,12 @@ func basicClient(h string) (Client, bool) {
 	return Client{ID: id, Secret: secret}, true
 }
 
-// limitClient applies the per-client budget, keyed on the client id the
-// request names (or the caller's IP without one). It writes the 429 itself.
+// limitClient applies the per-client budget. The key is the client id the
+// request names plus the caller's network: the id is public, so keying on
+// it alone would let anyone use up a program's budget. It writes the 429
+// itself.
 func (h *Handler) limitClient(w http.ResponseWriter, r *http.Request, clientID string) bool {
-	key := "ip:" + httpapi.LimitKey(httpapi.ClientIP(r, h.trustProxy))
-	if clientID != "" {
-		key = "client:" + truncate(clientID, 64)
-	}
+	key := "client:" + truncate(clientID, 64) + "|" + httpapi.LimitKey(httpapi.ClientIP(r, h.trustProxy))
 	if !h.clientLimiter.Allow(key) {
 		httpapi.WriteTooManyRequests(w, r, h.clientLimiter.RetryAfter(key))
 		return false

@@ -216,6 +216,17 @@ func TestTokenRateLimit(t *testing.T) {
 	if rec := e.post("/oauth/token", form, creds(other)); rec.Code != http.StatusOK {
 		t.Fatalf("another client = %d", rec.Code)
 	}
+	// Someone else naming the same client id from another network doesn't
+	// share (or use up) the program's budget.
+	r := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/oauth/token", strings.NewReader(form.Encode()))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	r.SetBasicAuth(app.ClientID, app.ClientSecret)
+	r.RemoteAddr = "198.51.100.7:4000"
+	rec = httptest.NewRecorder()
+	e.mux.ServeHTTP(rec, r)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("same client from another network = %d", rec.Code)
+	}
 }
 
 func TestOAuthRoutesHaveNoCORS(t *testing.T) {
