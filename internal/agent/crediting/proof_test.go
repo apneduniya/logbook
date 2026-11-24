@@ -343,3 +343,46 @@ func credits(rows []localdb.CreditedMinute) []replay.Credit {
 	}
 	return out
 }
+
+// A key that read a row below a takeover baseline stays unbacked after
+// retention deletes that row: the gap can't be shown to be clear once rows
+// of the window may be gone.
+func TestProofsUnbackedAfterGapPruned(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t, time.Date(2026, 11, 20, 0, 0, 5, 0, time.UTC))
+	// Retention ends at 01:00 on the 20th when pruning runs below.
+	e.dbOptions = []localdb.Option{localdb.WithRetention(24 * time.Hour)}
+	e.open()
+	e.run()
+	before := time.Date(2026, 11, 20, 0, 10, 0, 0, time.UTC)
+	if err := e.db.InsertEvents(ctx, []wire.LocalEvent{{Type: "activity", Activity: &wire.ActivitySample{Time: before, FocusKind: "editor"}}}); err != nil {
+		t.Fatal(err)
+	}
+	// Another account takes over; its chain starts after the 00:10 sample.
+	e.set(time.Date(2026, 11, 20, 1, 0, 5, 0, time.UTC))
+	e.credit(time.Date(2026, 11, 20, 1, 0, 0, 0, time.UTC), "app", 60)
+	e.setKey("key-2")
+	for range 2 {
+		e.advance(2 * time.Second)
+		e.run()
+	}
+	after := time.Date(2026, 11, 20, 3, 0, 0, 0, time.UTC)
+	if err := e.db.InsertEvents(ctx, []wire.LocalEvent{{Type: "activity", Activity: &wire.ActivitySample{Time: after, FocusKind: "editor"}}}); err != nil {
+		t.Fatal(err)
+	}
+	e.set(time.Date(2026, 11, 21, 1, 0, 5, 0, time.UTC))
+	first := untilSealed(t, e, "2026-11-20")
+	reads := replay.Key{T: time.Date(2026, 11, 20, 1, 0, 0, 0, time.UTC), H: first.SeqTo} // reads 00:10
+	later := replay.Key{T: time.Date(2026, 11, 20, 4, 0, 0, 0, time.UTC), H: first.SeqTo}
+
+	if res, err := e.db.Prune(ctx); err != nil || res.ActivitySamples != 1 {
+		t.Fatalf("Prune = %+v, %v; want the 00:10 sample deleted", res, err)
+	}
+	p, err := BuildProofs(ctx, e.db, e.deviceID(), []replay.Key{reads, later})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(p.Unbacked, []replay.Key{reads}) {
+		t.Fatalf("unbacked = %+v; want the key whose window may have lost rows", p.Unbacked)
+	}
+}

@@ -157,7 +157,9 @@ func holds(d evidence.Day, h int64) bool { return d.SeqFrom < h && h <= d.SeqTo 
 // covered reports whether provable blocks can back a run at k: one of them
 // holds k.H and its repo bucket holds the whole mapping, and no row the run
 // read (an engine event of its window with a sequence number at or below
-// k.H) lies outside them.
+// k.H) lies outside them. Outside them means in a gap between blocks (below
+// a takeover baseline, or a block that can't be proven); a gap is known to
+// be clear only when the window starts at or after the deletion floor.
 func covered(ctx context.Context, s *localdb.Snapshot, blocks []*sealedBlock, k replay.Key) (bool, error) {
 	if !slices.ContainsFunc(blocks, func(b *sealedBlock) bool { return b.mapped && holds(b.rec, k.H) }) {
 		return false, nil
@@ -169,6 +171,12 @@ func covered(ctx context.Context, s *localdb.Snapshot, blocks []*sealedBlock, k 
 			break
 		}
 		if b.rec.SeqFrom > from {
+			// Rows of the gap that retention deleted can't be checked for:
+			// every deleted row is older than the floor, so a window
+			// starting before it may have read rows that are gone.
+			if w.From.Before(s.Floor) {
+				return false, nil
+			}
 			ev, err := s.Events(ctx, w.From, w.To, from, b.rec.SeqFrom)
 			if err != nil {
 				return false, err
