@@ -36,7 +36,7 @@ laptop                                     server (Go + Postgres)
 | `internal/server/stats` | Dashboard and program-API aggregates |
 | `internal/server/devices` | Agent device keys: register, list, revoke |
 | `internal/server/credited` | Credited-minute uploads from the agent |
-| `internal/server/ledger` | Signed daily evidence chain per device |
+| `internal/server/ledger` | Signed daily evidence chain per device: checks uploads (signature, chain and seq continuity) and reads stored records for the submission re-check |
 | `internal/server/live` | SSE fan-out |
 | `internal/server/submissions` | Submission upload, the re-check job, review packets, review links and decisions (ADR 0020) |
 | `internal/server/oauth` | OAuth 2 provider: apps, consent requests, codes, tokens, grants (ADR 0021) |
