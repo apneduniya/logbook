@@ -10,14 +10,20 @@ ALTER TABLE evidence_days ADD COLUMN buckets INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE evidence_days ADD COLUMN time_from INTEGER;
 ALTER TABLE evidence_days ADD COLUMN time_to INTEGER;
 
--- Such a block the server hasn't accepted yet can never be sent (the
--- server takes only the new record), so it is dropped and its day sealed
--- again; until then its rows count as unsealed, so retention keeps them.
+-- Such a block the server hasn't accepted can never be sent (the server
+-- takes only the new record), so it is dropped and its day sealed again;
+-- until then its rows count as unsealed, so retention keeps them. That
+-- includes one the server refused (rejected or conflict): the new server
+-- refuses an old record with "update the Logbook agent", and whatever an
+-- older server refused, the block sealed again gets a fresh answer. The
+-- refusal shown in status goes with it, unless a refused day remains.
 -- Pre-release data only.
-DELETE FROM evidence_days WHERE legacy = 0 AND state = 'pending';
+DELETE FROM evidence_days WHERE legacy = 0 AND state <> 'accepted';
 UPDATE kv SET value = (SELECT CAST(COALESCE(MAX(seq_to), 0) AS TEXT) FROM evidence_days
     WHERE legacy = 0 AND device_id = (SELECT value FROM kv WHERE key = 'crediting.device'))
 WHERE key = 'log.sealed';
+UPDATE kv SET value = '' WHERE key IN ('evidence.state', 'evidence.error')
+    AND NOT EXISTS (SELECT 1 FROM evidence_days WHERE state IN ('rejected', 'conflict'));
 
 -- Every sealed block's bucket list (ADR 0019 point 3), one row per leaf in
 -- key order, kept for as long as the chain exists, so hidden buckets can be
