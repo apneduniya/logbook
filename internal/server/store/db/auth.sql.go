@@ -177,7 +177,7 @@ ON CONFLICT (hca_id) DO UPDATE
     SET display_name = EXCLUDED.display_name,
         email        = EXCLUDED.email,
         updated_at   = now()
-RETURNING id, hca_id, username, display_name, email, avatar_url, timezone, profile_public, role, created_at, updated_at
+RETURNING id, hca_id, username, display_name, email, avatar_url, timezone, profile_public, role, created_at, updated_at, public_id
 `
 
 type InsertSignInUserParams struct {
@@ -209,6 +209,7 @@ func (q *Queries) InsertSignInUser(ctx context.Context, arg InsertSignInUserPara
 		&i.Role,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.PublicID,
 	)
 	return i, err
 }
@@ -333,7 +334,7 @@ const updateSignInProfile = `-- name: UpdateSignInProfile :one
 UPDATE users
 SET display_name = $2, email = $3, updated_at = now()
 WHERE id = $1
-RETURNING id, hca_id, username, display_name, email, avatar_url, timezone, profile_public, role, created_at, updated_at
+RETURNING id, hca_id, username, display_name, email, avatar_url, timezone, profile_public, role, created_at, updated_at, public_id
 `
 
 type UpdateSignInProfileParams struct {
@@ -357,6 +358,7 @@ func (q *Queries) UpdateSignInProfile(ctx context.Context, arg UpdateSignInProfi
 		&i.Role,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.PublicID,
 	)
 	return i, err
 }

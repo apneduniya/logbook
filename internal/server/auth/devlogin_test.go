@@ -89,6 +89,7 @@ func TestDevLoginValidation(t *testing.T) {
 		{"too short", `{"username":"o"}`, "application/json", http.StatusBadRequest},
 		{"bad chars", `{"username":"or pheus"}`, "application/json", http.StatusBadRequest},
 		{"bad json", `{`, "application/json", http.StatusBadRequest},
+		{"reserved for the program API", `{"username":"my"}`, "application/json", http.StatusBadRequest},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

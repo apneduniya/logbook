@@ -88,7 +88,7 @@ func (s *Service) upsertUser(ctx context.Context, in signInIdentity) (db.User, e
 		if i >= sequentialUsernameTries {
 			name = in.username + randomDigits(6)
 		}
-		if !usernameRe.MatchString(name) {
+		if !usableUsername(name) {
 			continue
 		}
 		taken, err := s.st.UsernameExists(ctx, name)

@@ -237,6 +237,9 @@ func (h *Handler) devSignIn(w http.ResponseWriter, r *http.Request, username str
 	if !devUsernameRe.MatchString(name) {
 		return signedIn{}, httpapi.Errorf(http.StatusBadRequest, nil, "username must match [a-z0-9_-]{2,32}")
 	}
+	if !usableUsername(name) {
+		return signedIn{}, httpapi.Errorf(http.StatusBadRequest, nil, "username %q is reserved", name)
+	}
 	return h.startSession(w, r, signInIdentity{hcaID: devHCAPrefix + name, username: name, displayName: name}, methodDev)
 }
 
