@@ -69,3 +69,17 @@ CREATE TABLE evidence_baselines (
     device_id TEXT    PRIMARY KEY,
     seq_from  INTEGER NOT NULL
 ) WITHOUT ROWID;
+
+-- Sealing reads a block's rows a time step at a time (ADR 0019 point 4):
+-- the time indexes carry seq, so a step checks the block's sequence range
+-- inside the index instead of walking the whole range in every step.
+DROP INDEX heartbeats_time;
+CREATE INDEX heartbeats_time ON heartbeats (time, seq);
+DROP INDEX ai_events_time;
+CREATE INDEX ai_events_time ON ai_events (time, seq);
+DROP INDEX activity_samples_time;
+CREATE INDEX activity_samples_time ON activity_samples (time, seq);
+DROP INDEX git_events_time;
+CREATE INDEX git_events_time ON git_events (time, seq);
+DROP INDEX active_time_to;
+CREATE INDEX active_time_to ON active_time (to_ms, seq);

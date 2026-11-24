@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -274,4 +275,67 @@ func TestMinuteRows(t *testing.T) {
 		}
 		return nil
 	})
+}
+
+// Sealing reads a block one time step at a time, so each step must walk a
+// time index over that step, not the block's whole sequence range: a block
+// can hold months of rows, and walking it in every step makes sealing
+// quadratic in its size. The next-minute probe must also stay inside the
+// index (seq is checked there).
+func TestSealingStepsWalkTimeIndexes(t *testing.T) {
+	d, _ := openTest(t)
+	ctx := context.Background()
+	timeIndex := map[string]string{
+		"heartbeats": "heartbeats_time", "ai_events": "ai_events_time", "activity_samples": "activity_samples_time",
+		"git_events": "git_events_time", "active_time": "active_time_to",
+	}
+	plan := func(q string, args ...any) []string {
+		t.Helper()
+		rows, err := d.sql.QueryContext(ctx, "EXPLAIN QUERY PLAN "+q, args...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = rows.Close() }()
+		var out []string
+		for rows.Next() {
+			var id, parent, unused int
+			var detail string
+			if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
+				t.Fatal(err)
+			}
+			if strings.HasPrefix(detail, "SEARCH ") || strings.HasPrefix(detail, "SCAN ") {
+				out = append(out, detail)
+			}
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	for table, q := range map[string]string{
+		"heartbeats": qHeartbeatRowsIn, "ai_events": qAIRowsIn, "activity_samples": qActivityRowsIn,
+		"git_events": qGitRowsIn, "active_time": qActiveRowsIn,
+	} {
+		p := plan(q, 1, 2, 3, 4)
+		if len(p) != 1 || !strings.Contains(p[0], "USING INDEX "+timeIndex[table]+" ") {
+			t.Errorf("%s step read plan = %q, want the %s index", table, p, timeIndex[table])
+		}
+	}
+	p := plan(qNextRowTime, 1, 2, 3)
+	var walks []string
+	for _, step := range p {
+		if strings.Contains(step, "subquery") {
+			continue
+		}
+		walks = append(walks, step)
+	}
+	if len(walks) != len(timeIndex) {
+		t.Fatalf("next-minute plan = %q, want one walk per table", p)
+	}
+	for _, w := range walks {
+		table := strings.Fields(w)[1]
+		if !strings.Contains(w, "USING COVERING INDEX "+timeIndex[table]+" ") {
+			t.Errorf("next-minute plan for %s = %q, want the covering %s index", table, w, timeIndex[table])
+		}
+	}
 }
