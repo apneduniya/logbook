@@ -82,8 +82,8 @@ func ReplayMinute(ctx context.Context, log LogReader, m time.Time, key localdb.K
 
 // ReplayBlock rebuilds the rows a sealed evidence block covers: every
 // logged row with a sequence number in [e.SeqFrom, e.SeqTo]. Rows are never
-// updated, so hashing the result (evidence.ContentHash) gives the sealed
-// content hash. It returns ErrNotReproducible when local data no longer
+// updated, so hashing the result with the block's bucket salts
+// (evidence.HashBlock) gives the sealed content hash. It returns ErrNotReproducible when local data no longer
 // holds the block (rows deleted since, checked against the sealed counts)
 // or the day was sealed before the event log (legacy).
 func ReplayBlock(ctx context.Context, log LogReader, e localdb.EvidenceDay) ([]evidence.Row, error) {

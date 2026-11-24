@@ -25,9 +25,9 @@ laptop                                     server (Go + Postgres)
 | `cmd/logbook` | Agent daemon and CLI (`logbook login`, `status`, `submit`, ...) |
 | `pkg/wire` | Wire types shared by server and agent (heartbeats, minute batches, evidence) |
 | `pkg/struggle` | Pure rules engine: events in, labelled minutes and cuts out |
-| `pkg/evidence` | Canonical encoding of the agent's logged rows (hashed whole or in resumable chunks), hash chain, ed25519 signing and verification |
+| `pkg/evidence` | Canonical encoding of the agent's logged rows, salted minute buckets under a Merkle root (resumable hasher), proofs that reveal some buckets and the completeness of minute ranges, hash chain, ed25519 signing and verification |
 | `pkg/projectname` | Project name normalisation shared by heartbeat ingest and credited minutes |
-| `pkg/replay` | Turns evidence rows and a computation key into engine input; shared by the agent's replay and the server's submission re-check (ADR 0020) |
+| `pkg/replay` | Turns evidence rows and a computation key into engine input, and says what a replay compares; shared by the agent's live runs and replays and the server's submission re-check (ADR 0020) |
 | `internal/server/config` | Typed env config |
 | `internal/server/store` | sqlc-generated queries and transaction helpers |
 | `internal/server/auth` | HCA sign-in, sessions, API keys, CSRF |

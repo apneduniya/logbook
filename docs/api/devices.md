@@ -105,7 +105,7 @@ The agent replaces its rows for the minute with exactly the `stored` rows and tr
 
 ## `POST /api/v1/devices/{id}/evidence-days`
 
-Auth: API key. Uploads one link of the device's evidence chain (ADR 0010; formats in `pkg/evidence`).
+Auth: API key. Uploads one link of the device's evidence chain (ADR 0010, ADR 0017, ADR 0019; formats in `pkg/evidence`).
 
 ```json
 {
@@ -115,11 +115,18 @@ Auth: API key. Uploads one link of the device's evidence chain (ADR 0010; format
   "chain_hash": "<64 hex>",
   "signature": "<standard base64 of the 64-byte ed25519 signature over the chain hash>",
   "rules_version": "v1",
-  "event_counts": { "activity": 9120, "heartbeat": 640, "ai": 75 }
+  "event_counts": { "activity": 9120, "heartbeat": 640, "ai": 75 },
+  "seq_from": 48210,
+  "seq_to": 58075,
+  "buckets": 612,
+  "time_from": "2026-11-19T07:58:00Z",
+  "time_to": "2026-11-19T22:41:00Z"
 }
 ```
 
-- The record for `day` covers the device's logged rows from where its previous record ended up to the log's high-water mark when the agent sealed it (ADR 0017): a block can hold events of any time, and every row is sealed exactly once. `content_hash` is `evidence.ContentHash` of those rows; `event_counts` counts them by type (`activity`, `active_time`, `ai`, `git`, `heartbeat`, `repo`).
+- The record for `day` covers exactly the device's logged rows with `seq_from < seq ≤ seq_to` (`seq_to > seq_from ≥ 0`). A device's first record has `seq_from` 0 (or, for a device that replaced another, the log's high-water mark at the takeover); every later one starts where the previous one ended. A block can hold events of any time, and every row is sealed exactly once.
+- The rows are grouped into salted buckets: one repo bucket (always there, possibly empty) and one bucket per UTC minute with other rows. `content_hash` is the Merkle root over them (`evidence.Hasher`, ADR 0019 point 1); `buckets` is the bucket count (at least 1); `time_from` and `time_to` are the first and last minute bucket's minute, whole UTC minutes, both `null` when the block has only its repo bucket (then `buckets` is 1). `event_counts` counts the rows by type (`activity`, `active_time`, `ai`, `git`, `heartbeat`, `repo`).
+- `chain_hash` is `evidence.ChainHash` of every field above but `event_counts`, in the byte encoding `pkg/evidence` pins (domain `logbook-evidence-v2`). A record without the block fields comes from an agent older than v0.2.0 and is refused (`400`, "update the agent").
 - Hex is lowercase. `day` is a UTC date, not after today and not before the UTC day the device was registered (`400` otherwise).
 - `rules_version` must be one the server knows (currently only `v1`), as for minutes, because step 5 re-runs the engine at that version (`400` otherwise).
 - `event_counts` has at most 32 keys matching `[a-z][a-z0-9_.]{0,63}`, with counts from 0 to 10^9.
@@ -128,7 +135,7 @@ Auth: API key. Uploads one link of the device's evidence chain (ADR 0010; format
 |---|---|
 | `201` `{"day": "..."}` | Stored. |
 | `200` `{"day": "..."}` | An identical record (every field, including the signature and counts) is already stored. |
-| `400` | A field is malformed, `chain_hash` isn't `evidence.ChainHash` of the fields, or the signature doesn't verify with the device's registered key. |
+| `400` | A field is malformed or the block fields disagree (see above), `chain_hash` isn't `evidence.ChainHash` of the fields, or the signature doesn't verify with the device's registered key. |
 | `409 {"error": "a different record is already stored for this day"}` | A different, validly signed record exists for the day. Nothing is changed, and the conflict is written to the audit log as `evidence_conflict` with both versions' hashes. |
 | `409 {"error": "chain mismatch"}` | `prev_chain_hash` isn't the `chain_hash` of the device's latest stored day before `day` (or `""` when there is none), or a later day is already stored, so this day can't be inserted before it. |
 
