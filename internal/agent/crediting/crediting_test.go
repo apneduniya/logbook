@@ -531,7 +531,8 @@ func (e *env) replayHash(d localdb.EvidenceDay) string {
 	return rehash(e.t, rows)
 }
 
-// rehash hashes a block's rows with the zero salts tests seal with.
+// rehash hashes a block's rows in one go with the zero salts tests seal
+// with: what a reviewer holding every row computes.
 func rehash(t testing.TB, rows []evidence.Row) string {
 	t.Helper()
 	blk, _, err := evidence.HashBlock(rows, zeroSalts{})
@@ -539,6 +540,15 @@ func rehash(t testing.TB, rows []evidence.Row) string {
 		t.Fatal(err)
 	}
 	return blk.ContentHash
+}
+
+// zeroSalts gives every evidence bucket a zero salt, so a test can re-hash
+// a sealed block on its own.
+type zeroSalts struct{}
+
+func (zeroSalts) Read(p []byte) (int, error) {
+	clear(p)
+	return len(p), nil
 }
 
 // Each day's block seals the log rows logged since the previous block,

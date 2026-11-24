@@ -400,7 +400,8 @@ func (f *fakeServer) handleDay(w http.ResponseWriter, r *http.Request, id string
 			latest, want = day, s.ChainHash
 		}
 	}
-	if d.PrevChainHash != want {
+	// Each block starts where the previous one ended (ADR 0019 point 2).
+	if d.PrevChainHash != want || latest != "" && d.SeqFrom != days[latest].SeqTo {
 		writeErr(w, http.StatusConflict, "chain mismatch")
 		return
 	}

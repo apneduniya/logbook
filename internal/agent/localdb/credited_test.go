@@ -348,48 +348,6 @@ func TestDroppedMinutes(t *testing.T) {
 	}
 }
 
-func TestEvidenceDays(t *testing.T) {
-	ctx := context.Background()
-	d, _ := openTest(t)
-	const dev = "0b7c2f1e-3a4d-4e5f-8a9b-0c1d2e3f4a5b"
-	if _, ok, err := d.LastEvidenceDay(ctx, dev); ok || err != nil {
-		t.Fatalf("LastEvidenceDay(empty) = %v, %v", ok, err)
-	}
-	e := EvidenceDay{DeviceID: dev, Day: "2026-11-18", ContentHash: "c", ChainHash: "h", Signature: []byte{1, 2},
-		RulesVersion: "v1", EventCounts: map[string]int{"ai": 3}, SeqFrom: 1, SeqTo: 40, State: EvidencePending}
-	if err := d.InsertEvidenceDay(ctx, e); err != nil {
-		t.Fatal(err)
-	}
-	if n, _ := d.Counter(ctx, KeySealed); n != 40 {
-		t.Fatalf("sealed = %d, want 40", n)
-	}
-	if err := d.InsertEvidenceDay(ctx, e); err == nil {
-		t.Fatal("second insert for the same day succeeded")
-	}
-	e2 := e
-	e2.Day, e2.PrevChainHash, e2.SeqFrom, e2.SeqTo = "2026-11-19", "h", 41, 52
-	if err := d.InsertEvidenceDay(ctx, e2); err != nil {
-		t.Fatal(err)
-	}
-	if err := d.SetEvidenceState(ctx, dev, "2026-11-19", EvidenceAccepted, "", KV{"evidence.last_day", "2026-11-19"}); err != nil {
-		t.Fatal(err)
-	}
-	got, ok, err := d.LastEvidenceDay(ctx, dev)
-	if err != nil || !ok || got.Day != "2026-11-19" || got.State != EvidenceAccepted || got.SeqFrom != 41 || got.SeqTo != 52 ||
-		got.Legacy || got.EventCounts["ai"] != 3 || string(got.Signature) != "\x01\x02" {
-		t.Fatalf("LastEvidenceDay = %+v, %v, %v", got, ok, err)
-	}
-	if v, _ := d.Get(ctx, "evidence.last_day"); v != "2026-11-19" {
-		t.Fatalf("mark = %q", v)
-	}
-	if got, ok, _ := d.EvidenceDayOf(ctx, dev, "2026-11-18"); !ok || got.SeqTo != 40 {
-		t.Fatalf("EvidenceDayOf = %+v, %v", got, ok)
-	}
-	if err := d.SetEvidenceState(ctx, dev, "2026-01-01", EvidenceAccepted, ""); err == nil {
-		t.Fatal("updating a missing day succeeded")
-	}
-}
-
 func TestPruneCrediting(t *testing.T) {
 	ctx := context.Background()
 	d, _ := openTest(t)

@@ -158,7 +158,7 @@ func TestMigration0007(t *testing.T) {
 		t.Fatalf("old watermark kept: %q", v)
 	}
 	e, ok, err := d.LastEvidenceDay(ctx, "dev")
-	if err != nil || !ok || !e.Legacy || e.SeqTo != 0 {
+	if err != nil || !ok || !e.Legacy || e.SeqTo != 0 || e.Buckets != 0 || e.Provable() {
 		t.Fatalf("legacy day = %+v, %v, %v", e, ok, err)
 	}
 	if n, _ := d.Counter(ctx, KeySealed); n != 0 {
@@ -170,5 +170,31 @@ func TestMigration0007(t *testing.T) {
 	}
 	if h := high(ctx, t, d); h != 8 {
 		t.Fatalf("next row took %d, want 8", h)
+	}
+}
+
+// Migration 0008 keeps accepted blocks (not provable: no bucket list) and
+// drops a block sealed before it that the server hasn't accepted, which
+// can never be sent: its rows count as unsealed again.
+func TestMigration0008(t *testing.T) {
+	ctx := context.Background()
+	day := func(d, state string, from, to int) string {
+		return fmt.Sprintf(`INSERT INTO evidence_days (device_id, day, prev_chain_hash, content_hash, chain_hash, signature,
+			rules_version, event_counts, seq_from, seq_to, state, created_at, updated_at)
+			VALUES ('dev', '%s', '', 'c', 'h', x'01', 'v1', '{}', %d, %d, '%s', 0, 0)`, d, from, to, state)
+	}
+	d := openAt(t, 7,
+		day("2026-11-18", EvidenceAccepted, 1, 10),
+		day("2026-11-19", EvidencePending, 11, 20),
+		"INSERT INTO kv (key, value, updated_at) VALUES ('crediting.device', 'dev', 0), ('log.sealed', '20', 0)")
+	last, ok, err := d.LastEvidenceDay(ctx, "dev")
+	if err != nil || !ok || last.Day != "2026-11-18" || last.Provable() || last.Buckets != 0 || last.TimeFrom != nil {
+		t.Fatalf("last day after migrating = %+v, %v, %v", last, ok, err)
+	}
+	if n, _ := d.Counter(ctx, KeySealed); n != 10 {
+		t.Fatalf("sealed = %d, want 10", n)
+	}
+	if _, ok, _ := d.Sealing(ctx); ok {
+		t.Fatal("a block is being sealed after migrating")
 	}
 }

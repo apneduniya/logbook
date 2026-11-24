@@ -68,6 +68,10 @@ const (
 	// keyEvidenceCursor is "<device id> <day>": every day up to and
 	// including <day> has been sealed or found empty for that device.
 	keyEvidenceCursor = "evidence.cursor"
+	// keyEvidenceSealing is the day whose block is being sealed: its bound
+	// is frozen and it is closed to minutes, but not all of it is hashed
+	// yet ("" when none).
+	keyEvidenceSealing = "evidence.sealing"
 )
 
 // Status is what the status page and `logbook status` show about crediting.
@@ -151,6 +155,10 @@ type EvidenceStatus struct {
 	// LocalError is the last local failure sealing a day (reading the
 	// database, hashing); sealing is retried every run.
 	LocalError string `json:"local_error,omitempty"`
+	// Sealing is the UTC day being sealed: no minute of it is computed any
+	// more, and its block is being hashed, over several runs if it is
+	// large ("" when none).
+	Sealing string `json:"sealing,omitempty"`
 }
 
 // StateReader reads persisted key-value state. *localdb.DB satisfies it.
@@ -212,6 +220,7 @@ func LoadStatus(ctx context.Context, r StateReader) (Status, error) {
 			State: ev[keyEvidenceState], Error: ev[keyEvidenceError]}
 	}
 	s.Evidence.LocalError = ev[keyEvidenceLocal]
+	s.Evidence.Sealing = ev[keyEvidenceSealing]
 	return s, nil
 }
 

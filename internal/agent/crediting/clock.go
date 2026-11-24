@@ -24,7 +24,9 @@ const MaxClockSkew = 5 * time.Minute
 //     latest sealed (or skipped) day is kept (keySealedThrough), no minute
 //     before it is computed or stored, and while the clock is before it
 //     crediting pauses: no computing, uploading or sealing, until the
-//     clock catches up;
+//     clock catches up. A day counts as sealed from the moment its block's
+//     bound is frozen (reserveDay), before it is hashed: a minute computed
+//     later would have a key past the bound, which its block can't replay;
 //   - a clock set far ahead would seal days that haven't ended (or skip
 //     them as empty), and when it came back the agent would pause until
 //     real time caught up. Event times can't tell: events are stamped by
@@ -67,17 +69,27 @@ func (r *Runner) sealedThrough(ctx context.Context) (time.Time, error) {
 
 // markSealed records that the chain has moved past day.
 func (r *Runner) markSealed(ctx context.Context, day string, more ...localdb.KV) error {
-	cur, err := r.opt.Store.Get(ctx, keySealedThrough)
+	marks, err := r.sealedMarks(ctx, day)
 	if err != nil {
 		return err
 	}
-	if day > cur {
-		more = append(more, localdb.KV{Key: keySealedThrough, Value: day})
-	}
-	if len(more) == 0 {
+	if more = append(more, marks...); len(more) == 0 {
 		return nil
 	}
 	return r.opt.Store.SetMany(ctx, more...)
+}
+
+// sealedMarks returns the mark that moves keySealedThrough to day, none if
+// it is there or past it already: it only grows.
+func (r *Runner) sealedMarks(ctx context.Context, day string) ([]localdb.KV, error) {
+	cur, err := r.opt.Store.Get(ctx, keySealedThrough)
+	if err != nil {
+		return nil, err
+	}
+	if day > cur {
+		return []localdb.KV{{Key: keySealedThrough, Value: day}}, nil
+	}
+	return nil, nil
 }
 
 // checkClock reports whether crediting may run at now: not while now is

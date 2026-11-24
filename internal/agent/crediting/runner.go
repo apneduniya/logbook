@@ -14,6 +14,7 @@ import (
 	"github.com/apneduniya/logbook/internal/agent/localdb"
 	"github.com/apneduniya/logbook/internal/agent/serverapi"
 	"github.com/apneduniya/logbook/internal/agent/upload"
+	"github.com/apneduniya/logbook/pkg/evidence"
 	"github.com/apneduniya/logbook/pkg/struggle"
 )
 
@@ -50,8 +51,13 @@ type Store interface {
 	UnsentMinuteCount(ctx context.Context) (int64, error)
 	MinutesPendingBefore(ctx context.Context, t time.Time) (int64, error)
 	PruneCrediting(ctx context.Context) (localdb.CreditPruneResult, error)
-	InsertEvidenceDay(ctx context.Context, e localdb.EvidenceDay) error
 	LastEvidenceDay(ctx context.Context, deviceID string) (localdb.EvidenceDay, bool, error)
+	ReserveSeal(ctx context.Context, deviceID, day, prevChainHash string, seqFrom int64, marks ...localdb.KV) (localdb.Sealing, bool, error)
+	Sealing(ctx context.Context) (localdb.Sealing, bool, error)
+	SaveSealStep(ctx context.Context, s localdb.Sealing, cursor uint64, hasher []byte, closed []evidence.Bucket) error
+	CompleteSeal(ctx context.Context, s localdb.Sealing, closed []evidence.Bucket, e localdb.EvidenceDay, marks ...localdb.KV) error
+	StartChain(ctx context.Context, deviceID string, marks ...localdb.KV) (int64, error)
+	ChainBaseline(ctx context.Context, deviceID string) (int64, error)
 	SetEvidenceState(ctx context.Context, deviceID, day, state, errMsg string, marks ...localdb.KV) error
 	Get(ctx context.Context, key string) (string, error)
 	SetMany(ctx context.Context, kvs ...localdb.KV) error
@@ -128,6 +134,10 @@ type Options struct {
 	// Salts is where evidence bucket salts come from (crypto/rand when
 	// nil). Tests pass a fixed source so they can re-hash a sealed block.
 	Salts io.Reader
+	// SealRows is how many log rows one run hashes at most when sealing
+	// evidence (DefaultSealRows); a bigger block is hashed over several
+	// runs.
+	SealRows int
 }
 
 // Runner computes, stores and uploads credited minutes and evidence days.
@@ -202,6 +212,9 @@ func New(o Options) *Runner {
 	}
 	if o.Settle == 0 {
 		o.Settle = DefaultSettle
+	}
+	if o.SealRows <= 0 {
+		o.SealRows = DefaultSealRows
 	}
 	return &Runner{opt: o, batch: o.Batch}
 }
@@ -431,11 +444,14 @@ func (r *Runner) upload(ctx context.Context, now time.Time, st settleState) {
 			r.opt.Logger.ErrorContext(ctx, "retiring minutes of the previous device", "err", err)
 			return
 		}
-		// Its evidence chain starts over too, from the oldest retained row,
-		// and until it seals a block no row counts as sealed.
-		if err := r.opt.Store.SetMany(ctx, localdb.KV{Key: keyEvidenceDevice, Value: dev.ID}, localdb.KV{Key: keyEvidenceDay, Value: ""},
-			localdb.KV{Key: keyEvidenceHash, Value: ""}, localdb.KV{Key: keyEvidenceState, Value: ""},
-			localdb.KV{Key: keyEvidenceError, Value: ""}, localdb.KV{Key: localdb.KeySealed, Value: "0"},
+		// Its evidence chain starts over too, at the log's high-water mark
+		// with a repo snapshot (ADR 0019 point 4), and until it seals a
+		// block no row counts as sealed. A block the previous device was
+		// sealing is dropped.
+		if _, err := r.opt.Store.StartChain(ctx, dev.ID, localdb.KV{Key: keyEvidenceDevice, Value: dev.ID},
+			localdb.KV{Key: keyEvidenceDay, Value: ""}, localdb.KV{Key: keyEvidenceHash, Value: ""},
+			localdb.KV{Key: keyEvidenceState, Value: ""}, localdb.KV{Key: keyEvidenceError, Value: ""},
+			localdb.KV{Key: keyEvidenceSealing, Value: ""}, localdb.KV{Key: localdb.KeySealed, Value: "0"},
 			localdb.KV{Key: keyDevice, Value: dev.ID}); err != nil {
 			r.opt.Logger.ErrorContext(ctx, "starting the new device's evidence chain", "err", err)
 			return
