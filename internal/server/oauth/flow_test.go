@@ -175,6 +175,9 @@ func TestCodeReuseRevokesItsTokens(t *testing.T) {
 	if rec := e.probe("/probe/profile", tok.AccessToken); rec.Code != http.StatusUnauthorized {
 		t.Fatalf("token from the replayed code = %d, want 401", rec.Code)
 	}
+	if n := e.count(`SELECT count(*) FROM audit_log WHERE action = 'oauth.revoke' AND data->>'reason' = 'code_reuse'`); n != 1 {
+		t.Fatalf("code_reuse audit rows = %d", n)
+	}
 	refresh := url.Values{"grant_type": {"refresh_token"}, "refresh_token": {tok.RefreshToken}}
 	expectOAuthError(t, e.post("/oauth/token", refresh, creds(app)), http.StatusBadRequest, "invalid_grant")
 	if rec := e.probe("/probe/profile", other.AccessToken); rec.Code != http.StatusOK {

@@ -317,11 +317,15 @@ func (s *Service) issueTokens(ctx context.Context, q *db.Queries, appID, user uu
 }
 
 // revokeFamily revokes every token from one authorization code after a
-// replay, and audits it as oauth.revoke.
+// replay, and audits it as oauth.revoke when that revoked anything (a code
+// burned by a revoked grant has nothing left to revoke).
 func (s *Service) revokeFamily(ctx context.Context, q *db.Queries, family, user, appID uuid.UUID, reason string) error {
 	n, err := q.OAuthTokensRevokeFamily(ctx, db.OAuthTokensRevokeFamilyParams{RevokedAt: s.now(), FamilyID: family})
 	if err != nil {
 		return fmt.Errorf("revoking token family: %w", err)
+	}
+	if n == 0 {
+		return nil
 	}
 	return audit(ctx, q, user, "oauth.revoke", appID, map[string]any{
 		"reason": reason, "tokens_revoked": n,
