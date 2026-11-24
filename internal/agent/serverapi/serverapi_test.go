@@ -232,6 +232,19 @@ func TestUploadEvidenceDay(t *testing.T) {
 	if rec.body["signature"] != "AQID" || rec.body["prev_chain_hash"] != "" {
 		t.Fatalf("body = %v", rec.body)
 	}
+	// The block's signed fields (ADR 0019): a span in RFC 3339 UTC, or
+	// null for a block with only its repo bucket.
+	if v, ok := rec.body["time_from"]; !ok || v != nil || rec.body["seq_from"] != 0.0 || rec.body["buckets"] != 0.0 {
+		t.Fatalf("body = %v, want time_from null", rec.body)
+	}
+	from, to := time.Date(2026, 11, 19, 9, 0, 0, 0, time.UTC), time.Date(2026, 11, 19, 10, 0, 0, 0, time.UTC)
+	srv, rec = server(t, 201, `{}`)
+	err = New(srv.Client(), "ua").UploadEvidenceDay(t.Context(), Target{BaseURL: srv.URL, APIKey: "k"}, "d",
+		EvidenceDayRequest{Day: "2026-11-19", SeqFrom: 12, SeqTo: 40, Buckets: 3, TimeFrom: &from, TimeTo: &to})
+	if err != nil || rec.body["seq_from"] != 12.0 || rec.body["seq_to"] != 40.0 || rec.body["buckets"] != 3.0 ||
+		rec.body["time_from"] != "2026-11-19T09:00:00Z" || rec.body["time_to"] != "2026-11-19T10:00:00Z" {
+		t.Fatalf("body = %v, %v", rec.body, err)
+	}
 	srv, _ = server(t, 200, ``)
 	if err := New(srv.Client(), "ua").UploadEvidenceDay(t.Context(), Target{BaseURL: srv.URL}, "d", EvidenceDayRequest{}); err != nil {
 		t.Fatalf("identical re-upload err = %v", err)
