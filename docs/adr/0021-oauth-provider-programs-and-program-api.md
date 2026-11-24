@@ -42,13 +42,15 @@ We implement the authorization-code grant ourselves (RFC 6749 §4.1, PKCE per RF
 Same paths, parameters and response shapes as Hackatime for what programs actually call (exact list and contract tests in `docs/api/programs.md`):
 - `GET /api/v1/authenticated/me`, `GET /api/v1/authenticated/projects`
 - `GET /api/v1/users/{id}/stats` with `start_date`, `end_date`, `features=projects`, `total_seconds`, `filter_by_project`, `filter_by_category`, `no_ai_coding`, `test_param`
-- `GET /api/v1/users/{id}/trust_factor`, `GET /api/v1/users/{id}/heartbeats/spans`, `GET /api/v1/my/heartbeats`
+- `GET /api/v1/users/{id}/trust_factor`, `GET /api/v1/users/{id}/heartbeats/spans`, `GET /api/v1/users/{id}/projects`, `…/project/{name}`, `…/projects/details`, `GET /api/v1/my/heartbeats`
 
 **What `total_seconds` means:** counted (credited) time, as ADR 0008 says. `?raw=true` gives time at the keyboard instead. Every response also carries `credited_seconds` and `raw_seconds` side by side, so a program can show both. A user with no agent has `credited_seconds: 0` and `raw_seconds` from their heartbeats: a program asking for counted time gets zero rather than an unchecked number.
 
-**Who `{id}` is:** a Logbook username or user id. Stats are public when the user's profile is public (Hackatime's rule for public stats); otherwise they need a `read` token from that user.
+**Who `{id}` is:** Hackatime's ids are integers, and typed clients decode them as such, so every user gets a numeric `public_id` that Hackatime-shaped responses use as `id`. A path id is `my`/`current` (the token's user), then digits (`public_id`), then a username. Slack ids aren't supported in V1. Stats are public when the user's profile is public (Hackatime's rule for public stats); otherwise they need a `read` token from that user.
 
-**Trust:** `trust_factor` carries the user's Hackatime trust level when linked (`unknown` otherwise), so programs that gate on Hackatime bans keep working. Logbook doesn't run its own ban list in V1.
+**Counted time is per project.** Credited minutes have no language or editor, so counted figures exist for totals and projects only. Language, editor and category breakdowns are always time at the keyboard, and the response says so.
+
+**Trust:** `trust_factor` carries the user's Hackatime trust level when linked, masked as Hackatime masks it publicly (`yellow` reads as `blue`), and `blue` when not linked, so programs that gate on Hackatime bans keep working. Banned users can't submit (ADR 0020). Logbook doesn't run its own ban list in V1.
 
 ### Rate limits
 

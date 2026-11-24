@@ -67,13 +67,23 @@ RFC 7009. Always `200`.
 
 Bearer token from OAuth, or none where marked public.
 
+**User ids.** Hackatime ids are integers, and typed clients (including our own Hackatime client) decode `id` as one. Every user gets a numeric `public_id` (a `bigint` identity column, never reused), and every Hackatime-shaped response puts it in `id`. A `{id}` / `{username}` in a path is resolved in this order:
+1. `my` (and `current`, as Hackatime accepts): the user of the bearer token, which needs `read`;
+2. digits only: `public_id`;
+3. otherwise a username (case-insensitive).
+
+Slack ids and HCA ids aren't accepted in V1 (HCA doesn't give us the Slack id); Crossroads, which looks users up by Slack id, needs a small patch.
+
+**Trust.** `trust_level` and `trust_value` follow Hackatime's enum (`blue` 0, `red` 1, `green` 2, `yellow` 3). Responses to programs are masked as Hackatime masks them publicly (`yellow` reads as `blue`). A user with no Hackatime link reads as `blue`, Hackatime's level for an account nobody has judged. The unmasked level is used only inside Logbook (ADR 0020, the admin API).
+
 | Call | Scope | Notes |
 |---|---|---|
-| `GET /api/v1/authenticated/me` | `profile` | Hackatime's shape; `id` is our user id. Adds `username`, `hackatime_id` (or `null`), `logbook: true` |
+| `GET /api/v1/authenticated/me` | `profile` | Hackatime's shape; `id` is the numeric `public_id`. Adds `username`, `hackatime_id` (or `null`), `logbook: true` |
 | `GET /api/v1/authenticated/projects` | `read` | Hackatime's shape (`name`, `total_seconds`, `most_recent_heartbeat`, `languages`, `archived`). Adds `credited_seconds`, `raw_seconds`, `repo_url`. Hidden projects are left out |
 | `GET /api/v1/users/{id}/stats` | public if the profile is public, else `read` from that user | Below |
-| `GET /api/v1/users/{id}/trust_factor` | public | `{"trust_level", "trust_value"}` from the Hackatime link; `unknown` (and Hackatime's value for it) if not linked |
+| `GET /api/v1/users/{id}/trust_factor` | public | `{"trust_level", "trust_value"}`, masked (above) |
 | `GET /api/v1/users/{id}/heartbeats/spans` | as stats | Hackatime's shape; raw heartbeats |
+| `GET /api/v1/users/{id}/projects`, `GET /api/v1/users/{id}/project/{name}`, `GET /api/v1/users/{id}/projects/details` | as stats | Hackatime's shapes (`stats_controller.rb`); counted time unless `raw=true`, with `credited_seconds` and `raw_seconds` added |
 | `GET /api/v1/my/heartbeats` | `read` | Hackatime's shape |
 | `GET /api/v1/submissions` | `submissions` (client credentials) | The program's submissions, as in `GET /api/v1/me/apps/{id}/submissions` |
 | `GET /api/v1/submissions/{id}` | `submissions` | One submission with its packet and decision |
@@ -85,7 +95,7 @@ Bearer token from OAuth, or none where marked public.
 - `raw=true`: `total_seconds` (and every per-item `total_seconds`) is time at the keyboard instead of counted time.
 
 Rules:
-- Without `raw=true`, every `total_seconds` is counted (credited) time from `credited_project_minutes`. Category filters and `no_ai_coding` apply to raw time only (credited time has no category); with them, the response notes it in `logbook.notes`.
+- Without `raw=true`, the top-level `total_seconds` and every project's `total_seconds` are counted (credited) time from `credited_project_minutes`. Counted time is kept per project only, so **languages, editors, operating systems, machines and categories are always time at the keyboard**, from heartbeats, with or without `raw=true`. `data.logbook.notes` says so whenever such a breakdown is in the response. `filter_by_category` and `no_ai_coding` therefore change only raw figures.
 - `total_seconds=true` returns `{"total_seconds": N, "credited_seconds": N, "raw_seconds": N}`.
 - Otherwise the Hackatime body `{"data": {...}, "trust_factor": {...}}`, with `data.credited_seconds` and `data.raw_seconds` added, and `credited_seconds`/`raw_seconds` on each project.
 - A private profile without a `read` token from that user: Hackatime's `403` body.
