@@ -65,24 +65,13 @@ func BuildProof(list []Bucket, open map[int][]Row, edges []int) (Proof, error) {
 			return Proof{}, fmt.Errorf("%w: bucket %d of %d", ErrInvalidProof, i, len(list))
 		}
 		b := list[i]
-		sorted := slices.SortedFunc(slices.Values(rows), func(a, b Row) int { return cmp.Compare(a.Seq, b.Seq) })
-		lines := make([][]byte, len(sorted))
-		text := make([]string, len(sorted))
-		for j, r := range sorted {
-			k, err := BucketKey(r)
-			if err != nil {
-				return Proof{}, err
-			}
-			if k != b.Key {
-				return Proof{}, fmt.Errorf("%w: seq %d belongs in bucket %d, not %d", ErrBucketIncomplete, r.Seq, k, b.Key)
-			}
-			if lines[j], err = r.Line(); err != nil {
-				return Proof{}, err
-			}
-			text[j] = string(lines[j])
+		lines, err := b.lines(rows)
+		if err != nil {
+			return Proof{}, fmt.Errorf("bucket %d: %w", i, err)
 		}
-		if bucketHash(b.Salt, lines) != b.Hash {
-			return Proof{}, fmt.Errorf("%w: bucket %d (key %d)", ErrBucketIncomplete, i, b.Key)
+		text := make([]string, len(lines))
+		for j, l := range lines {
+			text[j] = string(l)
 		}
 		p.Opened = append(p.Opened, OpenedBucket{I: i, Key: b.Key, Salt: b.Salt, Lines: text})
 		listed[i] = true

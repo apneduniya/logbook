@@ -1,10 +1,12 @@
 package evidence
 
 import (
+	"cmp"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
+	"slices"
 	"time"
 )
 
@@ -93,6 +95,39 @@ func BucketKey(r Row) (uint64, error) {
 		return 0, fmt.Errorf("%w: seq %d is timed before 1970", ErrInvalidRow, r.Seq)
 	}
 	return k, nil
+}
+
+// Check reports whether rows, in any order, are exactly the bucket's rows:
+// each belongs in it (BucketKey) and together, in sequence order, they
+// hash with its salt to its hash. It fails with ErrBucketIncomplete when
+// they don't, which for rows read back from a log means some were pruned
+// since sealing, and with ErrInvalidRow for a row that can't be encoded.
+func (b Bucket) Check(rows []Row) error {
+	_, err := b.lines(rows)
+	return err
+}
+
+// lines returns the canonical lines of rows, which must be exactly the
+// bucket's rows, in sequence order (Check).
+func (b Bucket) lines(rows []Row) ([][]byte, error) {
+	sorted := slices.SortedFunc(slices.Values(rows), func(x, y Row) int { return cmp.Compare(x.Seq, y.Seq) })
+	lines := make([][]byte, len(sorted))
+	for j, r := range sorted {
+		k, err := BucketKey(r)
+		if err != nil {
+			return nil, err
+		}
+		if k != b.Key {
+			return nil, fmt.Errorf("%w: seq %d belongs in bucket %d, not %d", ErrBucketIncomplete, r.Seq, k, b.Key)
+		}
+		if lines[j], err = r.Line(); err != nil {
+			return nil, err
+		}
+	}
+	if bucketHash(b.Salt, lines) != b.Hash {
+		return nil, fmt.Errorf("%w: key %d", ErrBucketIncomplete, b.Key)
+	}
+	return lines, nil
 }
 
 // bucketHash is SHA-256(0x02 ‖ salt ‖ lines), each line followed by "\n".

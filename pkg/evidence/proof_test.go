@@ -366,3 +366,27 @@ func TestNeedsCompleteness(t *testing.T) {
 		}
 	}
 }
+
+// Bucket.Check accepts exactly a bucket's rows, in any order.
+func TestBucketCheck(t *testing.T) {
+	_, list, byIndex := sealed(t, fixtureBlock(), newSalts)
+	for i, b := range list {
+		rows := slices.Clone(byIndex[i])
+		slices.Reverse(rows)
+		if err := b.Check(rows); err != nil {
+			t.Fatalf("bucket %d with its rows: %v", i, err)
+		}
+	}
+	if err := list[1].Check(byIndex[1][1:]); !errors.Is(err, ErrBucketIncomplete) {
+		t.Fatalf("a row missing: %v", err)
+	}
+	if err := list[1].Check(append(slices.Clone(byIndex[1]), byIndex[2][0])); !errors.Is(err, ErrBucketIncomplete) {
+		t.Fatalf("a row of another bucket: %v", err)
+	}
+	if len(byIndex[0]) == 0 {
+		t.Fatal("the fixture has no repo rows")
+	}
+	if err := list[0].Check(nil); !errors.Is(err, ErrBucketIncomplete) {
+		t.Fatalf("the repo bucket without its rows: %v", err)
+	}
+}
