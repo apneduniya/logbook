@@ -31,6 +31,7 @@ import (
 	"github.com/apneduniya/logbook/internal/server/jobs"
 	"github.com/apneduniya/logbook/internal/server/ledger"
 	"github.com/apneduniya/logbook/internal/server/live"
+	"github.com/apneduniya/logbook/internal/server/oauth"
 	"github.com/apneduniya/logbook/internal/server/profiles"
 	"github.com/apneduniya/logbook/internal/server/projects"
 	"github.com/apneduniya/logbook/internal/server/secretbox"
@@ -119,6 +120,13 @@ func run() error {
 	live.NewHandler(hub, profileSvc, authSvc.RequireSession, publicLimit, live.Config{
 		ClientKey: httpapi.IPKey(cfg.TrustProxy),
 	}).Register(mux)
+
+	// OAuth provider: apps (programs), consent, tokens and grants (ADR 0021).
+	// The program API takes oauthSvc.RequireScope / OptionalScope.
+	oauthSvc := oauth.NewService(st, oauth.Options{WebURL: cfg.WebOrigin()})
+	oauth.NewHandler(oauthSvc, authSvc.RequireSession, authSvc.OptionalSession, publicLimit,
+		oauth.HandlerOptions{TrustProxy: cfg.TrustProxy}).Register(mux)
+	go oauthSvc.RunCleanup(ctx, time.Hour)
 
 	// Heartbeat ingest. The streak cache is refreshed before the hub tells browsers to refetch.
 	ingestSvc := ingest.New(st, live.Fanout{statsSvc, hub})
