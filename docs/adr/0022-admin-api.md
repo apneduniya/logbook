@@ -21,7 +21,7 @@ In the bounty thread, the strongest objection to client-side trackers was that t
   - `user/minutes`: credited minutes with label, cuts, flags, rules version and key, paged;
   - `user/submissions` and `submissions/{id}`: every submission with its verification and decisions;
   - `submissions/{id}/evidence`: the revealed raw rows of a submission, decoded, with each row's block and bucket;
-  - `submissions/{id}/bundle`: everything needed to check a submission offline with `logbook verify` (ADR 0020): the parts as uploaded, the signed evidence records of the devices, their public keys and the frozen minutes and capped seconds;
+  - `submissions/{id}/bundle`: everything needed to check a submission offline with `logbook verify` (ADR 0020): the parts as uploaded, the signed evidence records of the devices, their public keys, the frozen minutes and capped seconds, and the frozen cap inputs (every credited row of the user, any project or device, for the submitted minutes), all from the one snapshot taken at submission;
   - `user/audit_log`.
 - **What admins can see that reviewers can't:** raw heartbeats (file paths included) and the revealed rows of other projects inside a submission's replay windows. The privacy page says so.
 

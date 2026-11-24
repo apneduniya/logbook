@@ -74,11 +74,13 @@ Bearer token from OAuth, or none where marked public.
 
 Compatibility exceptions, documented and covered by tests: Slack ids and HCA ids aren't accepted in V1 (HCA doesn't give us the Slack id), so Crossroads, which looks users up by Slack id, needs a small patch. `my` is reserved and can't be a username.
 
-**Trust.** `trust_level` and `trust_value` follow Hackatime's enum (`blue` 0, `red` 1, `green` 2, `yellow` 3). Responses to programs are masked as Hackatime masks them publicly (`yellow` reads as `blue`). A user with no Hackatime link, or a link whose level we couldn't read (`unknown`, after a rejected token), reads as `blue`, Hackatime's level for an account nobody has judged; `red` stays `red` once seen. Responses add `logbook.trust_verified` (false for those two cases). The unmasked level is used only inside Logbook (ADR 0020, the admin API).
+**The `logbook` extension.** Any Hackatime-shaped response may carry one extra top-level object, `logbook`, which Hackatime clients ignore. Its fields, all optional: `username`, `hackatime_id`, `trust_verified`, `notes` (list of strings). `authenticated/me` carries `username`, `hackatime_id` and `trust_verified`; `trust_factor` and the stats body carry `trust_verified`, and `notes` when a breakdown is raw time. The `total_seconds=true` body has no extension beyond its two extra numbers.
+
+**Trust.** `trust_level` and `trust_value` follow Hackatime's enum (`blue` 0, `red` 1, `green` 2, `yellow` 3). Responses to programs are masked as Hackatime masks them publicly (`yellow` reads as `blue`). A user with no Hackatime link, or a link whose level we couldn't read (`unknown`, after a rejected token), reads as `blue`, Hackatime's level for an account nobody has judged; `red` stays `red` once seen. Responses carrying a trust level add `logbook.trust_verified` (false for those two cases). The unmasked level is used only inside Logbook (ADR 0020, the admin API).
 
 | Call | Scope | Notes |
 |---|---|---|
-| `GET /api/v1/authenticated/me` | `profile` | Hackatime's shape; `id` is the numeric `public_id`. Adds `username`, `hackatime_id` (or `null`), `logbook: true` |
+| `GET /api/v1/authenticated/me` | `profile` | Hackatime's shape; `id` is the numeric `public_id`. Adds the `logbook` object (above) |
 | `GET /api/v1/authenticated/projects` | `read` | Hackatime's shape (`name`, `total_seconds`, `most_recent_heartbeat`, `languages`, `archived`). Adds `credited_seconds`, `raw_seconds`, `repo_url`. Hidden projects are left out |
 | `GET /api/v1/users/{id}/stats` | public if the profile is public, else `read` from that user | Below |
 | `GET /api/v1/users/{id}/trust_factor` | public | `{"trust_level", "trust_value"}`, masked (above) |
@@ -95,7 +97,7 @@ Compatibility exceptions, documented and covered by tests: Slack ids and HCA ids
 - `raw=true`: `total_seconds` (and every per-item `total_seconds`) is time at the keyboard instead of counted time.
 
 Rules:
-- Without `raw=true`, the top-level `total_seconds` and every project's `total_seconds` are counted (credited) time from `credited_project_minutes`. Counted time is kept per project only, so **languages, editors, operating systems, machines and categories are always time at the keyboard**, from heartbeats, with or without `raw=true`. `data.logbook.notes` says so whenever such a breakdown is in the response. `filter_by_category` and `no_ai_coding` therefore change only raw figures.
+- Without `raw=true`, the top-level `total_seconds` and every project's `total_seconds` are counted (credited) time from `credited_project_minutes`. Counted time is kept per project only, so **languages, editors, operating systems, machines and categories are always time at the keyboard**, from heartbeats, with or without `raw=true`. `logbook.notes` says so whenever such a breakdown is in the response. `filter_by_category` and `no_ai_coding` therefore change only raw figures.
 - `total_seconds=true` returns `{"total_seconds": N, "credited_seconds": N, "raw_seconds": N}`.
 - Otherwise the Hackatime body `{"data": {...}, "trust_factor": {...}}`, with `data.credited_seconds` and `data.raw_seconds` added, and `credited_seconds`/`raw_seconds` on each project.
 - A private profile without a `read` token from that user: Hackatime's `403` body.

@@ -42,4 +42,4 @@ Not provided (they have no meaning for us, or need data we don't keep): `user/he
 |---|---|
 | `GET /api/admin/v1/submissions/{id}` | The submission, its packet, every decision, every part (device, uploaded, bytes, raw rows deleted at) and every frozen minute with its result |
 | `GET /api/admin/v1/submissions/{id}/evidence?part=&limit=&offset=` | The part's opened rows, decoded: block day, bucket key, `seq`, type, time, value. `410` once raw rows are deleted |
-| `GET /api/admin/v1/submissions/{id}/bundle` | A gzip JSON file for `logbook verify` (ADR 0020): every part as uploaded, the devices' signed evidence records and public keys, the frozen minutes and capped seconds. `410` once raw rows are deleted |
+| `GET /api/admin/v1/submissions/{id}/bundle` | A gzip JSON file for `logbook verify` (ADR 0020): every part as uploaded, the devices' signed evidence records and public keys, the frozen minutes, capped seconds and cap inputs (`submission_cap_inputs`), all frozen in the one snapshot taken at submission. `410` once raw rows are deleted |
