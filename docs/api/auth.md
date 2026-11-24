@@ -1,6 +1,6 @@
 # Auth API
 
-Owned by `internal/server/auth`. Covers sign-in with Hack Club Auth (HCA), browser sessions, CSRF, API keys and the localhost-only dev sign-in.
+Owned by `internal/server/auth`. Covers sign-in with Hack Club Auth (HCA), browser sessions, CSRF, API keys and the localhost-only dev sign-in. Logbook's own OAuth provider for programs (apps, tokens, grants) is in `docs/api/programs.md`.
 
 ## Conventions
 
@@ -29,7 +29,7 @@ For paths under `/api/` the API answers CORS for exactly the web origin:
 - Preflight (`OPTIONS` with `Access-Control-Request-Method`): `204` with `Access-Control-Allow-Origin: <web origin>`, `Access-Control-Allow-Credentials: true`, `Access-Control-Allow-Methods: GET, POST, PATCH, DELETE`, `Access-Control-Allow-Headers: Content-Type, X-CSRF-Token` and `Access-Control-Max-Age: 600`. Any other origin, method or header gets `403`.
 - Actual requests from the web origin get `Access-Control-Allow-Origin`, `Access-Control-Allow-Credentials: true` and `Access-Control-Expose-Headers: Retry-After, X-Request-Id`. Requests from other origins are served without CORS headers, so the browser hides the response from the page.
 - Every `/api/` response carries `Vary: Origin`.
-- There is no CORS on `/auth/*`, `/healthz`, heartbeat ingest (`/api/v1/users/current/heartbeats*`, `/api/v1/users/current/statusbar/*`, `/api/hackatime/*`) or the agent's device endpoints (`/api/v1/devices*`). Browsers never call them cross-origin.
+- There is no CORS on `/auth/*`, `/oauth/*` (the OAuth provider's authorize, token and revoke endpoints; programs call the last two from their servers), `/healthz`, heartbeat ingest (`/api/v1/users/current/heartbeats*`, `/api/v1/users/current/statusbar/*`, `/api/hackatime/*`) or the agent's device endpoints (`/api/v1/devices*`). Browsers never call them cross-origin.
 - CSRF protection is unchanged: state-changing session requests still need `X-CSRF-Token`, which a page on another origin can't send without passing CORS.
 
 ## Browser sign-in (HCA)
@@ -184,3 +184,15 @@ Routes guarded by `RequireAPIKey` (WakaTime-compatible ingest, agent endpoints) 
 If an `Authorization` header is present, it is the only form checked. A bad key, a malformed key, a revoked key or no key gets `401 {"error": "invalid API key"}`. Each client (IPv4 address or IPv6 `/64`) may make 60 failed attempts in a burst, refilled at 60 per minute. Past that, further **failed** attempts from that client get `429` with `Retry-After` instead of `401`. A request with a valid key always succeeds, even from a client that is over its failure budget, so one misconfigured editor on a shared network can't block everyone else's heartbeats.
 
 Behind a reverse proxy, set `LOGBOOK_TRUST_PROXY=true` so rate limits use the last `X-Forwarded-For` hop instead of the proxy's address.
+
+## Which credential works where
+
+Three kinds of credential reach the API, and each is accepted only by its own middleware:
+
+| Credential | Accepted by | Never accepted by |
+|---|---|---|
+| `logbook_session` cookie (+ `X-CSRF-Token` on writes) | `RequireSession`, `OptionalSession` (web UI routes, `/api/v1/me/*`, consent) | API-key and OAuth routes |
+| API key (UUID) | `RequireAPIKey` (ingest, agent) | session routes, OAuth routes (`RequireScope`) |
+| OAuth access token (`lbo_…`, programs.md) | `oauth.RequireScope` / `OptionalScope` (program API) | session routes, API-key routes |
+
+`httpapi.CurrentUser.Via` is `session`, `api_key` or `oauth` accordingly. An OAuth token never matches the API-key format, and session middleware reads only the cookie, so a token sent to the wrong kind of route is `401`. Tests in `internal/server/oauth` (`TestCredentialsDontCross`) pin this with the real middleware.

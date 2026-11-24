@@ -1,67 +1,105 @@
 # Programs, OAuth and the Hackatime-shaped program API
 
-How a YSWS program connects to Logbook (ADR 0008, ADR 0021). Packages: `internal/server/oauth` (apps, grants, tokens), `internal/server/programs` (members), `internal/server/stats` (the read endpoints).
+How a YSWS program connects to Logbook (ADR 0008, ADR 0021). Packages: `internal/server/oauth` (apps and their members, consent, codes, tokens, grants and the bearer middleware), `internal/server/programs` (the submissions addressed to a program), `internal/server/stats` (the read endpoints).
 
 **Compatibility rule:** where a call exists on Hackatime, its path, parameters, status codes and JSON shape match Hackatime at commit `43bde10` exactly (`app/controllers/api/v1/stats_controller.rb`, `app/controllers/api/v1/authenticated/*`, `config/initializers/doorkeeper.rb`). Fields we add are extra keys that existing clients ignore. Contract tests in `internal/server/httpapi/testdata/hackatime/` pin each request a program repo makes (Stardance, Flavortown, Save Point, Sidekick, Crossroads, 3am-ysws) and its response shape.
 
 ## Apps (programs)
 
-Session auth; writes need CSRF.
+Session auth (`RequireSession`: cookie only; bearer tokens and API keys get `401`); writes need CSRF. These are browser endpoints with the usual `/api/` CORS (auth.md). An app is also a program: its owner and reviewers are its **members** (ADR 0020 decisions).
 
 | Call | What |
 |---|---|
-| `GET /api/v1/me/apps` | Apps the user owns or reviews for |
-| `POST /api/v1/me/apps` | `{name, slug, redirect_uris[], homepage_url, public}`. Returns the app with `client_id` and `client_secret` (shown once). Max 10 apps per user. Audited `app.create` |
-| `PATCH /api/v1/me/apps/{id}` | Owner only. Name, redirect URIs, homepage, public |
-| `POST /api/v1/me/apps/{id}/secret` | Owner only. Rotates the secret, returns it once. Audited |
-| `DELETE /api/v1/me/apps/{id}` | Owner only. Revokes all its tokens. Submissions keep the program's name but lose decisions-in-progress rights. Audited |
-| `GET /api/v1/me/apps/{id}/members`, `POST` `{username}`, `DELETE /{username}` | Owner only for writes. Members are reviewers (ADR 0020) |
-| `GET /api/v1/me/apps/{id}/submissions` | Members. Submissions addressed to the program, newest first, filter `status`, `decision` |
-| `GET /api/v1/programs` | Public programs (`slug`, `name`, `homepage_url`), for the submit picker |
+| `GET /api/v1/me/apps` | `{"apps": [App]}`: live apps the user owns or reviews for, newest first |
+| `POST /api/v1/me/apps` | `{name, slug, redirect_uris[], homepage_url, public, confidential}`. `201` with the app plus `client_secret` (shown once; only SHA-256 is stored). `confidential` defaults to `true`; `false` makes a public client (no secret, PKCE required). Max 10 live apps per owner (`409`). Audited `app.create` |
+| `GET /api/v1/me/apps/{id}` | Members. One app |
+| `PATCH /api/v1/me/apps/{id}` | Owner only. Any of `name`, `redirect_uris`, `homepage_url`, `public`. `slug` and `confidential` can't change (`400`). Audited `app.update` |
+| `POST /api/v1/me/apps/{id}/secret` | Owner only. Rotates the secret: `200` with the app plus the new `client_secret`, shown once. The old secret stops working at once; issued tokens stay valid. `409` for a public client. Audited `app.secret_rotate` |
+| `DELETE /api/v1/me/apps/{id}` | Owner only. `204`. Revokes every token, unused code, pending request and grant of the app, and drops it from `/api/v1/programs`. Submissions keep the program's name but lose decisions-in-progress rights. Audited `app.delete` |
+| `GET /api/v1/me/apps/{id}/members` | Members. `{"members": [{username, role, added_at, added_by}]}`, owner first |
+| `POST /api/v1/me/apps/{id}/members` | Owner only. `{username}` (case-insensitive) becomes a `reviewer`: `201` with the member. `404` unknown user, `409` already a member or 50 reviewers already. Audited `app.member_add` |
+| `DELETE /api/v1/me/apps/{id}/members/{username}` | Owner only. `204`. The owner can't be removed (`400`). Audited `app.member_remove` |
+| `GET /api/v1/me/apps/{id}/submissions` | Members. Submissions addressed to the program, newest first, filter `status`, `decision` (step 5, submissions) |
+| `GET /api/v1/programs` | No auth, limited per IP. `{"programs": [{slug, name, homepage_url}]}`: live public apps by name, for the submit picker |
 
-- `slug`: 2–40 of `a-z0-9-`, unique.
-- `redirect_uris`: 1–5, absolute, no fragment; `https://`, or `http://localhost` / `127.0.0.1` with any port. Matching is exact.
+`App`:
+```json
+{"id": "6f1c…", "client_id": "6f1c…", "name": "Stardance", "slug": "stardance",
+ "redirect_uris": ["https://stardance.example/auth/hackatime/callback"], "homepage_url": "https://stardance.example",
+ "public": true, "confidential": true, "role": "owner", "owner_username": "fiona-hackworth",
+ "created_at": "2026-11-25T12:00:00Z", "updated_at": "2026-11-25T12:00:00Z", "secret_rotated_at": "2026-11-25T12:00:00Z"}
+```
+
+- `client_id` is the app's `id`.
+- `name`: 1–64 characters, no control characters.
+- `slug`: 2–40 of `a-z0-9-`, unique across all apps ever made: a deleted app keeps its slug, so nobody can take over a program's name.
+- `redirect_uris`: 1–5, absolute, no fragment or user info; `https://`, or `http://localhost` / `http://127.0.0.1` with any port. Stored as given and matched exactly, character for character.
+- `homepage_url`: optional, same scheme rules.
+- Access: a user who isn't a member gets `404` for every `/api/v1/me/apps/{id}…` call (the response doesn't say whether the app exists); a reviewer gets `403` for owner-only writes. Nobody can add themselves to someone else's app, because only the owner adds members.
 
 ## OAuth 2
 
+Our own provider (ADR 0021), shaped like Hackatime's Doorkeeper so existing OmniAuth and hand-written clients work unchanged.
+
+**Secrets.** Client secrets (`lbs_…`), access tokens (`lbo_…`), refresh tokens (`lbr_…`), codes and consent request ids are 256 random bits, base64url. Only their SHA-256 is stored; secrets are compared in constant time.
+
+**Scopes.** `profile` (the default) and `read`, granted by users; `submissions`, only on an app's own client-credentials token. Anything else is `invalid_scope`.
+
 ### `GET /oauth/authorize`
 
-Query: `client_id`, `redirect_uri`, `response_type=code`, `scope` (space-separated; default `profile`), `state`, optional `code_challenge` + `code_challenge_method=S256` (required when the app has no secret).
+On the API origin; no CORS. Query: `client_id`, `redirect_uri` (required), `response_type=code`, `scope` (space-separated; default `profile`), `state` (returned as is, up to 2048 bytes), optional `code_challenge` + `code_challenge_method=S256` (required when the app has no secret). Limited to 120 a minute per IP.
 
-- Invalid client or redirect URI: an error page on the web UI. Never a redirect.
-- Other errors: redirect to `redirect_uri` with `error` and `state` (RFC 6749 §4.1.2.1).
-- Otherwise `302` to `{LOGBOOK_WEB_URL}/oauth/authorize?request=<id>`: a 10-minute pending request, stored server side. If the user is signed out, the web UI sends them to sign in first.
-- If the user already granted at least these scopes to this app, the code is issued straight away (`302` to `redirect_uri?code=…&state=…`).
+- Unknown or deleted client, or a `redirect_uri` that isn't exactly one of the app's: `302` to the web UI's error page `{LOGBOOK_WEB_URL}/oauth/authorize?error=invalid_client` (or `invalid_redirect_uri`). Never to the unverified URI.
+- Other errors: `302` to `redirect_uri` with `error`, `error_description` and `state` (RFC 6749 §4.1.2.1): `unsupported_response_type`, `invalid_scope`, or `invalid_request` (a public client without `code_challenge`; a method other than `S256`, including a challenge without a method, which RFC 7636 reads as `plain`; a malformed challenge; `state` over 2048 bytes).
+- If the browser has a session whose user already granted at least these scopes to this app, the code is issued straight away (`302` to `redirect_uri?code=…&state=…`), as Doorkeeper does.
+- Otherwise `302` to `{LOGBOOK_WEB_URL}/oauth/authorize?request=<id>`: a 10-minute pending request, stored server side. If the user is signed out, the web UI sends them to sign in first. A request started with a session belongs to that user; one started signed out belongs to the first signed-in user who opens it. Nobody else can read or decide it (`404`).
 
 ### `GET /api/v1/oauth/requests/{id}`
 
-Session. The pending request for the consent page: app name, owner username, homepage, scopes with plain descriptions.
+Session. The pending request for the consent page:
+```json
+{"app": {"id": "6f1c…", "name": "Stardance", "slug": "stardance", "homepage_url": "https://stardance.example", "owner_username": "fiona-hackworth"},
+ "scopes": [{"name": "profile", "description": "See your basic profile: …"}, {"name": "read", "description": "See your coding activity: …"}],
+ "redirect_uri": "https://stardance.example/auth/hackatime/callback", "already_granted": false, "expires_at": "2026-11-25T12:10:00Z"}
+```
+`already_granted` is true when the user granted these scopes to the app before (for example, they signed in after starting); the page may then approve without asking. `404` for unknown, expired, decided or other users' requests.
 
 ### `POST /api/v1/oauth/requests/{id}`
 
-Session + CSRF. `{"approve": true|false}`. Returns `{"redirect": "<redirect_uri>?code=…&state=…"}` (or `error=access_denied`). Single use. Audited `oauth.grant`.
+Session + CSRF. `{"approve": true|false}` (required). Returns `{"redirect": "<redirect_uri>?code=…&state=…"}` or, when denied, `{"redirect": "<redirect_uri>?error=access_denied&error_description=…&state=…"}`. Single use (`404` after). Approving records the grant (its scopes add to any granted before) and is audited `oauth.grant`.
+
+Codes are single use, valid 10 minutes, and bound to the app, user, redirect URI, scopes and PKCE challenge.
 
 ### `POST /oauth/token`
 
-Form-encoded. Client authentication by HTTP Basic or `client_id`/`client_secret` in the body (Doorkeeper accepts both).
+No CORS. Form-encoded; a flat JSON object is also accepted, as Doorkeeper (Rails) does. Query parameters are ignored. Client authentication by HTTP Basic (`client_id:client_secret`, each form-encoded per RFC 6749 §2.3.1) or `client_id`/`client_secret` in the body; when an `Authorization` header is present it is the only one read. A public client sends only `client_id` and must not send a secret.
 
-- `grant_type=authorization_code`: `code`, `redirect_uri`, `code_verifier` when a challenge was sent.
-- `grant_type=refresh_token`: `refresh_token`. Rotates the refresh token.
-- `grant_type=client_credentials`: scope `submissions`.
+- `grant_type=authorization_code`: `code`, `redirect_uri` (exactly the one used to authorize; also still registered), `code_verifier` when a challenge was sent. Any attempt by the code's own client uses the code up, right or wrong. Presenting a used code again revokes every token issued from it and their refreshes (RFC 6749 §4.1.2). A `code_verifier` for a code that had no challenge is refused. Another client's attempt fails without using the code.
+- `grant_type=refresh_token`: `refresh_token`, optional `scope` (the same or fewer scopes). Returns a new access and refresh token and revokes the old pair. Presenting a rotated refresh token again revokes the whole family. Refresh tokens last 2 years from issue.
+- `grant_type=client_credentials`: confidential apps only (`unauthorized_client` otherwise). `scope` empty or `submissions`. The token acts as the app, has no refresh token and lasts 1 hour (ADR 0021 doesn't set it; a short life costs the program nothing, because it can always ask again).
 
-`200` (Doorkeeper's shape):
+A user grant that was revoked, or an app that was deleted, makes every grant type fail.
+
+`200` (Doorkeeper's shape; `Cache-Control: no-store`):
 ```json
-{"access_token": "…", "token_type": "Bearer", "expires_in": 31536000, "refresh_token": "…", "scope": "profile read", "created_at": 1795000000}
+{"access_token": "lbo_…", "token_type": "Bearer", "expires_in": 31536000, "refresh_token": "lbr_…", "scope": "profile read", "created_at": 1795000000}
 ```
-Errors per RFC 6749 §5.2 (`invalid_grant`, `invalid_client` with `401`, …).
+Errors per RFC 6749 §5.2, as `{"error": "…", "error_description": "…"}`: `invalid_request`, `invalid_grant`, `invalid_scope`, `unauthorized_client`, `unsupported_grant_type` with `400`; `invalid_client` with `401` (plus `WWW-Authenticate: Basic` when Basic was used); `server_error` with `500`.
 
 ### `POST /oauth/revoke`
 
-RFC 7009. Always `200`.
+RFC 7009. No CORS. Same body and client authentication as `/oauth/token`, with `token` (and an optional `token_type_hint`, ignored). Bad client authentication is `401 invalid_client`; otherwise always `200 {}`. Only a token issued to the calling client is revoked, and revoking either the access or the refresh token revokes both. Audited `oauth.revoke` when a token was revoked.
 
 ### User grants
 
-`GET /api/v1/me/grants`, `DELETE /api/v1/me/grants/{app_id}` (session, CSRF): what apps can read your data, and revoking them.
+Session; `DELETE` needs CSRF. Browser endpoints with the usual `/api/` CORS.
+
+- `GET /api/v1/me/grants`: `{"grants": [{app_id, app_name, app_slug, homepage_url, owner_username, scopes, created_at, updated_at}]}`, the user's active grants to live apps, newest first.
+- `DELETE /api/v1/me/grants/{app_id}`: `204`. Every token and unused code the app holds for this user stops working at once, and the next authorize asks again. `404` if there is no active grant. Audited `oauth.revoke`.
+
+### Bearer tokens
+
+Program API calls send `Authorization: Bearer lbo_…` (the only form accepted, as Doorkeeper's `from_bearer_authorization`). A missing or invalid token (unknown, expired, revoked, or of a deleted app) is `401` with `WWW-Authenticate: Bearer realm="logbook", error="invalid_token"`; a token without the endpoint's scope is `403` with `error="insufficient_scope"`. Both carry a JSON `{"error": "…"}` body. Sessions, user API keys, refresh tokens and client secrets are never accepted, and OAuth tokens are never accepted by session or API-key endpoints. A client-credentials token only ever passes `submissions`.
 
 ## The program API
 
@@ -104,4 +142,4 @@ Rules:
 
 ## Rate limits
 
-Per token, or per IP for public calls: a burst of 600, refilled at 600 per minute. `/oauth/token`: per client, 60 per minute. Over the limit: `429` with `Retry-After`.
+Per token, or per IP for public calls: a burst of 600, refilled at 600 per minute. `/oauth/token` and `/oauth/revoke` share a budget of 60 per minute per client and caller network (IPv4 address or IPv6 `/64`): the client id is public, so keying on it alone would let anyone use up a program's budget. `/oauth/authorize`: 120 per minute per IP. Over the limit: `429` with `Retry-After` and `{"error": "too many requests"}`.
