@@ -201,8 +201,13 @@ func TestTamperedPartFails(t *testing.T) {
 		t.Fatalf("review of a failed submission = %+v", r)
 	}
 	d := decode[detail](t, w.expect(call{target: "/api/v1/me/submissions/" + created.ID.String(), user: w.alice}, http.StatusOK))
-	if d.Status != "failed" || !strings.Contains(d.Error, `"laptop"`) || d.Packet != nil {
-		t.Fatalf("detail = %+v", d)
+	// The reason is one plain sentence; the proof's hashes go to the log.
+	if want := `The evidence from "laptop" doesn't match its signed records.`; d.Status != "failed" || d.Error != want || d.Packet != nil {
+		t.Fatalf("detail = %+v, want error %q", d, want)
+	}
+	if logs := w.logs.String(); !strings.Contains(logs, "submission failed its check") ||
+		!strings.Contains(logs, created.ID.String()) || !strings.Contains(logs, "detail=") {
+		t.Fatalf("the failure's detail wasn't logged:\n%s", logs)
 	}
 	// A failed submission takes no more parts.
 	part := mustJSON(t, submission.Part{DeviceID: w.b.id.String(), Blocks: []submission.Block{}, Minutes: []submission.PartMinute{}})

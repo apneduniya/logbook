@@ -127,7 +127,7 @@ Auth: session. `{"submissions": [...]}`, the user's submissions, newest first, e
  "review_url": "https://logbook.boogles.dev/r/<token>", "created_at": "…"}
 ```
 - `program` is `null` without one. A deleted program keeps its slug and name.
-- `error` is only present on `failed`; it says which device's part failed and why.
+- `error` is only present on `failed`: one short plain sentence, such as `The evidence from "laptop" doesn't match its signed records.` (see "The re-check job"). It never holds hashes or keys; the server logs those.
 - `counted_seconds`, `raw_seconds` and `minutes` are 0 until the submission is `ready`.
 - `decision` is the latest, or `null`. `approved_seconds` is `null` except for `adjusted`; `by` is `null` once the reviewer's account is gone.
 - `review_url` is `null` once withdrawn.
@@ -252,7 +252,7 @@ How the server runs it (`submissions.Checker.Verify`, job kind `submission_verif
 - It works only on a `verifying` submission. Devices are those with frozen rows or a part, by id; each one's records come from the ledger (`ledger.Service.Days`, every stored day: records with block fields go to the verifier, every day counts for the packet's `gaps`).
 - The packet's inputs: the frozen capped seconds and cap inputs, the revealed rows of each part, raw seconds per UTC day of the project from `user_minutes` (label `you`, and its `ai coding` category for `raw_ai_seconds`), the project's `repo_url`, and the trust level stored at submission, masked.
 - Memory: it reads, decodes and verifies one part at a time, in device order, and drops each decoded part before reading the next; only its row results and revealed rows are kept for the packet. Each part is read and decoded within one of the same decode slots uploads use (`submissions.DecodeSlots`, 2 server-wide, passed to both `Options.DecodeSlots` and `CheckerOptions.DecodeSlots`), so at most 2 parts are decoded at once across uploads and re-checks. The job waits for a slot for as long as it may run instead of failing. The result is the same as checking every part at once.
-- A `failed` reason names the device by its name and says what failed. Database or ledger errors are retried by River instead.
+- A `failed` reason is one of three plain sentences: `The evidence from "<device name>" doesn't match its signed records.` (a part failed step 1 or 2, or its rules version can't run), `The evidence sent with it was deleted before it could be checked.` (retention or a withdrawal removed a part's raw rows), or `The counted time sent with it doesn't add up when Logbook recounts it.` (the cap or the packet doesn't recompute). What exactly failed (the block, minute, hash or key) is logged at info level as `submission failed its check` with the submission id, never stored or shown. Database or ledger errors are retried by River instead.
 - Each part added bumps the submission's `parts_version`. A run writes its result (every frozen row's `result`, `reason` and the server's row on a mismatch; the packet; the counts) only while the submission is still `verifying` at the version it read, so a run overtaken by a newer part or by a withdrawal changes nothing; the newer part's own job writes. Jobs aren't unique, so two runs of one version write the same result.
 
 ## Retention
