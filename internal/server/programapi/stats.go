@@ -29,8 +29,8 @@ type StatsRequest struct {
 	Languages, Projects bool
 	ProjectsFeature     bool
 	Limit               int
-	FilterProjects      []string // filter_by_project; nil means all
-	FilterCategories    []string // filter_by_category; nil means all
+	FilterProjects      []string // filter_by_project; nil means all, empty means none
+	FilterCategories    []string // filter_by_category; nil means all, empty means none
 	TotalOnly           bool     // total_seconds=true
 	Test                bool     // test_param=true
 	NoAICoding          bool     // no_ai_coding=true
@@ -272,7 +272,7 @@ func (s *Service) Stats(ctx context.Context, u User, req StatsRequest) (StatsBod
 		projects := projectChunks(raw, credited, total, req.Raw, req.Limit)
 		sum.Projects = &projects
 	}
-	if req.ProjectsFeature && len(req.FilterProjects) > 0 {
+	if req.ProjectsFeature && req.FilterProjects != nil { // Hackatime: filter_by_project.present?
 		unique := creditedTotal // capped per minute already, so never double counted
 		if req.Raw {
 			if unique, err = s.RawUniqueCoding(ctx, u.ID, req.Range, req.FilterProjects, st.Hidden); err != nil {

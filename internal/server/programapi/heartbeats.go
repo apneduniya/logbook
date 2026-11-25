@@ -190,7 +190,7 @@ func optInt64(v pgtype.Int8) *int64 {
 // SpansRequest is a parsed heartbeats/spans request.
 type SpansRequest struct {
 	From, To time.Time
-	Projects []string // nil means all
+	Projects []string // nil means all, empty means none
 }
 
 // ParseSpansRequest reads start_date and end_date as the stats call does,

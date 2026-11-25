@@ -69,6 +69,18 @@ func contractCases(f *fixture) []contractCase {
 			call{target: "/api/v1/users/orpheus/heartbeats/spans?start_date=2026-06-01&end_date=2026-06-30&filter_by_project=logbook"}},
 		{"crossroads_slack_id", "Crossroads: a Slack id (not supported in V1)",
 			call{target: "/api/v1/users/U01ABCDEF12/stats"}},
+		// Ruby clients that put a Time in the query send Time#to_s.
+		{"ruby_time_to_s", "Ruby programs passing Time values (HTTParty, Faraday, to_query)",
+			call{target: "/api/v1/users/" + id + "/stats?total_seconds=true&filter_by_project=logbook&start_date=2026-06-01+00:00:00+UTC&end_date=2026-06-30T00:00:00%2B0000"}},
+		{"ruby_time_to_s_spans", "spans with Time#to_s bounds",
+			call{target: "/api/v1/users/" + id + "/heartbeats/spans?start_date=2026-06-10+00:00:00+UTC&end_date=2026-06-11+00:00:00+%2B0000&project=logbook"}},
+		// A list of only separators is an empty filter: nothing matches.
+		{"empty_filter_total", "filter_by_project of only commas",
+			call{target: "/api/v1/users/" + id + "/stats?total_seconds=true&filter_by_project=,&start_date=2026-06-01"}},
+		{"empty_filter_projects", "features=projects with filter_by_project of only commas",
+			call{target: "/api/v1/users/" + id + "/stats?features=projects&filter_by_project=,&start_date=2026-06-01"}},
+		{"empty_filter_spans", "spans with filter_by_project of only commas",
+			call{target: "/api/v1/users/" + id + "/heartbeats/spans?start_date=2026-06-01&filter_by_project=,"}},
 		// Ari's oracle and per-project reads.
 		{"ari_projects_details", "Ari, Stardance: projects/details",
 			call{target: "/api/v1/users/" + id + "/projects/details"}},
