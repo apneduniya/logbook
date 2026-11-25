@@ -244,6 +244,11 @@ func (s *Service) refresh(ctx context.Context, app db.OAuthAppByIDRow, req Token
 		}
 		now := s.now()
 		t, err := q.OAuthTokenByRefreshForUpdate(ctx, hash(req.RefreshToken))
+		if store.IsNotFound(err) {
+			// Deleted by cleanup since it was read: the token is dead.
+			failure = errBadRefresh
+			return nil
+		}
 		if err != nil {
 			return fmt.Errorf("locking refresh token: %w", err)
 		}
