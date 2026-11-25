@@ -33,6 +33,14 @@
 	}: Props = $props();
 
 	let shown = $state(false);
+	// A new value (a secret rotated again) is hidden again until "Show".
+	let shownFor = $state(value);
+	$effect.pre(() => {
+		if (value !== shownFor) {
+			shownFor = value;
+			shown = false;
+		}
+	});
 	let copied = $state(false);
 	let error = $state<string | null>(null);
 	let timer: ReturnType<typeof setTimeout> | null = null;

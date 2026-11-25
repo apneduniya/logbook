@@ -48,8 +48,10 @@
 	const secret = $derived(fresh && fresh.id === a.id ? fresh : null);
 
 	async function rotate() {
-		const r = await app.api.rotateAppSecret(a.id);
-		if (r.client_secret) fresh = { id: a.id, secret: r.client_secret, rotated: true };
+		const id = a.id;
+		const r = await app.api.rotateAppSecret(id);
+		// Another app may be on screen by now: never show this secret there.
+		if (r.client_secret && a.id === id) fresh = { id, secret: r.client_secret, rotated: true };
 		await invalidate(APPS);
 	}
 

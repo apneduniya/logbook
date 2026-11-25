@@ -9,6 +9,7 @@
 <script lang="ts">
 	import { invalidate } from '$app/navigation';
 	import { page } from '$app/state';
+	import { ApiError } from '#lib/api.ts';
 	import { app, REVIEW } from '#lib/app.svelte.ts';
 	import { duration, percent } from '#lib/format.ts';
 	import { poll } from '#lib/poll.ts';
@@ -35,7 +36,15 @@
 		if (status !== 'verifying' || !token) return;
 		const t = token;
 		return poll(10_000, async (alive) => {
-			const r = await app.api.review(t);
+			let r;
+			try {
+				r = await app.api.review(t);
+			} catch (err) {
+				// Withdrawn (410) or gone (404) while verifying: show that, stop.
+				if (!(err instanceof ApiError) || (err.status !== 410 && err.status !== 404)) throw err;
+				if (alive()) await invalidate(REVIEW);
+				return true;
+			}
 			if (!alive() || r.submission.status === 'verifying') return false;
 			await invalidate(REVIEW);
 			return true;
