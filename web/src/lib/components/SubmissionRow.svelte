@@ -91,7 +91,7 @@
 
 <style>
 	.sr {
-		--cols: 14px minmax(0, 1fr) 104px 150px;
+		--cols: 14px minmax(0, 1fr) 136px 150px;
 		position: relative;
 		display: grid;
 		grid-template-columns: var(--cols);
@@ -103,13 +103,13 @@
 		transition: background 150ms ease-out;
 	}
 	.sr.who-col {
-		--cols: 14px minmax(0, 1fr) 160px 104px 150px;
+		--cols: 14px minmax(0, 1fr) 160px 136px 150px;
 	}
 	.sr.acts-col {
-		--cols: 14px minmax(0, 1fr) 104px 150px 200px;
+		--cols: 14px minmax(0, 1fr) 136px 150px 200px;
 	}
 	.sr.who-col.acts-col {
-		--cols: 14px minmax(0, 1fr) 160px 104px 150px 200px;
+		--cols: 14px minmax(0, 1fr) 160px 136px 150px 200px;
 	}
 	.sr:has(.name:hover) {
 		background: var(--color-fill);
