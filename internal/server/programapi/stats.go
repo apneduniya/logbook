@@ -3,6 +3,7 @@ package programapi
 import (
 	"cmp"
 	"context"
+	"math"
 	"net/url"
 	"slices"
 	"strconv"
@@ -305,13 +306,13 @@ func (s *Service) Stats(ctx context.Context, u User, req StatsRequest) (StatsBod
 // languageChunks builds the languages breakdown from raw rows: always time
 // at the keyboard, with percentages of the raw total.
 func languageChunks(raw []RawRow, rawTotal int64, limit int) []Chunk {
-	by := map[string]int64{}
+	by := map[string]float64{}
 	for _, r := range raw {
 		by[displayName(r.Language)] += r.Seconds
 	}
 	out := make([]Chunk, 0, len(by))
 	for name, secs := range by {
-		c := chunk(name, secs, rawTotal)
+		c := chunk(name, roundSeconds(secs), rawTotal)
 		c.Color = defaultLanguageColor
 		out = append(out, c)
 	}
@@ -325,9 +326,13 @@ func languageChunks(raw []RawRow, rawTotal int64, limit int) []Chunk {
 // counted time in range, total_seconds counted (or raw with raw=true), and
 // percentages of the reported total.
 func projectChunks(raw []RawRow, credited []CreditedRow, total int64, useRaw bool, limit int) []Chunk {
-	rawBy, creditedBy := map[string]int64{}, map[string]int64{}
+	rawExact, creditedBy := map[string]float64{}, map[string]int64{}
 	for _, r := range raw {
-		rawBy[displayName(r.Project)] += r.Seconds
+		rawExact[displayName(r.Project)] += r.Seconds
+	}
+	rawBy := make(map[string]int64, len(rawExact))
+	for n, secs := range rawExact {
+		rawBy[n] = roundSeconds(secs)
 	}
 	for _, c := range credited {
 		creditedBy[displayName(c.Project)] += c.Seconds
@@ -377,13 +382,18 @@ func displayName(s string) string {
 	return s
 }
 
+// sumRaw totals raw rows, rounding once.
 func sumRaw(rows []RawRow) int64 {
-	var n int64
+	var n float64
 	for _, r := range rows {
 		n += r.Seconds
 	}
-	return n
+	return roundSeconds(n)
 }
+
+// roundSeconds rounds a sum of fractional seconds to whole seconds as
+// Hackatime does, by casting to integer in Postgres: half to even.
+func roundSeconds(f float64) int64 { return int64(math.RoundToEven(f)) }
 
 func sumCredited(rows []CreditedRow) int64 {
 	var n int64

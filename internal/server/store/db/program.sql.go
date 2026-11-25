@@ -415,13 +415,13 @@ credited AS (
     FROM gaps g
 )
 SELECT c.project, c.language,
-       coalesce(sum(c.seconds) FILTER (WHERE c.time < $7::timestamptz), 0)::bigint AS seconds,
+       coalesce(sum(c.seconds) FILTER (WHERE c.time < $7::timestamptz), 0)::float8 AS seconds,
        false AS is_total
 FROM credited c
 WHERE c.time >= $6::timestamptz
 GROUP BY c.project, c.language
 UNION ALL
-SELECT ''::text, ''::text, coalesce(sum(c.seconds), 0)::bigint, true
+SELECT ''::text, ''::text, coalesce(sum(c.seconds), 0)::bigint::float8, true
 FROM credited c
 WHERE c.time >= $6::timestamptz
 `
@@ -440,7 +440,7 @@ type ProgramRawTimelineParams struct {
 type ProgramRawTimelineRow struct {
 	Project  string
 	Language string
-	Seconds  int64
+	Seconds  float64
 	IsTotal  bool
 }
 
@@ -456,9 +456,11 @@ type ProgramRawTimelineRow struct {
 // part, so the first heartbeat in range is credited its gap from them, and
 // heartbeats at to_time count too; that applies to the total only.
 //
-// The rows are one per (project, language) with is_total false, then one
-// row with is_total true carrying the total, rounded once as Hackatime
-// rounds it (float8 to integer).
+// The rows are one per (project, language) with is_total false, in
+// fractional seconds, so a caller can sum them into each breakdown entry
+// before rounding; then one row with is_total true carrying the total,
+// already rounded once as Hackatime rounds it (float8 to integer, half to
+// even).
 // LEAST ignores NULLs, so the first heartbeat's NULL gap is made 0
 // explicitly, as Hackatime's with_capped_duration does.
 func (q *Queries) ProgramRawTimeline(ctx context.Context, arg ProgramRawTimelineParams) ([]ProgramRawTimelineRow, error) {

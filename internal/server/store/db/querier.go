@@ -268,9 +268,11 @@ type Querier interface {
 	// part, so the first heartbeat in range is credited its gap from them, and
 	// heartbeats at to_time count too; that applies to the total only.
 	//
-	// The rows are one per (project, language) with is_total false, then one
-	// row with is_total true carrying the total, rounded once as Hackatime
-	// rounds it (float8 to integer).
+	// The rows are one per (project, language) with is_total false, in
+	// fractional seconds, so a caller can sum them into each breakdown entry
+	// before rounding; then one row with is_total true carrying the total,
+	// already rounded once as Hackatime rounds it (float8 to integer, half to
+	// even).
 	// LEAST ignores NULLs, so the first heartbeat's NULL gap is made 0
 	// explicitly, as Hackatime's with_capped_duration does.
 	ProgramRawTimeline(ctx context.Context, arg ProgramRawTimelineParams) ([]ProgramRawTimelineRow, error)
