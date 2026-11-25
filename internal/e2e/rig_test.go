@@ -88,6 +88,10 @@ type config struct {
 	// prepare runs before the local database is opened, with the device
 	// registered: a test can build an older database at r.dbPath.
 	prepare func(r *rig)
+	// share is another rig whose store and user this one uses, as a
+	// second device of the same person; name is the device's name.
+	share *rig
+	name  string
 }
 
 type option func(*config)
@@ -109,6 +113,13 @@ func registeredOn(day time.Time) option {
 
 // beforeOpen runs fn before the local database is opened.
 func beforeOpen(fn func(r *rig)) option { return func(c *config) { c.prepare = fn } }
+
+// secondDevice makes the rig another device, named name, of other's user
+// on other's server store. Each rig keeps its own agent, clock and local
+// log.
+func secondDevice(other *rig, name string) option {
+	return func(c *config) { c.share, c.name = other, name }
+}
 
 // identity is the registered device the agent runs as. It changes only
 // when a test replaces the device (rig.takeover).
@@ -136,21 +147,25 @@ func (i *identity) set(dev devicekey.Device) {
 // after a start (Settle < 0) unless an option sets one.
 func newRig(t testing.TB, start time.Time, opts ...option) *rig {
 	t.Helper()
-	c := config{registered: start.UTC().Truncate(24 * time.Hour)}
+	c := config{registered: start.UTC().Truncate(24 * time.Hour), name: "laptop"}
 	for _, o := range opts {
 		o(&c)
 	}
 	r := &rig{t: t, now: start, computed: map[time.Time][]struggle.Minute{}, bundle: map[string][]evidence.Row{},
 		registered: c.registered}
-	r.st = storetest.New(t)
-	r.user = seedtest.User(t, r.st, "alice", "UTC", true)
+	if c.share != nil {
+		r.st, r.user = c.share.st, c.share.user
+	} else {
+		r.st = storetest.New(t)
+		r.user = seedtest.User(t, r.st, "alice", "UTC", true)
+	}
 	var err error
 	r.key, err = devicekey.Create(filepath.Join(t.TempDir(), "device.key"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	r.device, err = r.st.SeedTestDevice(context.Background(), db.SeedTestDeviceParams{
-		UserID: r.user, Name: "laptop", PublicKey: r.key.Public(), CreatedAt: r.registered,
+		UserID: r.user, Name: c.name, PublicKey: r.key.Public(), CreatedAt: r.registered,
 	})
 	if err != nil {
 		t.Fatal(err)
