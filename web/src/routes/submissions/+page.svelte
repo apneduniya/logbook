@@ -129,7 +129,7 @@
 			</SubmissionRow>
 		{:else}
 			{#if filter !== 'all'}
-				<p class="hint px-3.5 py-[18px]">{emptyFilterSentence(filter)}</p>
+				<p class="hint px-[14px] py-[18px]">{emptyFilterSentence(filter)}</p>
 			{/if}
 		{/each}
 		<p class="foot">

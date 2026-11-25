@@ -236,7 +236,7 @@
 						anchor="not-verified"
 						padded={false}
 					>
-						<div class="grid gap-2 px-4 py-[14px]">
+						<div class="grid gap-2 px-[14px] py-[14px]">
 							{#if view.evidence.mismatch}
 								<p class="hint text-ink">
 									{view.evidence.mismatch.toLocaleString('en-US')}

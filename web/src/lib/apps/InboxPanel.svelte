@@ -113,12 +113,12 @@
 	</div>
 
 	{#if error}
-		<div class="px-4 py-[18px]">
+		<div class="px-[14px] py-[18px]">
 			<p class="hint text-ink" role="alert">{error}</p>
 			<button class="btn mt-3" type="button" onclick={() => attempt++}>Try again</button>
 		</div>
 	{:else if rows === null || (rows.length === 0 && loading)}
-		<p class="lbl px-4 py-[18px]" aria-live="polite">Loading…</p>
+		<p class="lbl px-[14px] py-[18px]" aria-live="polite">Loading…</p>
 	{:else if rows.length === 0}
 		<div class="empty">
 			<p class="px">{inboxEmpty(filter)}</p>
@@ -148,7 +148,7 @@
 			{/each}
 		</div>
 		{#if more}
-			<div class="grid justify-items-start gap-2 px-3.5 py-3">
+			<div class="grid justify-items-start gap-2 px-[14px] py-3">
 				<button class="btn" type="button" onclick={loadMore} disabled={loadingMore}>
 					{loadingMore ? 'Loading…' : `Show ${INBOX_PAGE} more`}
 				</button>
