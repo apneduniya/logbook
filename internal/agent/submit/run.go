@@ -7,12 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"regexp"
 	"strings"
 	"time"
 
 	"github.com/apneduniya/logbook/internal/agent/crediting"
+	"github.com/apneduniya/logbook/internal/agent/install/atomicfile"
 	"github.com/apneduniya/logbook/internal/agent/serverapi"
 	"github.com/apneduniya/logbook/pkg/projectname"
 	"github.com/apneduniya/logbook/pkg/replay"
@@ -46,7 +46,7 @@ type Request struct {
 	// Yes skips the confirmation.
 	Yes bool
 	// Preview, when set, is a file to write the request body to instead of
-	// uploading it.
+	// uploading it. It is replaced, never written in place, with mode 0600.
 	Preview string
 }
 
@@ -176,7 +176,10 @@ func Run(ctx context.Context, req Request, env Env) error {
 	writeSummary(env.Out, req, prep.Summary)
 
 	if req.Preview != "" {
-		if err := os.WriteFile(req.Preview, body, 0o600); err != nil {
+		// A temporary file (0600) renamed over the target: os.WriteFile
+		// keeps an existing file's mode, which may let other local users
+		// read the revealed evidence.
+		if err := atomicfile.Write(req.Preview, body, 0o600); err != nil {
 			return fmt.Errorf("writing the preview: %w", err)
 		}
 		return say(env.Out, "\nWrote the request body (%d bytes of JSON) to %s. Nothing was uploaded.\n", len(body), req.Preview)
