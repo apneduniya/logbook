@@ -27,5 +27,6 @@
 // queries (store/queries/admin.sql) are all SELECTs, and the request path's
 // only writes are its audit rows and a key's last use. It doesn't own
 // submissions (package submissions builds bundles and decodes parts, within
-// its decode slots), evidence chains (ledger) or trust levels (hackatime).
+// its decode slots), evidence chains (ledger), trust levels (hackatime) or
+// how Ruby reads a date (rubydate).
 package admin

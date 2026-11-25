@@ -9,10 +9,11 @@ import (
 	"mime"
 	"net/http"
 	"net/url"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/apneduniya/logbook/internal/server/admin/rubydate"
 )
 
 // maxBody caps a POST body (the two POST calls take one short field).
@@ -168,16 +169,21 @@ func railsID(s string) (int64, bool) {
 // maxTS is the largest timestamp Hackatime accepts (9999-12-31T23:59:59Z).
 const maxTS = 253_402_300_799
 
-// datePattern finds the date at the start of a value, which is what
-// Ruby's Date.parse reads of an ISO date or date-time.
-var datePattern = regexp.MustCompile(`^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})`)
+// Dates parse_ts reads with Date.parse are clamped to [minDay, maxDay]:
+// Ruby's years run far past either end, and no heartbeat or credited
+// minute lies outside them, so the rows a bound selects don't change.
+var (
+	minDay = time.Date(1, 1, 1, 0, 0, 0, 0, time.UTC)
+	maxDay = time.Date(9999, 12, 31, 0, 0, 0, 0, time.UTC)
+)
 
 // parseTS is Hackatime's DateParsing#parse_ts: digits are Unix seconds
 // (milliseconds from 10^12 on) between 0 and maxTS; anything else is read
-// as a date, giving the start of that UTC day, or its last second for an
+// with Ruby's Date.parse (package rubydate; today fills in what the value
+// leaves out), giving the start of that UTC day, or its last second for an
 // end boundary. ok is false when the value is neither.
-func parseTS(raw string, end bool) (t time.Time, ok bool) {
-	v := strings.TrimSpace(raw)
+func parseTS(raw string, end bool, today time.Time) (t time.Time, ok bool) {
+	v := strings.Trim(raw, " \t\n\v\f\r\x00") // Ruby's String#strip
 	if isDigits(v) {
 		n, err := strconv.ParseInt(v, 10, 64)
 		if err != nil {
@@ -191,16 +197,18 @@ func parseTS(raw string, end bool) (t time.Time, ok bool) {
 		}
 		return time.Unix(n, 0).UTC(), true
 	}
-	m := datePattern.FindStringSubmatch(v)
-	if m == nil {
+	d, ok := rubydate.Parse(v, today)
+	if !ok {
 		return time.Time{}, false
 	}
-	y, _ := strconv.Atoi(m[1]) // the pattern matched digits
-	mo, _ := strconv.Atoi(m[2])
-	d, _ := strconv.Atoi(m[3])
-	day := time.Date(y, time.Month(mo), d, 0, 0, 0, 0, time.UTC)
-	if day.Year() != y || int(day.Month()) != mo || day.Day() != d {
-		return time.Time{}, false // Date.parse rejects 2024-02-30
+	var day time.Time
+	switch {
+	case d.Year < 1:
+		day = minDay
+	case d.Year > 9999:
+		day = maxDay
+	default:
+		day = time.Date(int(d.Year), time.Month(d.Month), d.Day, 0, 0, 0, 0, time.UTC)
 	}
 	if end {
 		return day.Add(24*time.Hour - time.Second), true
@@ -226,19 +234,20 @@ type timeRange struct {
 }
 
 // applyTimeRange is DateParsing#apply_time_range: start_date and end_date
-// bound the range when present. It returns the name of the parameter that
-// didn't parse.
-func (p params) applyTimeRange() (timeRange, string) {
+// bound the range when present; now completes dates that leave out the
+// year, month or day. It returns the name of the parameter that didn't
+// parse.
+func (p params) applyTimeRange(now time.Time) (timeRange, string) {
 	var rg timeRange
 	if p.present("start_date") {
-		t, ok := parseTS(p["start_date"], false)
+		t, ok := parseTS(p["start_date"], false, now)
 		if !ok {
 			return rg, "start_date"
 		}
 		rg.From = &t
 	}
 	if p.present("end_date") {
-		t, ok := parseTS(p["end_date"], true)
+		t, ok := parseTS(p["end_date"], true, now)
 		if !ok {
 			return rg, "end_date"
 		}
@@ -254,14 +263,14 @@ func (p params) defaultTimeRange(now time.Time) (timeRange, string) {
 	y, m, d := now.UTC().Date()
 	to := time.Date(y, m, d, 23, 59, 59, 0, time.UTC)
 	if p.present("start_date") {
-		t, ok := parseTS(p["start_date"], false)
+		t, ok := parseTS(p["start_date"], false, now)
 		if !ok {
 			return timeRange{}, "start_date"
 		}
 		from = t
 	}
 	if p.present("end_date") {
-		t, ok := parseTS(p["end_date"], true)
+		t, ok := parseTS(p["end_date"], true, now)
 		if !ok {
 			return timeRange{}, "end_date"
 		}

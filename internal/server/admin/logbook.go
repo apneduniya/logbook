@@ -218,7 +218,7 @@ func (h *Handler) userMinutes(w http.ResponseWriter, r *http.Request, c *call) e
 	if err != nil {
 		return err
 	}
-	rg, bad := c.p.applyTimeRange()
+	rg, bad := c.p.applyTimeRange(h.svc.now())
 	if bad != "" {
 		return unprocessable("invalid " + bad)
 	}

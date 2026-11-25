@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
 
@@ -26,14 +27,15 @@ type HeartbeatsQuery struct {
 	IncludeAI                                  bool
 }
 
-// parseHeartbeats reads user/heartbeats' parameters as Hackatime does.
-func parseHeartbeats(p params) (HeartbeatsQuery, error) {
+// parseHeartbeats reads user/heartbeats' parameters as Hackatime does; now
+// completes dates that leave out the year, month or day.
+func parseHeartbeats(p params, now time.Time) (HeartbeatsQuery, error) {
 	q := HeartbeatsQuery{
 		Limit:     p.intParam("limit", defaultHeartbeats, 1, maxHeartbeats),
 		Offset:    p.intParam("offset", 0, 0, math.MaxInt32),
 		IncludeAI: p.boolParam("include_ai"),
 	}
-	rg, bad := p.applyTimeRange()
+	rg, bad := p.applyTimeRange(now)
 	if bad != "" {
 		return q, unprocessable("invalid " + bad)
 	}
@@ -187,7 +189,7 @@ func (h *Handler) userHeartbeats(w http.ResponseWriter, r *http.Request, c *call
 	if err != nil {
 		return err
 	}
-	q, err := parseHeartbeats(c.p)
+	q, err := parseHeartbeats(c.p, h.svc.now())
 	if err != nil {
 		return err
 	}
