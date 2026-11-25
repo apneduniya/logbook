@@ -206,7 +206,8 @@ func memberApp(ctx context.Context, q db.Querier, user, appID uuid.UUID) (db.OAu
 }
 
 // ownedApp is memberApp for writes: ErrNotOwner when user is a reviewer.
-// It locks the app for the rest of the transaction.
+// It locks the app for the rest of the transaction and returns the app as
+// read after taking the lock.
 func ownedApp(ctx context.Context, q *db.Queries, user, appID uuid.UUID) (db.OAuthAppForMemberRow, error) {
 	r, err := memberApp(ctx, q, user, appID)
 	if err != nil {
@@ -221,7 +222,9 @@ func ownedApp(ctx context.Context, q *db.Queries, user, appID uuid.UUID) (db.OAu
 		}
 		return r, fmt.Errorf("locking app: %w", err)
 	}
-	return r, nil
+	// Read it again under the lock: a write that committed while this one
+	// waited must not be overwritten with the values read before it.
+	return memberApp(ctx, q, user, appID)
 }
 
 // UpdateApp changes an app's name, redirect URIs, homepage or public flag.

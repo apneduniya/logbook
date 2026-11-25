@@ -336,3 +336,32 @@ func TestSessionRoutesNeedASession(t *testing.T) {
 		}
 	}
 }
+
+// A name-only edit that waited behind a redirect URI change must not write
+// back the URIs it read before the lock (a removed callback would return).
+func TestConcurrentUpdatesKeepEachOther(t *testing.T) {
+	e := newEnv(t)
+	ctx := t.Context()
+	owner := e.user("owner")
+	app := e.createApp(owner, "stardance")
+	g := e.gateAt(ctx, "AFTER UPDATE ON oauth_apps")
+	defer g.release()
+	patch := func(body string) <-chan int {
+		out := make(chan int, 1)
+		go func() { out <- e.do(http.MethodPatch, "/api/v1/me/apps/"+app.ID, owner, body).Code }()
+		return out
+	}
+	uris := patch(`{"redirect_uris":["https://new.test/cb"]}`)
+	g.waiting(1)
+	name := patch(`{"name":"Stardance"}`)
+	g.waiting(2)
+	g.release()
+	if a, b := <-uris, <-name; a != http.StatusOK || b != http.StatusOK {
+		t.Fatalf("patches = %d, %d", a, b)
+	}
+	rec := e.do(http.MethodGet, "/api/v1/me/apps/"+app.ID, owner, "")
+	got := decode[appJSON](t, rec)
+	if got.Name != "Stardance" || len(got.RedirectURIs) != 1 || got.RedirectURIs[0] != "https://new.test/cb" {
+		t.Fatalf("app = %+v; want both edits", got)
+	}
+}
