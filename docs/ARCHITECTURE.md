@@ -40,9 +40,8 @@ laptop                                     server (Go + Postgres)
 | `internal/server/credited` | Credited-minute uploads from the agent |
 | `internal/server/ledger` | Signed daily evidence chain per device: checks uploads (signature, chain and seq continuity) and reads stored records for the submission re-check |
 | `internal/server/live` | SSE fan-out |
-| `internal/server/submissions` | Submission upload, the re-check job, review packets, review links and decisions (ADR 0020) |
+| `internal/server/submissions` | Submission plans and uploads (gzip, trust gate, one-snapshot freeze), the re-check job (`pkg/submission` against the ledger's records) and raw-row retention, review links and decisions, the submitter's list and withdrawal, and each program's inbox for its members and its client-credentials token (ADR 0020) |
 | `internal/server/oauth` | OAuth 2 provider: apps (programs) and their members (owner, reviewers), consent requests, codes, tokens, grants, and the bearer middleware (`RequireScope`, `OptionalScope`) the program API uses (ADR 0021) |
-| `internal/server/programs` | The submissions addressed to a program, for its members (membership itself lives in `oauth`) |
 | `internal/server/admin` | Read-only admin API for Fraud Squad, admin keys (ADR 0022) |
 | `internal/server/httpapi` | HTTP handlers and middleware; thin, calls services |
 | `internal/server/router` | The server's whole route set on one mux, the global middleware and the CORS skip list; adapts OAuth tokens and API keys to the program API's `Authenticator`. End-to-end tests of the program flow run against it |

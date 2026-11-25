@@ -38,6 +38,7 @@ import (
 	"github.com/apneduniya/logbook/internal/server/secretbox"
 	"github.com/apneduniya/logbook/internal/server/stats"
 	"github.com/apneduniya/logbook/internal/server/store"
+	"github.com/apneduniya/logbook/internal/server/submissions"
 	"github.com/apneduniya/logbook/migrations"
 )
 
@@ -129,17 +130,23 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("building hackatime client: %w", err)
 	}
+	trust := hackatime.NewTrustRefresher(st, box, htClient, logger, nil)
+	ledgerSvc := ledger.NewService(st)
 	workers := river.NewWorkers()
 	if err := hackatime.AddWorkers(workers,
 		hackatime.NewImporter(st, box, htClient, ingestSvc, hackatime.ImportOptions{Logger: logger}),
-		hackatime.NewTrustRefresher(st, box, htClient, logger, nil),
+		trust,
 	); err != nil {
+		return fmt.Errorf("registering workers: %w", err)
+	}
+	// The submission re-check and raw-row retention (ADR 0020).
+	if err := submissions.AddWorkers(workers, submissions.NewChecker(st, ledgerSvc, logger, nil)); err != nil {
 		return fmt.Errorf("registering workers: %w", err)
 	}
 	jobClient, err := jobs.New(st.Pool, jobs.Options{
 		Workers:      workers,
-		PeriodicJobs: hackatime.PeriodicJobs(),
-		Queues:       map[string]int{hackatime.Queue: 2},
+		PeriodicJobs: append(hackatime.PeriodicJobs(), submissions.PeriodicJobs()...),
+		Queues:       map[string]int{hackatime.Queue: 2, submissions.Queue: 2},
 		Logger:       logger,
 	})
 	if err != nil {
@@ -159,11 +166,16 @@ func run() error {
 		Ingest:    ingestSvc,
 		Devices:   devices.NewService(st),
 		Credited:  credited.NewService(st, hub),
-		Ledger:    ledger.NewService(st),
+		Ledger:    ledgerSvc,
 		Hackatime: htSvc,
 		// The Hackatime-shaped program API (ADR 0021) reuses the stats
 		// service's streaks.
 		ProgramAPI: programapi.NewService(st, statsSvc, nil),
+		// Submissions: review links on the web UI's origin, membership from
+		// the OAuth provider, trust refreshed through Hackatime (ADR 0020).
+		Submissions: submissions.NewService(st, box, submissions.Options{
+			ReviewBaseURL: cfg.WebOrigin(), Enqueuer: jobClient.River(), Members: oauthSvc, Trust: trust, Logger: logger,
+		}),
 	}, router.Options{
 		WebOrigin:  cfg.WebOrigin(),
 		TrustProxy: cfg.TrustProxy,
