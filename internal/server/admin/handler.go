@@ -45,7 +45,16 @@ type HandlerOptions struct {
 	// ClientKey turns a request into its client's rate-limit key; nil
 	// means httpapi.IPKey(false).
 	ClientKey func(*http.Request) string
+	// BundleExports is how many submission bundles may be exported at
+	// once, server-wide; 0 means DefaultBundleExports.
+	BundleExports int
 }
+
+// DefaultBundleExports bounds concurrent bundle exports. Each holds one
+// stored part's compressed bytes (up to an upload's 32 MiB) for as long as
+// its client takes to read the stream, so the per-key rate limit alone
+// would let a burst of them hold gigabytes.
+const DefaultBundleExports = 4
 
 // NewRateLimiter returns the per-key limiter.
 func NewRateLimiter() *httpapi.RateLimiter {
@@ -59,6 +68,8 @@ type Handler struct {
 	limiter   *httpapi.RateLimiter
 	fails     *httpapi.RateLimiter
 	clientKey func(*http.Request) string
+	// exports holds one token per bundle export running.
+	exports chan struct{}
 }
 
 // NewHandler returns a Handler.
@@ -72,7 +83,13 @@ func NewHandler(svc *Service, auth Auditor, opts HandlerOptions) *Handler {
 	if opts.ClientKey == nil {
 		opts.ClientKey = httpapi.IPKey(false)
 	}
-	return &Handler{svc: svc, auth: auth, limiter: opts.Limiter, fails: opts.FailLimiter, clientKey: opts.ClientKey}
+	if opts.BundleExports <= 0 {
+		opts.BundleExports = DefaultBundleExports
+	}
+	return &Handler{
+		svc: svc, auth: auth, limiter: opts.Limiter, fails: opts.FailLimiter, clientKey: opts.ClientKey,
+		exports: make(chan struct{}, opts.BundleExports),
+	}
 }
 
 // Prefix is where the admin API lives.

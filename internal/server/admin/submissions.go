@@ -363,6 +363,10 @@ func (h *Handler) submissionEvidence(w http.ResponseWriter, r *http.Request, c *
 	return nil
 }
 
+// errExportsBusy refuses a bundle export while every export slot
+// (HandlerOptions.BundleExports) is taken.
+var errExportsBusy = httpapi.Errorf(http.StatusServiceUnavailable, nil, "too many submission bundles are being exported; try again in a minute")
+
 func (h *Handler) submissionBundle(w http.ResponseWriter, r *http.Request, c *call) error {
 	ctx := r.Context()
 	id, err := submissionID(r)
@@ -375,6 +379,13 @@ func (h *Handler) submissionBundle(w http.ResponseWriter, r *http.Request, c *ca
 	}
 	if err := h.svc.ev.CheckBundle(ctx, id); err != nil {
 		return evidenceError(err)
+	}
+	select {
+	case h.exports <- struct{}{}:
+		defer func() { <-h.exports }()
+	default:
+		w.Header().Set("Retry-After", "60")
+		return errExportsBusy
 	}
 	if err := c.audit(ctx, owner); err != nil {
 		return err

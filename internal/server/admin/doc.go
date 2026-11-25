@@ -7,7 +7,9 @@
 //   - Handler: every route under /api/admin/v1/, behind a middleware that
 //     takes only an admin key (Authorization: Bearer lba_…; sessions, user
 //     API keys and OAuth tokens get 401), limits each key, and writes an
-//     admin.read audit row for every request before its answer;
+//     admin.read audit row for every request before its answer (Keys
+//     writes them, parameters capped and recorded once per batch); it also
+//     bounds how many bundle exports run at once;
 //   - Service: the reads those routes serve. The Hackatime-compatible calls
 //     (user/info, info_batch, heartbeats, projects, trust_logs,
 //     get_user_by_email, search_fuzzy) match Hackatime at 43bde10
