@@ -281,6 +281,49 @@ func (q *Queries) SubmissionFreezeMinutes(ctx context.Context, submissionID uuid
 	return result.RowsAffected(), nil
 }
 
+const submissionFrozenDevices = `-- name: SubmissionFrozenDevices :many
+SELECT d.id, d.name,
+       (SELECT max(e.day) FROM evidence_days e WHERE e.device_id = d.id)::date AS sealed_through,
+       (d.revoked_at IS NOT NULL)::bool AS revoked
+FROM devices d
+WHERE d.id IN (SELECT DISTINCT m.device_id FROM submission_minutes m WHERE m.submission_id = $1)
+ORDER BY d.id
+`
+
+type SubmissionFrozenDevicesRow struct {
+	ID            uuid.UUID
+	Name          string
+	SealedThrough pgtype.Date
+	Revoked       bool
+}
+
+// The devices with frozen rows of a submission: the last day each has
+// sealed (null when none) and whether it is revoked.
+func (q *Queries) SubmissionFrozenDevices(ctx context.Context, submissionID uuid.UUID) ([]SubmissionFrozenDevicesRow, error) {
+	rows, err := q.db.Query(ctx, submissionFrozenDevices, submissionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []SubmissionFrozenDevicesRow{}
+	for rows.Next() {
+		var i SubmissionFrozenDevicesRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.SealedThrough,
+			&i.Revoked,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const submissionFrozenMinutes = `-- name: SubmissionFrozenMinutes :many
 SELECT device_id, minute, label, credited, cuts, flags, rules_version, computed_at, snapshot
 FROM submission_minutes
@@ -309,6 +352,61 @@ func (q *Queries) SubmissionFrozenMinutes(ctx context.Context, submissionID uuid
 	items := []SubmissionFrozenMinutesRow{}
 	for rows.Next() {
 		var i SubmissionFrozenMinutesRow
+		if err := rows.Scan(
+			&i.DeviceID,
+			&i.Minute,
+			&i.Label,
+			&i.Credited,
+			&i.Cuts,
+			&i.Flags,
+			&i.RulesVersion,
+			&i.ComputedAt,
+			&i.Snapshot,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const submissionFrozenMinutesOfDevice = `-- name: SubmissionFrozenMinutesOfDevice :many
+SELECT device_id, minute, label, credited, cuts, flags, rules_version, computed_at, snapshot
+FROM submission_minutes
+WHERE submission_id = $1 AND device_id = $2
+ORDER BY minute
+`
+
+type SubmissionFrozenMinutesOfDeviceParams struct {
+	SubmissionID uuid.UUID
+	DeviceID     uuid.UUID
+}
+
+type SubmissionFrozenMinutesOfDeviceRow struct {
+	DeviceID     uuid.UUID
+	Minute       time.Time
+	Label        string
+	Credited     int16
+	Cuts         []string
+	Flags        []string
+	RulesVersion string
+	ComputedAt   *time.Time
+	Snapshot     pgtype.Int8
+}
+
+// One device's frozen rows of a submission.
+func (q *Queries) SubmissionFrozenMinutesOfDevice(ctx context.Context, arg SubmissionFrozenMinutesOfDeviceParams) ([]SubmissionFrozenMinutesOfDeviceRow, error) {
+	rows, err := q.db.Query(ctx, submissionFrozenMinutesOfDevice, arg.SubmissionID, arg.DeviceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []SubmissionFrozenMinutesOfDeviceRow{}
+	for rows.Next() {
+		var i SubmissionFrozenMinutesOfDeviceRow
 		if err := rows.Scan(
 			&i.DeviceID,
 			&i.Minute,
@@ -724,6 +822,7 @@ func (q *Queries) SubmissionPartsChanged(ctx context.Context, id uuid.UUID) (int
 const submissionPlanDevices = `-- name: SubmissionPlanDevices :many
 SELECT d.id, d.name, d.os,
        (SELECT max(e.day) FROM evidence_days e WHERE e.device_id = d.id)::date AS sealed_through,
+       (d.revoked_at IS NOT NULL)::bool AS revoked,
        count(*) FILTER (WHERE c.credited > 0)::bigint AS credited_rows
 FROM credited_minutes c
 JOIN devices d ON d.id = c.device_id
@@ -747,12 +846,13 @@ type SubmissionPlanDevicesRow struct {
 	Name          string
 	Os            string
 	SealedThrough pgtype.Date
+	Revoked       bool
 	CreditedRows  int64
 }
 
 // The devices with credited rows of one project in [from_time, to_time):
-// the last day each has sealed (null when none) and how many of its rows
-// carry credit.
+// the last day each has sealed (null when none), whether it is revoked,
+// and how many of its rows carry credit.
 func (q *Queries) SubmissionPlanDevices(ctx context.Context, arg SubmissionPlanDevicesParams) ([]SubmissionPlanDevicesRow, error) {
 	rows, err := q.db.Query(ctx, submissionPlanDevices,
 		arg.UserID,
@@ -772,6 +872,7 @@ func (q *Queries) SubmissionPlanDevices(ctx context.Context, arg SubmissionPlanD
 			&i.Name,
 			&i.Os,
 			&i.SealedThrough,
+			&i.Revoked,
 			&i.CreditedRows,
 		); err != nil {
 			return nil, err
@@ -958,6 +1059,20 @@ func (q *Queries) SubmissionRawDays(ctx context.Context, arg SubmissionRawDaysPa
 		return nil, err
 	}
 	return items, nil
+}
+
+const submissionRawDeleted = `-- name: SubmissionRawDeleted :one
+SELECT EXISTS (
+    SELECT 1 FROM submission_parts WHERE submission_id = $1 AND raw_deleted_at IS NOT NULL
+)::bool AS deleted
+`
+
+// Whether any stored part of a submission has been deleted.
+func (q *Queries) SubmissionRawDeleted(ctx context.Context, submissionID uuid.UUID) (bool, error) {
+	row := q.db.QueryRow(ctx, submissionRawDeleted, submissionID)
+	var deleted bool
+	err := row.Scan(&deleted)
+	return deleted, err
 }
 
 const submissionSetDecided = `-- name: SubmissionSetDecided :exec

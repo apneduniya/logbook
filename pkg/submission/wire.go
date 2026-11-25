@@ -50,6 +50,10 @@ type PlanDevice struct {
 	// ThisDevice is true for the device the plan's optional device query
 	// named.
 	ThisDevice bool `json:"this_device"`
+	// Revoked is true for a revoked device. It can't seal any more days,
+	// so it never holds a range back: its rows after its last sealed day
+	// stay unbacked.
+	Revoked bool `json:"revoked"`
 }
 
 // Minute is one credited-minute row of a device (ADR 0014) as the server

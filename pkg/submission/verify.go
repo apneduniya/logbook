@@ -260,6 +260,14 @@ func verifyBlocks(part Part, deviceID string, chain []EvidenceRecord) (map[strin
 	return out, nil
 }
 
+// CheckListed checks that every minute the part lists is one of frozen,
+// the part's device's frozen rows, with the same key: the check VerifyPart
+// makes, which the server also makes before it stores a part, so a part
+// that lists other minutes is refused instead of failing the submission.
+func CheckListed(part Part, frozen []Minute) error {
+	return checkListed(part, part.DeviceID, frozen)
+}
+
 // checkListed checks that frozen rows are the device's and that every
 // minute the part lists is a frozen row of the device with the same key.
 func checkListed(part Part, deviceID string, frozen []Minute) error {

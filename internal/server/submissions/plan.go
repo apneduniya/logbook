@@ -3,9 +3,11 @@ package submissions
 import (
 	"context"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/apneduniya/logbook/internal/server/store/db"
 	"github.com/apneduniya/logbook/pkg/projectname"
@@ -20,6 +22,9 @@ type PlanQuery struct {
 	Project, From, To string
 	// Device is the agent's own device id, or "".
 	Device string
+	// Submission is the id of one of the user's submissions, or "": the
+	// plan is then that submission's frozen rows, for adding a part.
+	Submission string
 }
 
 // cleanProject normalises a project name as credited minutes store it.
@@ -42,7 +47,9 @@ func parseRange(from, to string) (submission.Range, error) {
 
 // Plan returns the rows the server holds for the user's project and range,
 // from every device, for the agent to build a bundle. It is ErrInvalid when
-// the range ends after a day some device with rows in it hasn't sealed.
+// the range ends after a day some unrevoked device with rows in it hasn't
+// sealed. With q.Submission it is that submission's frozen rows instead
+// (submissionPlan).
 func (s *Service) Plan(ctx context.Context, user uuid.UUID, q PlanQuery) (submission.Plan, error) {
 	project, err := cleanProject(q.Project)
 	if err != nil {
@@ -57,6 +64,9 @@ func (s *Service) Plan(ctx context.Context, user uuid.UUID, q PlanQuery) (submis
 		if self, err = uuid.Parse(q.Device); err != nil {
 			return submission.Plan{}, fmt.Errorf("%w: device must be a device id", ErrInvalid)
 		}
+	}
+	if q.Submission != "" {
+		return s.submissionPlan(ctx, user, q, project, self)
 	}
 	devs, err := s.st.SubmissionPlanDevices(ctx, db.SubmissionPlanDevicesParams{
 		UserID: user, Project: project, FromTime: rg.From, ToTime: rangeEnd(rg),
@@ -79,12 +89,7 @@ func (s *Service) Plan(ctx context.Context, user uuid.UUID, q PlanQuery) (submis
 		Minutes: make([]submission.Minute, 0, len(rows)),
 	}
 	for _, d := range devs {
-		pd := submission.PlanDevice{ID: d.ID.String(), Name: d.Name, ThisDevice: d.ID == self}
-		if d.SealedThrough.Valid {
-			sealed := day(d.SealedThrough)
-			pd.SealedThrough = &sealed
-		}
-		p.Devices = append(p.Devices, pd)
+		p.Devices = append(p.Devices, planDevice(d.ID, d.Name, d.SealedThrough, d.Revoked, self))
 	}
 	for _, r := range rows {
 		p.Minutes = append(p.Minutes, minute(project, r.DeviceID, r.Minute, r.Label, r.Credited, r.Cuts, r.Flags,
@@ -93,19 +98,83 @@ func (s *Service) Plan(ctx context.Context, user uuid.UUID, q PlanQuery) (submis
 	return p, nil
 }
 
-// checkSealed refuses a range ending after the last day every device with
-// rows in it has sealed (ADR 0020): their evidence for later days doesn't
-// exist yet.
-func checkSealed(rg submission.Range, devs []db.SubmissionPlanDevicesRow) error {
-	for _, d := range devs {
-		if !d.SealedThrough.Valid {
-			return fmt.Errorf("%w: device %q has sealed no evidence yet, so the range can't end yet", ErrInvalid, d.Name)
-		}
+// submissionPlan is the plan of one of the user's submissions: its frozen
+// rows and the devices that have them. A part built from it lists only
+// frozen rows, so AddPart takes it. The project and range must be the
+// submission's (ErrInvalid otherwise, saying which they are), and the
+// submission must still take parts (addable).
+func (s *Service) submissionPlan(ctx context.Context, user uuid.UUID, q PlanQuery, project string, self uuid.UUID,
+) (submission.Plan, error) {
+	id, err := uuid.Parse(q.Submission)
+	if err != nil {
+		return submission.Plan{}, ErrNotFound
+	}
+	sub, err := s.st.SubmissionOfUser(ctx, db.SubmissionOfUserParams{ID: id, UserID: user})
+	if err != nil {
+		return submission.Plan{}, notFound(err, ErrNotFound, "reading submission")
+	}
+	if from, to := day(sub.FromDay), day(sub.ToDay); sub.Project != project || from != q.From || to != q.To {
+		return submission.Plan{}, fmt.Errorf("%w: submission %s is %q from %s to %s; give that project and range",
+			ErrInvalid, sub.ID, sub.Project, from, to)
+	}
+	deleted, err := s.st.SubmissionRawDeleted(ctx, sub.ID)
+	if err != nil {
+		return submission.Plan{}, fmt.Errorf("reading parts: %w", err)
+	}
+	if err := addable(sub, deleted); err != nil {
+		return submission.Plan{}, err
+	}
+	devs, err := s.st.SubmissionFrozenDevices(ctx, sub.ID)
+	if err != nil {
+		return submission.Plan{}, fmt.Errorf("reading frozen devices: %w", err)
+	}
+	rows, err := s.st.SubmissionFrozenMinutes(ctx, sub.ID)
+	if err != nil {
+		return submission.Plan{}, fmt.Errorf("reading frozen minutes: %w", err)
+	}
+	p := submission.Plan{
+		Project: project, From: q.From, To: q.To,
+		Devices: make([]submission.PlanDevice, 0, len(devs)),
+		Minutes: make([]submission.Minute, 0, len(rows)),
 	}
 	for _, d := range devs {
+		p.Devices = append(p.Devices, planDevice(d.ID, d.Name, d.SealedThrough, d.Revoked, self))
+	}
+	for _, r := range rows {
+		p.Minutes = append(p.Minutes, minute(project, r.DeviceID, r.Minute, r.Label, r.Credited, r.Cuts, r.Flags,
+			r.RulesVersion, r.ComputedAt, r.Snapshot.Int64, r.Snapshot.Valid))
+	}
+	return p, nil
+}
+
+func planDevice(id uuid.UUID, name string, sealed pgtype.Date, revoked bool, self uuid.UUID) submission.PlanDevice {
+	pd := submission.PlanDevice{ID: id.String(), Name: name, ThisDevice: id == self, Revoked: revoked}
+	if sealed.Valid {
+		d := day(sealed)
+		pd.SealedThrough = &d
+	}
+	return pd
+}
+
+// checkSealed refuses a range ending after the last day every unrevoked
+// device with rows in it has sealed (ADR 0020): their evidence for later
+// days doesn't exist yet. A revoked device can't seal any more days, so it
+// never holds a range back; its rows on days it didn't seal stay unbacked.
+// The message says so, since a device that was replaced (a reinstall, a
+// lost laptop) seals nothing more until it is revoked.
+func checkSealed(rg submission.Range, devs []db.SubmissionPlanDevicesRow) error {
+	const revokeHint = "; if that device is no longer in use (lost, replaced or reinstalled), revoke it on your " +
+		"Logbook dashboard: a revoked device doesn't hold the range back, and its minutes there stay unbacked"
+	live := slices.DeleteFunc(slices.Clone(devs), func(d db.SubmissionPlanDevicesRow) bool { return d.Revoked })
+	for _, d := range live {
+		if !d.SealedThrough.Valid {
+			return fmt.Errorf("%w: device %q has sealed no evidence yet, so the range can't end yet%s", ErrInvalid, d.Name, revokeHint)
+		}
+	}
+	for _, d := range live {
 		if sealed := d.SealedThrough.Time.UTC(); rg.To.After(sealed) {
-			return fmt.Errorf("%w: device %q has sealed evidence through %s, so the range can end on %s at the latest",
-				ErrInvalid, d.Name, sealed.Format(time.DateOnly), lastSealed(devs).Format(time.DateOnly))
+			return fmt.Errorf("%w: device %q has sealed evidence through %s, so the range can end on %s at the latest%s",
+				ErrInvalid, d.Name, sealed.Format(time.DateOnly), lastSealed(live).Format(time.DateOnly), revokeHint)
 		}
 	}
 	return nil

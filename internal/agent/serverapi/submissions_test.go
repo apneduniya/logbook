@@ -70,6 +70,13 @@ func TestPlan(t *testing.T) {
 		t.Fatal("a row with no key has one")
 	}
 
+	// A submission's plan names it.
+	q.Submission = "c0000000-0000-4000-8000-000000000003"
+	if _, err := New(srv.Client(), "ua").Plan(t.Context(), Target{BaseURL: srv.URL}, q); err != nil ||
+		rec.query != "device=a0000000-0000-4000-8000-000000000001&from=2026-11-01&project=terra+bot&submission="+q.Submission+"&to=2026-11-20" {
+		t.Fatalf("submission plan: %v, query %q", err, rec.query)
+	}
+
 	// A plan for something else is not this plan.
 	q.To = "2026-11-21"
 	if _, err := New(srv.Client(), "ua").Plan(t.Context(), Target{BaseURL: srv.URL}, q); err == nil {

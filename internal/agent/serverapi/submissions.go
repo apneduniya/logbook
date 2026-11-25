@@ -114,16 +114,23 @@ type PlanQuery struct {
 	// DeviceID is the agent's own device, so the plan marks it
 	// this_device.
 	DeviceID string
+	// Submission is an existing submission's id, or "": the plan is then
+	// its frozen rows (project and range must be the submission's).
+	Submission string
 }
 
 // Plan fetches the minute rows the server holds for a project and range,
-// from every device (submission.Plan).
+// from every device (submission.Plan), or with q.Submission the rows that
+// submission froze.
 func (c *Client) Plan(ctx context.Context, t Target, q PlanQuery) (submission.Plan, error) {
 	ctx, cancel := context.WithTimeout(ctx, PlanTimeout)
 	defer cancel()
 	v := url.Values{"project": {q.Project}, "from": {q.From}, "to": {q.To}}
 	if q.DeviceID != "" {
 		v.Set("device", q.DeviceID)
+	}
+	if q.Submission != "" {
+		v.Set("submission", q.Submission)
 	}
 	req, err := c.request(ctx, t, http.MethodGet, "/api/v1/me/submissions/plan?"+v.Encode(), nil)
 	if err != nil {

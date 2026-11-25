@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -149,8 +150,11 @@ func freeze(ctx context.Context, q *db.Queries, id uuid.UUID) error {
 
 // AddPart adds another device's part to one of the user's submissions
 // (POST /api/v1/submissions/{id}/parts) and queues the re-check of the
-// whole submission. It is ErrConflict once a decision exists, after
-// withdrawal or failure, or when the device already has a part.
+// whole submission. It is ErrConflict when the submission no longer takes
+// parts (addable) or the device already has one, and ErrInvalid when the
+// part lists a minute that isn't a frozen row of its device with that key:
+// such a part would fail the whole submission in the re-check, so it is
+// refused before it is stored.
 func (s *Service) AddPart(ctx context.Context, user, id uuid.UUID, part submission.Part) (Accepted, error) {
 	if err := part.Validate(); err != nil {
 		return Accepted{}, invalid(err)
@@ -176,13 +180,15 @@ func (s *Service) AddPart(ctx context.Context, user, id uuid.UUID, part submissi
 		if err != nil {
 			return notFound(err, ErrNotFound, "reading submission")
 		}
-		switch {
-		case sub.DecidedAt != nil:
-			return fmt.Errorf("%w: a decision has been recorded; no parts can be added", ErrConflict)
-		case sub.Status == StatusWithdrawn:
-			return fmt.Errorf("%w: the submission was withdrawn", ErrConflict)
-		case sub.Status == StatusFailed:
-			return fmt.Errorf("%w: the submission failed its check; submit again", ErrConflict)
+		deleted, err := q.SubmissionRawDeleted(ctx, id)
+		if err != nil {
+			return fmt.Errorf("reading parts: %w", err)
+		}
+		if err := addable(sub, deleted); err != nil {
+			return err
+		}
+		if err := checkFrozen(ctx, q, sub, device, part); err != nil {
+			return err
 		}
 		n, err := q.SubmissionPartInsert(ctx, db.SubmissionPartInsertParams{
 			SubmissionID: id, DeviceID: device, Data: data, Bytes: int32(len(data)), UploadedAt: s.now(), //nolint:gosec // bounded by the upload limit
@@ -202,6 +208,46 @@ func (s *Service) AddPart(ctx context.Context, user, id uuid.UUID, part submissi
 		return Accepted{}, err
 	}
 	return Accepted{ID: id, Status: StatusVerifying}, nil
+}
+
+// addable is ErrConflict when a submission takes no more parts: a decision
+// exists, it was withdrawn or failed, or its stored parts were deleted
+// (retention), since the re-check of the whole submission needs them.
+func addable(sub db.Submission, rawDeleted bool) error {
+	switch {
+	case sub.DecidedAt != nil:
+		return fmt.Errorf("%w: a decision has been recorded; no parts can be added", ErrConflict)
+	case sub.Status == StatusWithdrawn:
+		return fmt.Errorf("%w: the submission was withdrawn", ErrConflict)
+	case sub.Status == StatusFailed:
+		return fmt.Errorf("%w: the submission failed its check; submit again", ErrConflict)
+	case rawDeleted:
+		return fmt.Errorf("%w: the submission's evidence was deleted after a year, so it can't be checked again; submit again", ErrConflict)
+	}
+	return nil
+}
+
+// checkFrozen is ErrInvalid unless every minute the part lists is a frozen
+// row of its device in the submission, with the same key
+// (submission.CheckListed, the re-check's own rule).
+func checkFrozen(ctx context.Context, q *db.Queries, sub db.Submission, device uuid.UUID, part submission.Part) error {
+	if len(part.Minutes) == 0 {
+		return nil
+	}
+	rows, err := q.SubmissionFrozenMinutesOfDevice(ctx, db.SubmissionFrozenMinutesOfDeviceParams{SubmissionID: sub.ID, DeviceID: device})
+	if err != nil {
+		return fmt.Errorf("reading frozen minutes: %w", err)
+	}
+	frozen := make([]submission.Minute, 0, len(rows))
+	for _, r := range rows {
+		frozen = append(frozen, minute(sub.Project, r.DeviceID, r.Minute, r.Label, r.Credited, r.Cuts, r.Flags,
+			r.RulesVersion, r.ComputedAt, r.Snapshot.Int64, r.Snapshot.Valid))
+	}
+	if err := submission.CheckListed(part, frozen); err != nil {
+		return fmt.Errorf("%w: %s; a part may list only the submission's frozen rows of its device",
+			ErrInvalid, strings.TrimPrefix(err.Error(), submission.ErrMalformed.Error()+": "))
+	}
+	return nil
 }
 
 // checkPart checks what a part names: the device is the user's, and every

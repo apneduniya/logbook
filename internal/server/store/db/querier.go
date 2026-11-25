@@ -350,7 +350,12 @@ type Querier interface {
 	// Freezes the user's rows of the submission's project and range, every
 	// device and label.
 	SubmissionFreezeMinutes(ctx context.Context, submissionID uuid.UUID) (int64, error)
+	// The devices with frozen rows of a submission: the last day each has
+	// sealed (null when none) and whether it is revoked.
+	SubmissionFrozenDevices(ctx context.Context, submissionID uuid.UUID) ([]SubmissionFrozenDevicesRow, error)
 	SubmissionFrozenMinutes(ctx context.Context, submissionID uuid.UUID) ([]SubmissionFrozenMinutesRow, error)
+	// One device's frozen rows of a submission.
+	SubmissionFrozenMinutesOfDevice(ctx context.Context, arg SubmissionFrozenMinutesOfDeviceParams) ([]SubmissionFrozenMinutesOfDeviceRow, error)
 	// One submission by id, for the re-check job (which got the id from a job
 	// the server queued) and for callers that have already checked access.
 	SubmissionGet(ctx context.Context, id uuid.UUID) (Submission, error)
@@ -370,8 +375,8 @@ type Querier interface {
 	// A part was added: the whole submission is checked again.
 	SubmissionPartsChanged(ctx context.Context, id uuid.UUID) (int32, error)
 	// The devices with credited rows of one project in [from_time, to_time):
-	// the last day each has sealed (null when none) and how many of its rows
-	// carry credit.
+	// the last day each has sealed (null when none), whether it is revoked,
+	// and how many of its rows carry credit.
 	SubmissionPlanDevices(ctx context.Context, arg SubmissionPlanDevicesParams) ([]SubmissionPlanDevicesRow, error)
 	// Queries for internal/server/submissions (ADR 0020). Every read of a
 	// submission is scoped by its owner (user_id), its program (program_app_id),
@@ -388,6 +393,8 @@ type Querier interface {
 	// counts it) for one project per UTC day in [from_time, to_time), and its
 	// part in category "ai coding".
 	SubmissionRawDays(ctx context.Context, arg SubmissionRawDaysParams) ([]SubmissionRawDaysRow, error)
+	// Whether any stored part of a submission has been deleted.
+	SubmissionRawDeleted(ctx context.Context, submissionID uuid.UUID) (bool, error)
 	SubmissionSetDecided(ctx context.Context, arg SubmissionSetDecidedParams) error
 	SubmissionSetFailed(ctx context.Context, arg SubmissionSetFailedParams) error
 	SubmissionSetReady(ctx context.Context, arg SubmissionSetReadyParams) error

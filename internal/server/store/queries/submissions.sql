@@ -15,10 +15,11 @@ ORDER BY device_id, minute;
 
 -- name: SubmissionPlanDevices :many
 -- The devices with credited rows of one project in [from_time, to_time):
--- the last day each has sealed (null when none) and how many of its rows
--- carry credit.
+-- the last day each has sealed (null when none), whether it is revoked,
+-- and how many of its rows carry credit.
 SELECT d.id, d.name, d.os,
        (SELECT max(e.day) FROM evidence_days e WHERE e.device_id = d.id)::date AS sealed_through,
+       (d.revoked_at IS NOT NULL)::bool AS revoked,
        count(*) FILTER (WHERE c.credited > 0)::bigint AS credited_rows
 FROM credited_minutes c
 JOIN devices d ON d.id = c.device_id
@@ -123,6 +124,29 @@ SELECT device_id, minute, label, credited, cuts, flags, rules_version, computed_
 FROM submission_minutes
 WHERE submission_id = $1
 ORDER BY device_id, minute;
+
+-- name: SubmissionFrozenDevices :many
+-- The devices with frozen rows of a submission: the last day each has
+-- sealed (null when none) and whether it is revoked.
+SELECT d.id, d.name,
+       (SELECT max(e.day) FROM evidence_days e WHERE e.device_id = d.id)::date AS sealed_through,
+       (d.revoked_at IS NOT NULL)::bool AS revoked
+FROM devices d
+WHERE d.id IN (SELECT DISTINCT m.device_id FROM submission_minutes m WHERE m.submission_id = $1)
+ORDER BY d.id;
+
+-- name: SubmissionFrozenMinutesOfDevice :many
+-- One device's frozen rows of a submission.
+SELECT device_id, minute, label, credited, cuts, flags, rules_version, computed_at, snapshot
+FROM submission_minutes
+WHERE submission_id = sqlc.arg(submission_id) AND device_id = sqlc.arg(device_id)
+ORDER BY minute;
+
+-- name: SubmissionRawDeleted :one
+-- Whether any stored part of a submission has been deleted.
+SELECT EXISTS (
+    SELECT 1 FROM submission_parts WHERE submission_id = $1 AND raw_deleted_at IS NOT NULL
+)::bool AS deleted;
 
 -- name: SubmissionCapped :many
 SELECT minute, seconds FROM submission_capped WHERE submission_id = $1 ORDER BY minute;

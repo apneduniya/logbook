@@ -232,3 +232,70 @@ func TestRequestChecks(t *testing.T) {
 		}
 	}
 }
+
+// A refused range says why: the bad day and the format, the order, or the
+// longest range.
+func TestRangeErrorsSayWhy(t *testing.T) {
+	for name, tc := range map[string]struct {
+		from, to string
+		want     string
+	}{
+		"bad format": {"2026-11-1", "2026-11-20", `--from "2026-11-1" is not a day (days are YYYY-MM-DD, UTC)`},
+		"bad to":     {"2026-11-01", "20-11-2026", `--to "20-11-2026" is not a day`},
+		"reversed":   {"2026-11-20", "2026-11-01", "--to is before --from"},
+		"too long":   {"2026-01-01", "2026-11-20", "the range is 324 days; submit at most 92 days at a time"},
+	} {
+		r := request()
+		r.From, r.To = tc.from, tc.to
+		err := r.check(now)
+		if err == nil || !strings.Contains(err.Error(), tc.want) || strings.Contains(err.Error(), "malformed") {
+			t.Errorf("%s: err = %v, want %q", name, err, tc.want)
+		}
+	}
+}
+
+// --add asks for the submission's own plan (its frozen rows), so the part
+// lists only rows the server froze; a plain submit asks for the live one.
+func TestAddUsesTheSubmissionsPlan(t *testing.T) {
+	f := newFixture(t)
+	srv := &fakeServer{}
+	var out bytes.Buffer
+	req := request()
+	req.Yes = true
+	if err := Run(context.Background(), req, env(f, srv, "", false, &out)); err != nil {
+		t.Fatal(err)
+	}
+	req.AddTo = "c0000000-0000-4000-8000-000000000003"
+	if err := Run(context.Background(), req, env(f, srv, "", false, &out)); err != nil {
+		t.Fatal(err)
+	}
+	if len(srv.queries) != 2 || srv.queries[0].Submission != "" || srv.queries[1].Submission != req.AddTo {
+		t.Fatalf("plan queries = %+v", srv.queries)
+	}
+	// The server's answer for a submission that takes no parts names it.
+	srv.planErr = &serverapi.SubmitError{Reason: serverapi.ErrConflict,
+		Cause: &serverapi.Error{Kind: serverapi.KindConflict, Status: 409, Message: "the submission was withdrawn"}}
+	err := Run(context.Background(), req, env(f, srv, "", false, &out))
+	if !errors.Is(err, serverapi.ErrConflict) || !strings.Contains(err.Error(), req.AddTo) || !strings.Contains(err.Error(), "withdrawn") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+// A revoked device can't seal more days, so it doesn't hold the range
+// back; an unrevoked one that hasn't sealed it says revoking would help.
+func TestRevokedDeviceDoesntHoldRangeBack(t *testing.T) {
+	f := newFixture(t)
+	f.plan.Devices[1].SealedThrough = nil
+	srv := &fakeServer{}
+	var out bytes.Buffer
+	req := request()
+	req.Yes = true
+	err := Run(context.Background(), req, env(f, srv, "", false, &out))
+	if !errors.Is(err, ErrNotSealed) || !strings.Contains(err.Error(), "revoke it on your Logbook dashboard") {
+		t.Fatalf("err = %v", err)
+	}
+	f.plan.Devices[1].Revoked = true
+	if err := Run(context.Background(), req, env(f, srv, "", false, &out)); err != nil || srv.uploads() != 1 {
+		t.Fatalf("with the device revoked: %v, %d uploads", err, srv.uploads())
+	}
+}

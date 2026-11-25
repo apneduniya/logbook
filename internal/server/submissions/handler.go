@@ -145,6 +145,7 @@ func (h *Handler) plan(w http.ResponseWriter, r *http.Request) error {
 	q := r.URL.Query()
 	p, err := h.svc.Plan(r.Context(), user, PlanQuery{
 		Project: q.Get("project"), From: q.Get("from"), To: q.Get("to"), Device: q.Get("device"),
+		Submission: q.Get("submission"),
 	})
 	if err != nil {
 		return mapError(err)

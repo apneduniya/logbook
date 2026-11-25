@@ -85,7 +85,7 @@ func (r *Request) check(now time.Time) error {
 		return errors.New("name the project to submit, as Logbook shows it")
 	}
 	if _, err := submission.ParseRange(r.From, r.To); err != nil {
-		return fmt.Errorf("--from %s --to %s: %w", r.From, r.To, errors.Unwrap(err))
+		return fmt.Errorf("--from %s --to %s: %s", r.From, r.To, rangeProblem(err))
 	}
 	if len(r.Program) > 64 {
 		return errors.New("--program is a program's slug")
@@ -107,9 +107,26 @@ func (r *Request) check(now time.Time) error {
 	return nil
 }
 
+// rangeProblem is why submission.ParseRange refused a range, in the
+// flags' words.
+func rangeProblem(err error) string {
+	msg := strings.TrimPrefix(err.Error(), submission.ErrMalformed.Error()+": ")
+	switch {
+	case msg == "to is before from":
+		return "--to is before --from"
+	case strings.HasPrefix(msg, "from "), strings.HasPrefix(msg, "to "):
+		return "--" + msg + " (days are YYYY-MM-DD, UTC)"
+	case strings.HasSuffix(msg, fmt.Sprintf("at most %d", submission.MaxRangeDays)):
+		return fmt.Sprintf("the range is %s; submit at most %d days at a time", strings.TrimSuffix(msg, fmt.Sprintf(", at most %d", submission.MaxRangeDays)), submission.MaxRangeDays)
+	}
+	return msg
+}
+
 // Run submits the device's part (ADR 0020 "The bundle"): it fetches the
 // plan, builds the part, prints the summary, asks for confirmation, and
-// uploads the part gzip-compressed, or writes it to req.Preview.
+// uploads the part gzip-compressed, or writes it to req.Preview. With
+// req.AddTo the plan is the submission's own frozen rows, so the part
+// lists none the server didn't freeze.
 func Run(ctx context.Context, req Request, env Env) error {
 	if env.Now == nil {
 		env.Now = time.Now
@@ -120,9 +137,14 @@ func Run(ctx context.Context, req Request, env Env) error {
 	if !req.Yes && req.Preview == "" && !env.Interactive {
 		return ErrNoTTY
 	}
-	plan, err := env.Server.Plan(ctx, env.Target, serverapi.PlanQuery{Project: req.Project, From: req.From, To: req.To, DeviceID: env.DeviceID})
+	plan, err := env.Server.Plan(ctx, env.Target, serverapi.PlanQuery{
+		Project: req.Project, From: req.From, To: req.To, DeviceID: env.DeviceID, Submission: req.AddTo,
+	})
 	if errors.Is(err, serverapi.ErrRefused) {
 		return fmt.Errorf("the server can't take this range: %w", err)
+	}
+	if req.AddTo != "" && (errors.Is(err, serverapi.ErrNotFound) || errors.Is(err, serverapi.ErrConflict)) {
+		return fmt.Errorf("submission %s: %w", req.AddTo, err)
 	}
 	if err != nil {
 		return fmt.Errorf("asking the server which minutes it holds: %w", err)
@@ -180,17 +202,21 @@ func Run(ctx context.Context, req Request, env Env) error {
 	return writeResult(env.Out, req, prep.Summary, res)
 }
 
-// sealed refuses a range that a device with rows hasn't sealed through
-// its end. The server refuses it too (400); this says which device.
+// sealed refuses a range that an unrevoked device with rows hasn't sealed
+// through its end. The server refuses it too (400); this says which
+// device. A revoked device can't seal more days, so it doesn't count.
 func sealed(plan submission.Plan, to string) error {
+	const retired = "; if it's no longer in use (lost, replaced or reinstalled), revoke it on your Logbook dashboard " +
+		"and its minutes there stay unbacked"
 	for _, d := range plan.Devices {
 		switch {
+		case d.Revoked:
 		case d.SealedThrough == nil:
-			return fmt.Errorf("%w: %s has sealed no day yet; a day is sealed about an hour after it ends (UTC) while the agent runs there",
-				ErrNotSealed, d.Name)
+			return fmt.Errorf("%w: %s has sealed no day yet; a day is sealed about an hour after it ends (UTC) while the agent runs there%s",
+				ErrNotSealed, d.Name, retired)
 		case *d.SealedThrough < to:
-			return fmt.Errorf("%w: %s has sealed its evidence through %s; end the range there, or wait until it seals %s (about an hour after the day ends, UTC, while the agent runs there)",
-				ErrNotSealed, d.Name, *d.SealedThrough, to)
+			return fmt.Errorf("%w: %s has sealed its evidence through %s; end the range there, or wait until it seals %s (about an hour after the day ends, UTC, while the agent runs there)%s",
+				ErrNotSealed, d.Name, *d.SealedThrough, to, retired)
 		}
 	}
 	return nil
