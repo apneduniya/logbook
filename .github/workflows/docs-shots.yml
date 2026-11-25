@@ -79,13 +79,23 @@ jobs:
         if: matrix.os == 'windows'
         shell: pwsh
         run: |
-          $env:LOGBOOK_ENCRYPTION_KEY = [Convert]::ToBase64String((1..32 | ForEach-Object { Get-Random -Maximum 256 }) -as [byte[]])
-          $env:LOGBOOK_ADDR = '127.0.0.1:8080'
-          $env:LOGBOOK_BASE_URL = 'http://127.0.0.1:8080'
-          $env:LOGBOOK_DEV_INSECURE_COOKIE = 'true'
-          $env:LOGBOOK_DEV_LOGIN = 'true'
-          Start-Process -FilePath "$env:RUNNER_TEMP\server\logbook-server.exe" -WindowStyle Hidden `
-            -RedirectStandardOutput "$env:RUNNER_TEMP\server.log" -RedirectStandardError "$env:RUNNER_TEMP\server.err.log"
+          # A process started from a step is ended with the step on Windows,
+          # so the server is started through WMI, outside the step's job.
+          $key = [Convert]::ToBase64String([Security.Cryptography.RandomNumberGenerator]::GetBytes(32))
+          $dir = "$env:RUNNER_TEMP\server"
+          @(
+            '@echo off'
+            "set DATABASE_URL=$($env:DATABASE_URL -replace '%','%%')"
+            "set LOGBOOK_ENCRYPTION_KEY=$key"
+            'set LOGBOOK_ADDR=127.0.0.1:8080'
+            'set LOGBOOK_BASE_URL=http://127.0.0.1:8080'
+            'set LOGBOOK_DEV_INSECURE_COOKIE=true'
+            'set LOGBOOK_DEV_LOGIN=true'
+            "`"$dir\logbook-server.exe`" > `"$env:RUNNER_TEMP\server.log`" 2>&1"
+          ) | Set-Content -Encoding ascii "$dir\run.cmd"
+          $r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{
+            CommandLine = "cmd.exe /c `"$dir\run.cmd`""; CurrentDirectory = $dir }
+          if ($r.ReturnValue -ne 0) { throw "starting the server failed: $($r.ReturnValue)" }
 
       - name: Start the server (macOS)
         if: matrix.os == 'macos'

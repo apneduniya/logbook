@@ -14,6 +14,8 @@ mkdir -p "$out"
 work="$RUNNER_TEMP/shots-work"
 mkdir -p "$work"
 log() { echo "[shots] $*"; }
+# On failure, keep a picture of the whole screen to see what was in the way.
+trap 'screencapture -x "$out/debug-failure-screen.png" || true' ERR
 
 : "${LOGBOOK_API_KEY:?}" "${LOGBOOK_SERVER:?}"
 bindir="$HOME/Library/Application Support/Logbook/bin"
@@ -30,6 +32,18 @@ EOF
 cp "$work/env-install.sh" "$work/env-after.sh"
 printf 'export PATH="%s:$PATH"\n' "$bindir" >>"$work/env-after.sh"
 umask 022
+
+# Let the runner's scripts drive Terminal over Apple Events. The image
+# grants osascript and bash access to System Events, Finder and Safari but
+# not Terminal, so the first "tell Terminal" would wait on a consent dialog.
+now=$(date +%s)
+for client in /usr/bin/osascript /bin/bash /bin/zsh /opt/hca/hosted-compute-agent /usr/local/opt/runner/provisioner/provisioner; do
+	row="'kTCCServiceAppleEvents','$client',1,2,0,1,NULL,NULL,0,'com.apple.Terminal',NULL,NULL,$now,NULL,NULL,'UNUSED',$now"
+	sqlite3 "$HOME/Library/Application Support/com.apple.TCC/TCC.db" "INSERT OR REPLACE INTO access VALUES($row);" ||
+		log "user TCC insert failed for $client"
+	sudo sqlite3 "/Library/Application Support/com.apple.TCC/TCC.db" "INSERT OR REPLACE INTO access VALUES($row);" ||
+		log "system TCC insert failed for $client"
+done
 
 # A Terminal profile setting: large Menlo, light background, ~1000x600.
 osascript <<'EOF'
