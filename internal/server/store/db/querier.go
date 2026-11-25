@@ -155,31 +155,45 @@ type Querier interface {
 	OAuthAppForMember(ctx context.Context, arg OAuthAppForMemberParams) (OAuthAppForMemberRow, error)
 	// Returns no row when the slug is taken (by any app, deleted ones included).
 	OAuthAppInsert(ctx context.Context, arg OAuthAppInsertParams) (OauthApp, error)
-	// Locks a live app owned by owner_id for the rest of the transaction.
+	// Locks a live app owned by owner_id against other changes to it for the
+	// rest of the transaction. FOR NO KEY UPDATE, not FOR UPDATE: a token
+	// insert's foreign key check takes FOR KEY SHARE on the app, and must not
+	// wait here while it holds a grant that app deletion then waits for.
 	OAuthAppLockOwned(ctx context.Context, arg OAuthAppLockOwnedParams) (uuid.UUID, error)
 	// Replaces a confidential app's secret. No row for public apps.
 	OAuthAppSetSecret(ctx context.Context, arg OAuthAppSetSecretParams) (OauthApp, error)
 	OAuthAppUpdate(ctx context.Context, arg OAuthAppUpdateParams) (OauthApp, error)
 	// Live apps the user owns or reviews for, newest first.
 	OAuthAppsForMember(ctx context.Context, userID uuid.UUID) ([]OAuthAppsForMemberRow, error)
+	// Families with a code that expired before code_before or a token dead
+	// (both halves expired, or revoked) since before token_before: the
+	// candidates for cleanup, which decides each one under its family lock.
+	OAuthCleanupFamilies(ctx context.Context, arg OAuthCleanupFamiliesParams) ([]uuid.UUID, error)
+	// A code's family, read without a lock so the family can be locked before
+	// the code.
+	OAuthCodeFamily(ctx context.Context, codeHash []byte) (uuid.UUID, error)
 	OAuthCodeForUpdate(ctx context.Context, codeHash []byte) (OauthCode, error)
 	OAuthCodeInsert(ctx context.Context, arg OAuthCodeInsertParams) error
 	OAuthCodeMarkUsed(ctx context.Context, arg OAuthCodeMarkUsedParams) error
 	OAuthCodesBurnForApp(ctx context.Context, arg OAuthCodesBurnForAppParams) error
 	// Marks the user's unused codes for the app as used, so none can be exchanged.
 	OAuthCodesBurnForGrant(ctx context.Context, arg OAuthCodesBurnForGrantParams) error
-	// Tokens dead since before `before` (both halves expired, or revoked),
-	// unless a token of their family is still usable at `now`: a rotated refresh
-	// token is the record that replaying it must revoke its family.
-	OAuthDeleteDeadTokens(ctx context.Context, arg OAuthDeleteDeadTokensParams) (int64, error)
-	// Codes that expired before `before`, unless a token of their family is
-	// still usable at `now`: a used code is the record that replaying it must
-	// revoke that family, so it is kept as long as there is something to revoke.
-	OAuthDeleteExpiredCodes(ctx context.Context, arg OAuthDeleteExpiredCodesParams) (int64, error)
 	OAuthDeleteExpiredRequests(ctx context.Context, expiresAt time.Time) (int64, error)
-	// Serialises issuing a token into a family with revoking the family, until
-	// the transaction ends: a revocation that waited here then sees every token
-	// the issuer added. 1002 namespaces the lock (ingest uses 1001).
+	// The family's codes that expired before `before`, unless a token of the
+	// family is still usable at `now`: a used code is the record that replaying
+	// it must revoke the family, so it is kept while there is something to
+	// revoke. The caller holds the family lock, so no token is being issued.
+	OAuthFamilyDeleteDeadCodes(ctx context.Context, arg OAuthFamilyDeleteDeadCodesParams) (int64, error)
+	// The family's tokens dead since before `before` (both halves expired, or
+	// revoked), unless a token of the family is still usable at `now`: a rotated
+	// refresh token is the record that replaying it must revoke the family. The
+	// caller holds the family lock.
+	OAuthFamilyDeleteDeadTokens(ctx context.Context, arg OAuthFamilyDeleteDeadTokensParams) (int64, error)
+	// Serialises issuing a token into a family with revoking the family and
+	// with cleanup deleting its dead rows, until the transaction ends: a
+	// revocation or cleanup that waited here then sees every token the issuer
+	// added. Taken after the grant and before any code or token row. 1002
+	// namespaces the lock (ingest uses 1001).
 	OAuthFamilyLock(ctx context.Context, familyID uuid.UUID) error
 	OAuthGrantActive(ctx context.Context, arg OAuthGrantActiveParams) (OauthGrant, error)
 	// Locks the grant against revocation (whose UPDATE waits on it) while a
@@ -247,16 +261,18 @@ type Querier interface {
 	// credited LEAST(its gap to the previous filtered heartbeat, 120 s), the
 	// first 0. Heartbeats count in [from_time, to_time). A NULL projects or
 	// categories array means no filter; exclude_categories is compared
-	// case-insensitively.
+	// case-insensitively and exclude_categories_exact exactly.
 	//
 	// With boundary (Hackatime's test_param, duration_seconds_boundary_aware)
 	// the filtered heartbeats at the latest time before from_time also take
 	// part, so the first heartbeat in range is credited its gap from them, and
 	// heartbeats at to_time count too; that applies to the total only.
 	//
-	// The rows are one per (project, language) with is_total false, then one
-	// row with is_total true carrying the total, rounded once as Hackatime
-	// rounds it (float8 to integer).
+	// The rows are one per (project, language) with is_total false, in
+	// fractional seconds, so a caller can sum them into each breakdown entry
+	// before rounding; then one row with is_total true carrying the total,
+	// already rounded once as Hackatime rounds it (float8 to integer, half to
+	// even).
 	// LEAST ignores NULLs, so the first heartbeat's NULL gap is made 0
 	// explicitly, as Hackatime's with_capped_duration does.
 	ProgramRawTimeline(ctx context.Context, arg ProgramRawTimelineParams) ([]ProgramRawTimelineRow, error)

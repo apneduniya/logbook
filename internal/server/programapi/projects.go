@@ -115,7 +115,7 @@ func buildProjectDetails(raw []RawRow, credited []CreditedRow, counts map[string
 			continue
 		}
 		a := get(r.Project)
-		a.raw += r.Seconds
+		a.raw += roundSeconds(r.Seconds) // rollup rows: whole seconds
 		if r.Language != "" {
 			a.languages[r.Language] = true
 		}

@@ -316,11 +316,16 @@ func (s *Service) DeleteApp(ctx context.Context, user, appID uuid.UUID) error {
 		if err := q.OAuthRequestsDeleteForApp(ctx, appID); err != nil {
 			return fmt.Errorf("deleting pending requests: %w", err)
 		}
-		if err := q.OAuthCodesBurnForApp(ctx, db.OAuthCodesBurnForAppParams{UsedAt: now, AppID: appID}); err != nil {
-			return fmt.Errorf("burning codes: %w", err)
-		}
+		// Grants, then codes, then tokens: the order RevokeGrant takes them
+		// in, so the two can't deadlock. Revoking the grants waits for a
+		// refresh in flight (it holds its grant FOR SHARE) and burning the
+		// codes for an exchange in flight, so the token UPDATE sees what
+		// either issued.
 		if err := q.OAuthGrantsRevokeApp(ctx, db.OAuthGrantsRevokeAppParams{RevokedAt: now, AppID: appID}); err != nil {
 			return fmt.Errorf("revoking grants: %w", err)
+		}
+		if err := q.OAuthCodesBurnForApp(ctx, db.OAuthCodesBurnForAppParams{UsedAt: now, AppID: appID}); err != nil {
+			return fmt.Errorf("burning codes: %w", err)
 		}
 		n, err := q.OAuthTokensRevokeApp(ctx, db.OAuthTokensRevokeAppParams{RevokedAt: now, AppID: appID})
 		if err != nil {

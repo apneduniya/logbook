@@ -391,18 +391,19 @@ WITH filtered AS NOT MATERIALIZED (
            OR (CASE WHEN h.project = '' THEN 'Unknown' ELSE h.project END) = ANY ($2::text[]))
       AND ($3::text[] IS NULL OR h.category = ANY ($3::text[]))
       AND NOT (lower(h.category) = ANY ($4::text[]))
-      AND NOT ((CASE WHEN h.project = '' THEN 'Unknown' ELSE h.project END) = ANY ($5::text[]))
+      AND NOT (h.category = ANY ($5::text[]))
+      AND NOT ((CASE WHEN h.project = '' THEN 'Unknown' ELSE h.project END) = ANY ($6::text[]))
 ),
 timeline AS (
     SELECT filtered.time, filtered.id, filtered.project, filtered.language
     FROM filtered
-    WHERE filtered.time >= $6::timestamptz
-      AND (filtered.time < $7::timestamptz OR ($8::boolean AND filtered.time = $7::timestamptz))
+    WHERE filtered.time >= $7::timestamptz
+      AND (filtered.time < $8::timestamptz OR ($9::boolean AND filtered.time = $8::timestamptz))
     UNION ALL
     SELECT filtered.time, filtered.id, filtered.project, filtered.language
     FROM filtered
-    WHERE $8::boolean
-      AND filtered.time = (SELECT max(b.time) FROM filtered b WHERE b.time < $6::timestamptz)
+    WHERE $9::boolean
+      AND filtered.time = (SELECT max(b.time) FROM filtered b WHERE b.time < $7::timestamptz)
 ),
 gaps AS (
     SELECT t.time, t.project, t.language,
@@ -415,32 +416,33 @@ credited AS (
     FROM gaps g
 )
 SELECT c.project, c.language,
-       coalesce(sum(c.seconds) FILTER (WHERE c.time < $7::timestamptz), 0)::bigint AS seconds,
+       coalesce(sum(c.seconds) FILTER (WHERE c.time < $8::timestamptz), 0)::float8 AS seconds,
        false AS is_total
 FROM credited c
-WHERE c.time >= $6::timestamptz
+WHERE c.time >= $7::timestamptz
 GROUP BY c.project, c.language
 UNION ALL
-SELECT ''::text, ''::text, coalesce(sum(c.seconds), 0)::bigint, true
+SELECT ''::text, ''::text, coalesce(sum(c.seconds), 0)::bigint::float8, true
 FROM credited c
-WHERE c.time >= $6::timestamptz
+WHERE c.time >= $7::timestamptz
 `
 
 type ProgramRawTimelineParams struct {
-	UserID            uuid.UUID
-	Projects          []string
-	Categories        []string
-	ExcludeCategories []string
-	ExcludeProjects   []string
-	FromTime          time.Time
-	ToTime            time.Time
-	Boundary          bool
+	UserID                 uuid.UUID
+	Projects               []string
+	Categories             []string
+	ExcludeCategories      []string
+	ExcludeCategoriesExact []string
+	ExcludeProjects        []string
+	FromTime               time.Time
+	ToTime                 time.Time
+	Boundary               bool
 }
 
 type ProgramRawTimelineRow struct {
 	Project  string
 	Language string
-	Seconds  int64
+	Seconds  float64
 	IsTotal  bool
 }
 
@@ -449,16 +451,18 @@ type ProgramRawTimelineRow struct {
 // credited LEAST(its gap to the previous filtered heartbeat, 120 s), the
 // first 0. Heartbeats count in [from_time, to_time). A NULL projects or
 // categories array means no filter; exclude_categories is compared
-// case-insensitively.
+// case-insensitively and exclude_categories_exact exactly.
 //
 // With boundary (Hackatime's test_param, duration_seconds_boundary_aware)
 // the filtered heartbeats at the latest time before from_time also take
 // part, so the first heartbeat in range is credited its gap from them, and
 // heartbeats at to_time count too; that applies to the total only.
 //
-// The rows are one per (project, language) with is_total false, then one
-// row with is_total true carrying the total, rounded once as Hackatime
-// rounds it (float8 to integer).
+// The rows are one per (project, language) with is_total false, in
+// fractional seconds, so a caller can sum them into each breakdown entry
+// before rounding; then one row with is_total true carrying the total,
+// already rounded once as Hackatime rounds it (float8 to integer, half to
+// even).
 // LEAST ignores NULLs, so the first heartbeat's NULL gap is made 0
 // explicitly, as Hackatime's with_capped_duration does.
 func (q *Queries) ProgramRawTimeline(ctx context.Context, arg ProgramRawTimelineParams) ([]ProgramRawTimelineRow, error) {
@@ -467,6 +471,7 @@ func (q *Queries) ProgramRawTimeline(ctx context.Context, arg ProgramRawTimeline
 		arg.Projects,
 		arg.Categories,
 		arg.ExcludeCategories,
+		arg.ExcludeCategoriesExact,
 		arg.ExcludeProjects,
 		arg.FromTime,
 		arg.ToTime,

@@ -187,14 +187,19 @@ type Range struct {
 type RawQuery struct {
 	Projects          []string
 	Categories        []string
-	ExcludeCategories []string // lower case
-	ExcludeProjects   []string
+	ExcludeCategories []string // lower case, compared with lower(category)
+	// ExcludeCategoriesExact are compared with the category as stored. Only
+	// RawTimeline reads it; a query with it is Filtered.
+	ExcludeCategoriesExact []string
+	ExcludeProjects        []string
 }
 
-// RawRow is raw seconds for one (project, language) in a range.
+// RawRow is raw seconds for one (project, language) in a range. Seconds is
+// whole for rollup rows and fractional for timeline rows (RawTimeline);
+// breakdowns sum rows first and round each entry once (roundSeconds).
 type RawRow struct {
 	Project, Language string
-	Seconds           int64
+	Seconds           float64
 	First, Last       time.Time // first and last minute
 }
 
@@ -210,7 +215,7 @@ func (s *Service) Raw(ctx context.Context, userID uuid.UUID, rng Range, q RawQue
 	}
 	out := make([]RawRow, len(rows))
 	for i, r := range rows {
-		out[i] = RawRow{Project: r.Project, Language: r.Language, Seconds: r.Seconds, First: r.FirstMinute, Last: r.LastMinute}
+		out[i] = RawRow{Project: r.Project, Language: r.Language, Seconds: float64(r.Seconds), First: r.FirstMinute, Last: r.LastMinute}
 	}
 	return out, nil
 }
@@ -218,7 +223,7 @@ func (s *Service) Raw(ctx context.Context, userID uuid.UUID, rng Range, q RawQue
 // Filtered reports whether q narrows the user's heartbeats by project or
 // category (hidden projects aside).
 func (q RawQuery) Filtered() bool {
-	return q.Projects != nil || q.Categories != nil || len(q.ExcludeCategories) > 0
+	return q.Projects != nil || q.Categories != nil || len(q.ExcludeCategories) > 0 || len(q.ExcludeCategoriesExact) > 0
 }
 
 // RawTimeline returns raw seconds per (project, language) in rng, and their
@@ -227,12 +232,14 @@ func (q RawQuery) Filtered() bool {
 // two minutes. boundary is Hackatime's boundary-aware total (test_param):
 // the last filtered heartbeat before rng starts the first gap, and
 // heartbeats at rng.To count. Project names are as reported ("Unknown" for
-// none); First and Last are not set.
+// none); First and Last are not set. Row seconds are fractional; the total
+// is rounded once, so it may differ by a second from the rounded rows.
 func (s *Service) RawTimeline(ctx context.Context, userID uuid.UUID, rng Range, q RawQuery, boundary bool) ([]RawRow, int64, error) {
 	rows, err := s.q.ProgramRawTimeline(ctx, db.ProgramRawTimelineParams{
 		UserID: userID, FromTime: rng.From, ToTime: rng.To, Boundary: boundary,
 		Projects: q.Projects, Categories: q.Categories,
-		ExcludeCategories: orEmpty(q.ExcludeCategories), ExcludeProjects: orEmpty(q.ExcludeProjects),
+		ExcludeCategories: orEmpty(q.ExcludeCategories), ExcludeCategoriesExact: orEmpty(q.ExcludeCategoriesExact),
+		ExcludeProjects: orEmpty(q.ExcludeProjects),
 	})
 	if err != nil {
 		return nil, 0, fmt.Errorf("querying raw timeline: %w", err)
@@ -241,7 +248,7 @@ func (s *Service) RawTimeline(ctx context.Context, userID uuid.UUID, rng Range, 
 	var total int64
 	for _, r := range rows {
 		if r.IsTotal {
-			total = r.Seconds
+			total = int64(r.Seconds) // rounded in SQL already
 			continue
 		}
 		out = append(out, RawRow{Project: r.Project, Language: r.Language, Seconds: r.Seconds})

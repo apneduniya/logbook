@@ -84,16 +84,18 @@ FROM gaps;
 -- credited LEAST(its gap to the previous filtered heartbeat, 120 s), the
 -- first 0. Heartbeats count in [from_time, to_time). A NULL projects or
 -- categories array means no filter; exclude_categories is compared
--- case-insensitively.
+-- case-insensitively and exclude_categories_exact exactly.
 --
 -- With boundary (Hackatime's test_param, duration_seconds_boundary_aware)
 -- the filtered heartbeats at the latest time before from_time also take
 -- part, so the first heartbeat in range is credited its gap from them, and
 -- heartbeats at to_time count too; that applies to the total only.
 --
--- The rows are one per (project, language) with is_total false, then one
--- row with is_total true carrying the total, rounded once as Hackatime
--- rounds it (float8 to integer).
+-- The rows are one per (project, language) with is_total false, in
+-- fractional seconds, so a caller can sum them into each breakdown entry
+-- before rounding; then one row with is_total true carrying the total,
+-- already rounded once as Hackatime rounds it (float8 to integer, half to
+-- even).
 WITH filtered AS NOT MATERIALIZED (
     SELECT h.time, h.id, (CASE WHEN h.project = '' THEN 'Unknown' ELSE h.project END)::text AS project, h.language
     FROM heartbeats h
@@ -102,6 +104,7 @@ WITH filtered AS NOT MATERIALIZED (
            OR (CASE WHEN h.project = '' THEN 'Unknown' ELSE h.project END) = ANY (sqlc.narg(projects)::text[]))
       AND (sqlc.narg(categories)::text[] IS NULL OR h.category = ANY (sqlc.narg(categories)::text[]))
       AND NOT (lower(h.category) = ANY (sqlc.arg(exclude_categories)::text[]))
+      AND NOT (h.category = ANY (sqlc.arg(exclude_categories_exact)::text[]))
       AND NOT ((CASE WHEN h.project = '' THEN 'Unknown' ELSE h.project END) = ANY (sqlc.arg(exclude_projects)::text[]))
 ),
 timeline AS (
@@ -128,13 +131,13 @@ credited AS (
     FROM gaps g
 )
 SELECT c.project, c.language,
-       coalesce(sum(c.seconds) FILTER (WHERE c.time < sqlc.arg(to_time)::timestamptz), 0)::bigint AS seconds,
+       coalesce(sum(c.seconds) FILTER (WHERE c.time < sqlc.arg(to_time)::timestamptz), 0)::float8 AS seconds,
        false AS is_total
 FROM credited c
 WHERE c.time >= sqlc.arg(from_time)::timestamptz
 GROUP BY c.project, c.language
 UNION ALL
-SELECT ''::text, ''::text, coalesce(sum(c.seconds), 0)::bigint, true
+SELECT ''::text, ''::text, coalesce(sum(c.seconds), 0)::bigint::float8, true
 FROM credited c
 WHERE c.time >= sqlc.arg(from_time)::timestamptz;
 

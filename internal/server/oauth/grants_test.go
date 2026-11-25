@@ -362,6 +362,140 @@ func TestRevokeGrantDuringRefresh(t *testing.T) {
 	}
 }
 
+// TestDeleteAppDuringRevokeGrant: a user revokes their grant (held just
+// after it locks the grant) while the owner deletes the app. Deletion used
+// to burn the app's codes before revoking grants, the opposite order to
+// RevokeGrant (grant, then codes), and the two deadlocked (40P01).
+func TestDeleteAppDuringRevokeGrant(t *testing.T) {
+	e := newEnv(t)
+	owner, alice := e.user("owner"), e.user("alice")
+	app := e.createApp(owner, "stardance")
+	appID := uuid.MustParse(app.ID)
+	tok := e.mustExchange(app, e.codeFor(alice, authParams(app, "profile")), "")
+	e.codeFor(alice, authParams(app, "profile")) // an unused code, which both burn
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	g := e.gateAt(ctx, "AFTER UPDATE ON oauth_grants")
+	defer g.release()
+	revoked := make(chan error, 1)
+	go func() { revoked <- e.svc.RevokeGrant(ctx, alice, appID) }()
+	g.waiting(1) // RevokeGrant holds the grant
+	deleted := make(chan error, 1)
+	go func() { deleted <- e.svc.DeleteApp(ctx, owner, appID) }()
+	g.waiting(2) // DeleteApp, blocked behind it
+	g.release()
+
+	if err := <-revoked; err != nil {
+		t.Fatalf("revoke grant: %v", err)
+	}
+	if err := <-deleted; err != nil {
+		t.Fatalf("delete app: %v", err)
+	}
+	if rec := e.probe("/probe/profile", tok.AccessToken); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("token after both = %d, want 401", rec.Code)
+	}
+}
+
+// TestDeleteAppDuringRefresh: a refresh is held just before it inserts the
+// new pair, holding the grant, when the owner deletes the app. Deletion
+// locked the app row FOR UPDATE, which blocks the new token's foreign key
+// check on the app, then waited for the grant the refresh holds: a
+// deadlock. Both must finish and the new token must not work.
+func TestDeleteAppDuringRefresh(t *testing.T) {
+	e := newEnv(t)
+	owner, alice := e.user("owner"), e.user("alice")
+	app := e.createApp(owner, "stardance")
+	appID := uuid.MustParse(app.ID)
+	tok := e.mustExchange(app, e.codeFor(alice, authParams(app, "profile")), "")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	g := e.gateTokenInserts(ctx)
+	defer g.release()
+	refreshed := e.refreshAsync(ctx, app, tok.RefreshToken)
+	g.waiting(1)
+	deleted := make(chan error, 1)
+	go func() { deleted <- e.svc.DeleteApp(ctx, owner, appID) }()
+	g.waiting(2)
+	g.release()
+
+	if err := <-deleted; err != nil {
+		t.Fatalf("delete app: %v", err)
+	}
+	if rec := <-refreshed; rec.Code == http.StatusOK {
+		next := decode[tokenJSON](t, rec)
+		if got := e.probe("/probe/profile", next.AccessToken); got.Code != http.StatusUnauthorized {
+			t.Fatalf("token refreshed during deletion = %d, want 401", got.Code)
+		}
+	} else {
+		expectOAuthError(t, rec, http.StatusBadRequest, "invalid_grant")
+	}
+	if n := e.count(`SELECT count(*)::int FROM oauth_tokens WHERE revoked_at IS NULL`); n != 0 {
+		t.Fatalf("%d tokens live after the app was deleted", n)
+	}
+}
+
+// TestCleanupDuringRefresh: R1 is refreshed just before its refresh half
+// expires, and the refresh is held before it inserts R2; cleanup then runs
+// after the expiry. Cleanup must not decide the family is dead while R2 is
+// being issued: before it took the family lock, it saw no usable token,
+// deleted the used code and the rotated R0, and replaying R0 after R2
+// committed was a plain invalid_grant that left R2 working.
+func TestCleanupDuringRefresh(t *testing.T) {
+	e := newEnv(t)
+	owner, alice := e.user("owner"), e.user("alice")
+	app := e.createApp(owner, "stardance")
+	refresh := func(tok string) *httptest.ResponseRecorder {
+		return e.post("/oauth/token", url.Values{"grant_type": {"refresh_token"}, "refresh_token": {tok}}, creds(app))
+	}
+	r0 := e.mustExchange(app, e.codeFor(alice, authParams(app, "profile")), "")
+	rec := refresh(r0.RefreshToken)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("refresh = %d %s", rec.Code, rec.Body)
+	}
+	r1 := decode[tokenJSON](t, rec)
+	e.clock.Advance(oauth.RefreshTokenTTL - time.Second) // R1's refresh half has a second left
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	g := e.gateTokenInserts(ctx)
+	defer g.release()
+	refreshed := e.refreshAsync(ctx, app, r1.RefreshToken)
+	g.waiting(1) // R1 -> R2, at the gate
+
+	e.clock.Advance(31 * 24 * time.Hour) // R1 expired; R0 and the code long dead
+	cleaned := make(chan error, 1)
+	go func() {
+		_, err := e.svc.Cleanup(ctx)
+		cleaned <- err
+	}()
+	// Cleanup either finishes or blocks behind the refresh; give it the
+	// chance to do either before letting the refresh go.
+	select {
+	case err := <-cleaned:
+		cleaned <- err
+	case <-time.After(2 * time.Second):
+	}
+	g.release()
+	if err := <-cleaned; err != nil {
+		t.Fatalf("cleanup: %v", err)
+	}
+	rec = <-refreshed
+	if rec.Code != http.StatusOK {
+		t.Fatalf("refresh of R1 = %d %s", rec.Code, rec.Body)
+	}
+	r2 := decode[tokenJSON](t, rec)
+
+	if n := e.count(`SELECT count(*)::int FROM oauth_codes`); n != 1 {
+		t.Fatalf("%d codes left, want the used code kept", n)
+	}
+	expectOAuthError(t, refresh(r0.RefreshToken), http.StatusBadRequest, "invalid_grant")
+	if rec := e.probe("/probe/profile", r2.AccessToken); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("R2 after R0 was replayed = %d, want 401", rec.Code)
+	}
+}
+
 // TestRefreshReplayDuringRefresh: R0 is rotated to R1; R1 is being refreshed
 // into R2 (held at the insert) when R0 is replayed. The replay must revoke
 // the whole family, R2 included. Before issuance and family revocation took

@@ -19,11 +19,17 @@ import (
 // seedtest.Heartbeats, an empty project stays empty, as ingest stores it.
 func rawHeartbeat(t *testing.T, st *store.Store, user uuid.UUID, at time.Time, project, category, entity string) {
 	t.Helper()
+	rawHeartbeatIn(t, st, user, at, project, "Go", category, entity)
+}
+
+// rawHeartbeatIn is rawHeartbeat with a language.
+func rawHeartbeatIn(t *testing.T, st *store.Store, user uuid.UUID, at time.Time, project, language, category, entity string) {
+	t.Helper()
 	hash := make([]byte, 32)
 	_, _ = rand.Read(hash) // crypto/rand.Read never returns an error
 	if err := st.SeedTestHeartbeat(context.Background(), db.SeedTestHeartbeatParams{
 		UserID: user, Time: at.UTC(), FieldsHash: hash, Entity: entity,
-		Category: category, Project: project, Language: "Go", Editor: "vscode",
+		Category: category, Project: project, Language: language, Editor: "vscode",
 	}); err != nil {
 		t.Fatalf("seeding heartbeat %v: %v", at, err)
 	}
@@ -137,6 +143,62 @@ func TestFilteredRawTotalsMatchHackatime(t *testing.T) {
 	projects := data["projects"].([]any)
 	if len(projects) != 1 || projects[0].(map[string]any)["raw_seconds"] != float64(120) {
 		t.Errorf("projects = %v, want alpha with 120 raw seconds", projects)
+	}
+}
+
+// TestFilteredRawRowsRoundOnce: a filtered request's breakdown entries keep
+// fractional seconds until each entry is summed, then round as Hackatime
+// rounds (half to even). One project with a 0.4 s gap in each of two
+// languages is 0.8 s, so 1 s, like the total; rounding each (project,
+// language) piece first made the project 0.
+func TestFilteredRawRowsRoundOnce(t *testing.T) {
+	f := newFixture(t)
+	u := seedtest.User(t, f.st, "babbage", "UTC", true)
+	t0 := time.Date(2026, 6, 10, 9, 0, 0, 0, time.UTC)
+	rawHeartbeatIn(t, f.st, u, t0, "alpha", "Go", "coding", "a.go")
+	rawHeartbeatIn(t, f.st, u, t0.Add(400*time.Millisecond), "alpha", "Rust", "coding", "a.rs")
+	rawHeartbeatIn(t, f.st, u, t0.Add(800*time.Millisecond), "alpha", "Go", "coding", "a.go")
+
+	body := f.getJSON(t, call{target: "/api/v1/users/babbage/stats?features=projects,languages&raw=true&filter_by_project=alpha" +
+		"&start_date=2026-06-10T09:00:00Z&end_date=2026-06-10T10:00:00Z"})
+	data := body["data"].(map[string]any)
+	if data["total_seconds"] != float64(1) {
+		t.Errorf("total_seconds = %v, want 1", data["total_seconds"])
+	}
+	projects := data["projects"].([]any)
+	if len(projects) != 1 || projects[0].(map[string]any)["raw_seconds"] != float64(1) {
+		t.Errorf("projects = %v, want alpha with 1 raw second", projects)
+	}
+	for _, l := range data["languages"].([]any) {
+		if s := l.(map[string]any)["total_seconds"]; s != float64(0) {
+			t.Errorf("language %v = %v s, want 0 (0.4 s each)", l.(map[string]any)["name"], s)
+		}
+	}
+}
+
+// TestNoAICodingCaseByMode: Hackatime's plain total_seconds=true path
+// leaves out exactly "ai coding" (where.not(category: "ai coding")), while
+// its summary and test_param paths compare lower(category). A heartbeat in
+// "AI Coding" therefore counts on the first and not on the others.
+func TestNoAICodingCaseByMode(t *testing.T) {
+	f := newFixture(t)
+	u := seedtest.User(t, f.st, "turing", "UTC", true)
+	t0 := time.Date(2026, 6, 10, 9, 0, 0, 0, time.UTC)
+	rawHeartbeat(t, f.st, u, t0, "alpha", "coding", "a.go")
+	rawHeartbeat(t, f.st, u, t0.Add(time.Minute), "alpha", "AI Coding", "a.go")
+	const rng = "&raw=true&no_ai_coding=true&start_date=2026-06-10T09:00:00Z&end_date=2026-06-10T10:00:00Z"
+	for _, tc := range []struct {
+		query string
+		total func(map[string]any) any
+		want  float64
+	}{
+		{"total_seconds=true" + rng, func(b map[string]any) any { return b["total_seconds"] }, 60},
+		{"total_seconds=true&test_param=true" + rng, func(b map[string]any) any { return b["total_seconds"] }, 0},
+		{"features=projects" + rng, func(b map[string]any) any { return b["data"].(map[string]any)["total_seconds"] }, 0},
+	} {
+		if got := tc.total(f.getJSON(t, call{target: "/api/v1/users/turing/stats?" + tc.query})); got != tc.want {
+			t.Errorf("%s: total_seconds = %v, want %v", tc.query, got, tc.want)
+		}
 	}
 }
 
