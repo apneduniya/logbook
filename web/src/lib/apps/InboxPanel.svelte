@@ -194,6 +194,10 @@
 			grid-template-columns: repeat(3, auto);
 			justify-content: start;
 		}
+		/* Labels start on their column's edge, so the two rows line up. */
+		.seg :global(.seg button) {
+			text-align: left;
+		}
 	}
 	.list > :global(:last-child) {
 		border-bottom: 0;
