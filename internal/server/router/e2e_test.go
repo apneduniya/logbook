@@ -15,6 +15,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/apneduniya/logbook/internal/server/admin"
 	"github.com/apneduniya/logbook/internal/server/auth"
 	"github.com/apneduniya/logbook/internal/server/credited"
 	"github.com/apneduniya/logbook/internal/server/devices"
@@ -46,10 +47,11 @@ var now = time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
 
 // server is the real API handler (router.New) over a fresh database.
 type server struct {
-	t   *testing.T
-	st  *store.Store
-	h   http.Handler
-	box *secretbox.Box
+	t         *testing.T
+	st        *store.Store
+	h         http.Handler
+	box       *secretbox.Box
+	adminKeys *admin.Keys
 }
 
 func newServer(t *testing.T) *server {
@@ -77,6 +79,8 @@ func newServer(t *testing.T) *server {
 	statsSvc := stats.NewService(st)
 	profileSvc := profiles.NewService(st, hub)
 	oauthSvc := oauth.NewService(st, oauth.Options{WebURL: webOrigin, Now: clock})
+	adminKeys := admin.NewKeys(st, clock)
+	checker := submissions.NewChecker(st, ledger.NewService(st), submissions.CheckerOptions{Now: clock})
 	h := router.New(router.Services{
 		Ping:       st.Pool.Ping,
 		Auth:       authSvc,
@@ -93,8 +97,10 @@ func newServer(t *testing.T) *server {
 		ProgramAPI: programapi.NewService(st, statsSvc, clock),
 		// Submissions are only read here; nothing is queued.
 		Submissions: submissions.NewService(st, box, submissions.Options{ReviewBaseURL: webOrigin, Members: oauthSvc, Now: clock}),
+		Admin:       admin.NewService(st, checker, clock),
+		AdminKeys:   adminKeys,
 	}, router.Options{WebOrigin: webOrigin})
-	return &server{t: t, st: st, h: h, box: box}
+	return &server{t: t, st: st, h: h, box: box, adminKeys: adminKeys}
 }
 
 // request describes one call. Only the credentials that are set are sent.

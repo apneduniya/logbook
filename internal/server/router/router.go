@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/apneduniya/logbook/internal/server/admin"
 	"github.com/apneduniya/logbook/internal/server/auth"
 	"github.com/apneduniya/logbook/internal/server/credited"
 	"github.com/apneduniya/logbook/internal/server/devices"
@@ -40,6 +41,10 @@ type Services struct {
 	ProgramAPI *programapi.Service
 	// Submissions serves submissions, review links and decisions (ADR 0020).
 	Submissions *submissions.Service
+	// Admin serves the read-only admin API and AdminKeys authenticates and
+	// audits its callers (ADR 0022).
+	Admin     *admin.Service
+	AdminKeys *admin.Keys
 }
 
 // Options configures the handler.
@@ -117,16 +122,20 @@ func Mux(s Services, opts Options) *http.ServeMux {
 
 	// Hackatime link, history import and trust refresh.
 	hackatime.NewHandler(s.Hackatime, requireSession, opts.Hackatime).Register(mux)
+
+	// The read-only admin API for Fraud Squad (ADR 0022): admin keys only.
+	admin.NewHandler(s.Admin, s.AdminKeys, admin.HandlerOptions{ClientKey: clientKey}).Register(mux)
 	return mux
 }
 
 // corsSkip lists the /api/ paths browsers never call, which get no CORS
-// headers (ADR 0011): wakatime-cli and agent endpoints (API keys) and the
+// headers (ADR 0011): wakatime-cli and agent endpoints (API keys), the
 // program API, which program backends call with OAuth tokens or API keys,
-// a program's submission calls included. The web UI's own routes under
+// a program's submission calls included, and the admin API (admin keys). The web UI's own routes under
 // /api/v1/users/{username}/ (profile, live), the review link and the
 // user's own submissions keep CORS.
 var corsSkip = []string{
+	"/api/admin/",
 	"/api/hackatime/",
 	"/api/v1/users/current/heartbeats",
 	"/api/v1/users/current/statusbar/",

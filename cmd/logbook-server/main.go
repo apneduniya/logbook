@@ -2,7 +2,9 @@
 // It only wires dependencies together; behaviour lives in internal/server.
 //
 // `logbook-server rebuild-rollups` recomputes every user's raw per-minute
-// rollups from stored heartbeats and exits.
+// rollups from stored heartbeats and exits. `logbook-server admin …`
+// manages the admin role and admin keys (ADR 0022; `logbook-server admin`
+// prints the commands) and exits.
 package main
 
 import (
@@ -21,6 +23,7 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib" // database/sql driver for migrations
 	"github.com/riverqueue/river"
 
+	"github.com/apneduniya/logbook/internal/server/admin"
 	"github.com/apneduniya/logbook/internal/server/auth"
 	"github.com/apneduniya/logbook/internal/server/config"
 	"github.com/apneduniya/logbook/internal/server/credited"
@@ -69,6 +72,10 @@ func run() error {
 	defer st.Close()
 	if err := jobs.Migrate(ctx, st.Pool); err != nil {
 		return fmt.Errorf("migrating job tables: %w", err)
+	}
+	adminKeys := admin.NewKeys(st, nil)
+	if len(os.Args) > 1 && os.Args[1] == "admin" {
+		return adminCommand(ctx, adminKeys, os.Args[2:])
 	}
 
 	key, err := cfg.EncryptionKeyBytes()
@@ -181,6 +188,10 @@ func run() error {
 			ReviewBaseURL: cfg.WebOrigin(), Enqueuer: jobClient.River(), Members: oauthSvc, Trust: trust,
 			DecodeSlots: decodeSlots, Logger: logger,
 		}),
+		// The admin API reads stored submissions through the checker, so a
+		// part it decodes takes one of the same decode slots (ADR 0022).
+		Admin:     admin.NewService(st, checker, nil),
+		AdminKeys: adminKeys,
 	}, router.Options{
 		WebOrigin:  cfg.WebOrigin(),
 		TrustProxy: cfg.TrustProxy,
@@ -226,6 +237,16 @@ func run() error {
 		serveErr = errors.Join(serveErr, fmt.Errorf("stopping jobs: %w", err))
 	}
 	return serveErr
+}
+
+// adminCommand runs `logbook-server admin …` and prints its usage when the
+// arguments name no command.
+func adminCommand(ctx context.Context, keys *admin.Keys, args []string) error {
+	err := admin.Command(ctx, keys, args, os.Stdout)
+	if errors.Is(err, admin.ErrUsage) {
+		fmt.Fprintln(os.Stderr, admin.Usage)
+	}
+	return err
 }
 
 // hackatimeHandlerOptions sends the browser back to the web UI's settings
