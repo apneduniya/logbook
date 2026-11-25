@@ -39,8 +39,8 @@ laptop                                     server (Go + Postgres)
 | `internal/server/ledger` | Signed daily evidence chain per device: checks uploads (signature, chain and seq continuity) and reads stored records for the submission re-check |
 | `internal/server/live` | SSE fan-out |
 | `internal/server/submissions` | Submission upload, the re-check job, review packets, review links and decisions (ADR 0020) |
-| `internal/server/oauth` | OAuth 2 provider: apps, consent requests, codes, tokens, grants (ADR 0021) |
-| `internal/server/programs` | Program members (reviewers) and the submissions addressed to a program |
+| `internal/server/oauth` | OAuth 2 provider: apps (programs) and their members (owner, reviewers), consent requests, codes, tokens, grants, and the bearer middleware (`RequireScope`, `OptionalScope`) the program API uses (ADR 0021) |
+| `internal/server/programs` | The submissions addressed to a program, for its members (membership itself lives in `oauth`) |
 | `internal/server/admin` | Read-only admin API for Fraud Squad, admin keys (ADR 0022) |
 | `internal/server/httpapi` | HTTP handlers and middleware; thin, calls services |
 | `internal/server/jobs` | River workers |

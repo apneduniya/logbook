@@ -108,7 +108,8 @@ type CurrentUser struct {
 	ID       uuid.UUID
 	Username string
 	Role     string
-	// Via is "session" or "api_key".
+	// Via is "session", "api_key" or "oauth" (an OAuth access token; see
+	// OAuthTokenFrom for its app and scopes).
 	Via string
 }
 
