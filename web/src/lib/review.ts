@@ -22,7 +22,8 @@ import type {
 	PacketDay,
 	PacketTrust,
 	Review,
-	TimeRange
+	TimeRange,
+	TrustLevel
 } from './types.ts';
 
 /** A key/value line of a meta block. */
@@ -92,23 +93,28 @@ export interface PacketView {
 	justification: { copy: string; display: string } | null;
 }
 
-/** The SUBMISSION block: who, what, when, under which rules. */
+/**
+ * The SUBMISSION block: who, what, when, under which rules. Each fact once:
+ * the version is in the panel's head, and Hackatime only when there is an
+ * account to name (TRUST says the rest).
+ */
 export function submissionMeta(review: Review): MetaRow[] {
 	const s = review.submission;
 	const p = review.packet ?? null;
-	const who = s.user.display_name ? `${s.user.display_name} (${s.user.username})` : s.user.username;
-	const rows: MetaRow[] = [
-		{ k: 'Submitter', v: who },
-		{
-			k: 'Hackatime',
-			v: s.user.hackatime_id === null ? 'not linked' : `user ${s.user.hackatime_id}`,
-			mono: s.user.hackatime_id !== null
-		},
+	const { display_name: name, username } = s.user;
+	const who =
+		name && name.toLowerCase() !== username.toLowerCase()
+			? `${name} (${username})`
+			: name || username;
+	const rows: MetaRow[] = [{ k: 'Submitter', v: who }];
+	if (s.user.hackatime_id !== null) {
+		rows.push({ k: 'Hackatime', v: `user ${s.user.hackatime_id}`, mono: true });
+	}
+	rows.push(
 		{ k: 'Dates', v: `${dateRange(s.from, s.to)}, UTC days`, mono: true },
 		{ k: 'Program', v: s.program ? s.program.name : 'none' },
-		{ k: 'Submitted', v: utcStamp(s.created_at), mono: true },
-		{ k: 'Version', v: `v${s.version}`, mono: true }
-	];
+		{ k: 'Submitted', v: utcStamp(s.created_at), mono: true }
+	);
 	if (p) {
 		rows.push({ k: 'Rules', v: p.rules_version, mono: true });
 		const devices = (p.devices ?? []).map((d) => (d.os ? `${d.name} (${d.os})` : d.name));
@@ -174,20 +180,24 @@ function creditText(c: PacketCredit): string {
 	return `${c.label} · ${c.credited} s${cuts.length ? ` · cut: ${cuts.join(', ')}` : ''}`;
 }
 
+/**
+ * Hackatime's level in its own colour word. Only red has a meaning the page
+ * can name; blue is Hackatime's unscored level, never "trusted".
+ */
+function level(l: TrustLevel): string {
+	return l === 'red' ? 'red · banned' : l;
+}
+
 export function trustOf(t: PacketTrust, checkedLabel = utcStamp): TrustView {
 	const rows: MetaRow[] = [
-		{ k: 'At submission', v: t.hackatime_linked ? t.at_submission : 'not linked' },
-		{ k: 'Now', v: t.now ?? 'unknown' }
+		{ k: 'At submission', v: t.hackatime_linked ? level(t.at_submission) : 'not linked' }
 	];
+	// With nothing linked now, the server's level is a placeholder: no row.
+	if (t.hackatime_linked_now) rows.push({ k: 'Now', v: t.now ? level(t.now) : 'unknown' });
 	if (t.checked_at) rows.push({ k: 'Checked', v: checkedLabel(t.checked_at), mono: true });
 	rows.push({
-		k: 'Hackatime',
-		v:
-			t.hackatime_linked_now === undefined
-				? 'unknown'
-				: t.hackatime_linked_now
-					? 'linked'
-					: 'not linked'
+		k: 'Linked now',
+		v: t.hackatime_linked_now === undefined ? 'unknown' : t.hackatime_linked_now ? 'yes' : 'no'
 	});
 
 	const warnings: string[] = [];

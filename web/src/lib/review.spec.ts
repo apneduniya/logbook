@@ -102,7 +102,7 @@ function review(over: Partial<Review['submission']> = {}, p: Packet | null = pac
 			from: '2026-11-01',
 			to: '2026-11-20',
 			status: 'ready',
-			user: { username: 'fiona', display_name: 'Fiona', hackatime_id: 4321 },
+			user: { username: 'fiona', display_name: 'Fiona Park', hackatime_id: 4321 },
 			program: { slug: 'terra', name: 'Terra' },
 			created_at: '2026-11-21T08:05:00Z',
 			version: 2,
@@ -239,16 +239,23 @@ describe('evidenceOf', () => {
 describe('submissionMeta', () => {
 	it('lists who, what and when, with rules, devices and retention once ready', () => {
 		expect(submissionMeta(review()).map((r) => [r.k, r.v])).toEqual([
-			['Submitter', 'Fiona (fiona)'],
+			['Submitter', 'Fiona Park (fiona)'],
 			['Hackatime', 'user 4321'],
 			['Dates', '1–20 Nov 2026, UTC days'],
 			['Program', 'Terra'],
 			['Submitted', '21 Nov 2026, 08:05 UTC'],
-			['Version', 'v2'],
 			['Rules', 'v1'],
 			['Devices', 'laptop (windows)'],
 			['Raw logs kept until', '25 Nov 2027']
 		]);
+	});
+	it('states each fact once: no version row, no unlinked Hackatime, no repeated name', () => {
+		const user = { username: 'alice', display_name: 'Alice', hackatime_id: null };
+		const rows = submissionMeta(review({ user }));
+		expect(rows.map((r) => r.k)).not.toContain('Version');
+		expect(rows.map((r) => r.k)).not.toContain('Hackatime');
+		expect(rows[0]).toEqual({ k: 'Submitter', v: 'Alice' });
+		expect(submissionMeta(review({ user: { ...user, display_name: '' } }))[0].v).toBe('alice');
 	});
 	it('has no packet rows while verifying', () => {
 		const rows = submissionMeta(review({ status: 'verifying' }, null));
@@ -286,9 +293,24 @@ describe('trustOf', () => {
 		expect(t.warnings.join(' ')).toMatch(/unlinked Hackatime/);
 		expect(t.warnings.join(' ')).toMatch(/banned now/);
 	});
-	it('says when Hackatime wasn’t linked at submission', () => {
-		const t = trustOf({ at_submission: 'blue', now: 'blue', hackatime_linked: false }, stamp);
-		expect(t.rows[0]).toEqual({ k: 'At submission', v: 'not linked' });
+	it('names the level only where it has a meaning, never blue as trusted', () => {
+		const t = trustOf({ ...packet().trust, at_submission: 'blue', now: 'red' }, stamp);
+		expect(t.rows.map((r) => [r.k, r.v])).toEqual([
+			['At submission', 'blue'],
+			['Now', 'red · banned'],
+			['Checked', '2026-11-25T09:00:00Z'],
+			['Linked now', 'yes']
+		]);
+	});
+	it('says when Hackatime wasn’t linked at submission, with no placeholder level now', () => {
+		const t = trustOf(
+			{ at_submission: 'blue', now: 'blue', hackatime_linked: false, hackatime_linked_now: false },
+			stamp
+		);
+		expect(t.rows).toEqual([
+			{ k: 'At submission', v: 'not linked' },
+			{ k: 'Linked now', v: 'no' }
+		]);
 		expect(t.warnings).toEqual([
 			'Hackatime wasn’t linked when this was submitted, so there is no account to check.'
 		]);
