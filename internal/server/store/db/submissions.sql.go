@@ -199,11 +199,17 @@ func (q *Queries) SubmissionDeleteRaw(ctx context.Context, arg SubmissionDeleteR
 }
 
 const submissionExpireRaw = `-- name: SubmissionExpireRaw :execrows
+WITH due AS (
+    SELECT s.id FROM submissions s
+    WHERE coalesce(s.decided_at, s.created_at) < $2::timestamptz
+      AND EXISTS (SELECT 1 FROM submission_parts x WHERE x.submission_id = s.id AND x.raw_deleted_at IS NULL)
+    ORDER BY s.id
+    FOR UPDATE
+)
 UPDATE submission_parts p SET data = NULL, raw_deleted_at = $1::timestamptz
-FROM submissions s
-WHERE p.submission_id = s.id
+FROM due
+WHERE p.submission_id = due.id
   AND p.raw_deleted_at IS NULL
-  AND coalesce(s.decided_at, s.created_at) < $2::timestamptz
 `
 
 type SubmissionExpireRawParams struct {
@@ -212,7 +218,10 @@ type SubmissionExpireRawParams struct {
 }
 
 // Deletes the raw rows of submissions whose latest decision (or, with
-// none, creation) is before cutoff.
+// none, creation) is before cutoff. Each such submission is locked FOR
+// UPDATE first, as a decision locks it (SubmissionLock): a decision being
+// recorded makes this wait, and its new decided_at is then re-checked
+// against cutoff, so its parts are kept.
 func (q *Queries) SubmissionExpireRaw(ctx context.Context, arg SubmissionExpireRawParams) (int64, error) {
 	result, err := q.db.Exec(ctx, submissionExpireRaw, arg.DeletedAt, arg.Cutoff)
 	if err != nil {
@@ -1013,6 +1022,38 @@ func (q *Queries) SubmissionPlanRows(ctx context.Context, arg SubmissionPlanRows
 		return nil, err
 	}
 	return items, nil
+}
+
+const submissionProgramLock = `-- name: SubmissionProgramLock :one
+SELECT id FROM oauth_apps WHERE id = $1 AND deleted_at IS NULL FOR SHARE
+`
+
+// Locks a live program app against member changes and deletion, which
+// take FOR NO KEY UPDATE on it (oauth.ownedApp), until the transaction
+// ends. Taken after the submission's lock.
+func (q *Queries) SubmissionProgramLock(ctx context.Context, id uuid.UUID) (uuid.UUID, error) {
+	row := q.db.QueryRow(ctx, submissionProgramLock, id)
+	var id_2 uuid.UUID
+	err := row.Scan(&id_2)
+	return id_2, err
+}
+
+const submissionProgramMember = `-- name: SubmissionProgramMember :one
+SELECT role FROM app_members WHERE app_id = $1 AND user_id = $2
+`
+
+type SubmissionProgramMemberParams struct {
+	AppID  uuid.UUID
+	UserID uuid.UUID
+}
+
+// The user's role in the app; read after SubmissionProgramLock, so it is
+// the membership as committed when the lock was taken.
+func (q *Queries) SubmissionProgramMember(ctx context.Context, arg SubmissionProgramMemberParams) (string, error) {
+	row := q.db.QueryRow(ctx, submissionProgramMember, arg.AppID, arg.UserID)
+	var role string
+	err := row.Scan(&role)
+	return role, err
 }
 
 const submissionPrograms = `-- name: SubmissionPrograms :many

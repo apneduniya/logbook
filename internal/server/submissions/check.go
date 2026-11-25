@@ -413,7 +413,9 @@ func (c *Checker) save(ctx context.Context, sub db.Submission, out outcome) erro
 
 // ExpireRaw deletes the stored parts of submissions whose latest decision,
 // or creation when there is none, is more than a year old (ADR 0020
-// "Retention"), and returns how many parts it deleted.
+// "Retention"), and returns how many parts it deleted. It locks each such
+// submission as a decision does, so a decision being recorded makes it
+// wait and then keep that submission's parts.
 func (c *Checker) ExpireRaw(ctx context.Context) (int64, error) {
 	now := c.now()
 	n, err := c.st.SubmissionExpireRaw(ctx, db.SubmissionExpireRawParams{
