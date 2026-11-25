@@ -1,0 +1,70 @@
+---
+/**
+ * A screenshot from src/assets/shots, optimised by Astro and zoomable.
+ *
+ *   <Shot name="web-review.png" alt="The review page with three figures at the top" />
+ *   <Shot name="web-review.png" alt="..." caption="Counted is the biggest figure." />
+ *
+ * A missing file or empty alt text fails the build, so a page can't ship
+ * pointing at a screenshot nobody has taken yet.
+ */
+import type { ImageMetadata } from 'astro';
+import { Image } from 'astro:assets';
+import { Zoom } from 'starlight-image-zoom/components';
+
+interface Props {
+	/** File name inside src/assets/shots, with its extension. */
+	name: string;
+	/** What the screenshot shows, for people who can't see it. Required. */
+	alt: string;
+	/** Optional sentence shown under the image. */
+	caption?: string;
+}
+
+const { name, alt, caption } = Astro.props;
+
+const shots = import.meta.glob<{ default: ImageMetadata }>(
+	'../assets/shots/*.{png,jpg,jpeg,webp,avif,gif,svg}',
+	{ eager: true },
+);
+
+const page = Astro.url.pathname;
+const image = shots[`../assets/shots/${name}`]?.default;
+
+if (!image) {
+	throw new Error(
+		`<Shot name="${name}"> on ${page}: no file named "${name}" in site/src/assets/shots/. ` +
+			`Add the screenshot there, or fix the name (it is case-sensitive and needs its extension).`,
+	);
+}
+if (typeof alt !== 'string' || alt.trim() === '') {
+	throw new Error(
+		`<Shot name="${name}"> on ${page}: alt text is required. Describe what the screenshot shows.`,
+	);
+}
+---
+
+<figure class="shot">
+	<Zoom label={alt}>
+		<Image src={image} alt={alt} widths={[720, 1440]} sizes="(min-width: 50rem) 46rem, 100vw" />
+	</Zoom>
+	{caption && <figcaption>{caption}</figcaption>}
+</figure>
+
+<style>
+	.shot {
+		margin-block: 1.5rem;
+	}
+	.shot :global(img) {
+		display: block;
+		width: 100%;
+		height: auto;
+		border: 1px solid var(--lb-rule);
+	}
+	figcaption {
+		margin-top: 0.5rem;
+		max-width: 70ch;
+		font-size: var(--sl-text-sm);
+		color: var(--sl-color-gray-3);
+	}
+</style>
