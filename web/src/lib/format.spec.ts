@@ -3,12 +3,17 @@ import {
 	addDays,
 	ago,
 	clock,
+	dateRange,
 	dayLabel,
 	duration,
 	editorName,
+	hours,
 	percent,
 	rangeLabel,
+	thousands,
 	todayIn,
+	utcRange,
+	utcStamp,
 	zoneAbbr
 } from './format.ts';
 
@@ -84,5 +89,54 @@ describe('percent', () => {
 	it('handles zero', () => {
 		expect(percent(1, 0)).toBe(0);
 		expect(percent(1, 3)).toBe(33);
+	});
+});
+
+describe('hours', () => {
+	it.each([
+		[44640, '12.4 h'],
+		[61200, '17.0 h'],
+		[0, '0.0 h'],
+		[179, '0.0 h'],
+		[180, '0.1 h'],
+		[-60, '0.0 h']
+	])('%i s -> %s', (s, want) => {
+		expect(hours(s)).toBe(want);
+	});
+});
+
+describe('thousands', () => {
+	it('groups with commas', () => {
+		expect(thousands(2431)).toBe('2,431');
+		expect(thousands(12)).toBe('12');
+		expect(thousands(1234567)).toBe('1,234,567');
+	});
+});
+
+describe('dateRange', () => {
+	it.each([
+		['2026-11-03', '2026-11-09', '3–9 Nov 2026'],
+		['2026-10-28', '2026-11-03', '28 Oct–3 Nov 2026'],
+		['2025-12-28', '2026-01-03', '28 Dec 2025–3 Jan 2026'],
+		['2026-11-03', '2026-11-03', '3 Nov 2026']
+	])('%s to %s -> %s', (a, b, want) => {
+		expect(dateRange(a, b)).toBe(want);
+	});
+});
+
+describe('utcStamp', () => {
+	it('prints the instant in UTC, whatever its offset', () => {
+		expect(utcStamp('2026-11-25T19:32:00+05:30')).toBe('25 Nov 2026, 14:02 UTC');
+	});
+});
+
+describe('utcRange', () => {
+	it.each([
+		['2026-11-03T15:02:00Z', '2026-11-03T15:20:00Z', '03 Nov 15:02–15:20'],
+		['2026-11-03T23:50:00Z', '2026-11-04T00:10:00Z', '03 Nov 23:50–04 Nov 00:10'],
+		['2026-11-03T23:00:00Z', '2026-11-04T00:00:00Z', '03 Nov 23:00–24:00'],
+		['2026-11-03T10:00:00Z', '2026-11-05T10:00:00Z', '03 Nov 10:00–05 Nov 10:00']
+	])('%s to %s -> %s', (a, b, want) => {
+		expect(utcRange(a, b)).toBe(want);
 	});
 });

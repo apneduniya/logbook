@@ -114,6 +114,56 @@ export function zoneAbbr(timeZone: string, now: Date = new Date()): string {
 	return parts.find((p) => p.type === 'timeZoneName')?.value ?? timeZone;
 }
 
+/** Hours with one decimal, as programs count them and the justification says: "12.4 h". */
+export function hours(seconds: number): string {
+	return `${(Math.max(0, seconds) / 3600).toFixed(1)} h`;
+}
+
+/** 2431 → "2,431". */
+export function thousands(n: number): string {
+	return Math.round(n).toLocaleString('en-US');
+}
+
+/** "3–9 Nov 2026", "28 Oct–3 Nov 2026", "28 Dec 2025–3 Jan 2026"; one day is "3 Nov 2026". */
+export function dateRange(from: string, to: string): string {
+	const a = parseDate(from);
+	const b = parseDate(to);
+	const end = `${b.getUTCDate()} ${MONTHS[b.getUTCMonth()]} ${b.getUTCFullYear()}`;
+	if (from === to) return end;
+	const sameYear = a.getUTCFullYear() === b.getUTCFullYear();
+	const sameMonth = sameYear && a.getUTCMonth() === b.getUTCMonth();
+	const start = sameMonth
+		? `${a.getUTCDate()}`
+		: `${a.getUTCDate()} ${MONTHS[a.getUTCMonth()]}${sameYear ? '' : ` ${a.getUTCFullYear()}`}`;
+	return `${start}–${end}`;
+}
+
+/** "25 Nov 2026, 14:02 UTC" for an RFC 3339 instant. */
+export function utcStamp(instant: string): string {
+	const d = new Date(instant);
+	return `${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]} ${d.getUTCFullYear()}, ${clock(instant, 'UTC')} UTC`;
+}
+
+/**
+ * A [start, end) range of whole minutes in UTC: "03 Nov 15:02–15:20", or
+ * "03 Nov 23:50–04 Nov 00:10" across midnight. An end at midnight reads 24:00.
+ */
+export function utcRange(start: string, end: string): string {
+	const a = new Date(start);
+	const b = new Date(end);
+	const day = (d: Date) => `${String(d.getUTCDate()).padStart(2, '0')} ${MONTHS[d.getUTCMonth()]}`;
+	const hm = (d: Date) =>
+		`${String(d.getUTCHours()).padStart(2, '0')}:${String(d.getUTCMinutes()).padStart(2, '0')}`;
+	const left = `${day(a)} ${hm(a)}`;
+	if (isoDate(a) === isoDate(b)) return `${left}–${hm(b)}`;
+	// Ending exactly at the next midnight: still the same day's range.
+	const prev = new Date(b.getTime() - 60_000);
+	if (isoDate(a) === isoDate(prev) && b.getUTCHours() === 0 && b.getUTCMinutes() === 0) {
+		return `${left}–24:00`;
+	}
+	return `${left}–${day(b)} ${hm(b)}`;
+}
+
 /** Whole-number percent of part in whole, 0 when whole is 0. */
 export function percent(part: number, whole: number): number {
 	return whole > 0 ? Math.round((part / whole) * 100) : 0;

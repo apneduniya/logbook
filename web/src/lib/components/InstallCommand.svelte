@@ -8,6 +8,7 @@
 	import { app } from '#lib/app.svelte.ts';
 	import { ApiError } from '#lib/api.ts';
 	import { installCommand } from '#lib/links.ts';
+	import CopyField from './CopyField.svelte';
 	import Segmented from './Segmented.svelte';
 
 	let { onCreated, key = $bindable(null) }: { onCreated?: () => void; key?: string | null } =
@@ -15,14 +16,11 @@
 
 	type Os = 'unix' | 'windows';
 	let os = $state<Os>(navigator.userAgent.includes('Windows') ? 'windows' : 'unix');
-	let shown = $state(false);
 	let busy = $state(false);
 	let error = $state<string | null>(null);
-	let copied = $state(false);
 
-	const masked = $derived(key ? `${key.slice(0, 4)}••••` : '');
 	const command = $derived(key ? installCommand(os, key, app.api.origin) : '');
-	const visible = $derived(key ? installCommand(os, shown ? key : masked, app.api.origin) : '');
+	const masked = $derived(key ? installCommand(os, `${key.slice(0, 4)}••••`, app.api.origin) : '');
 
 	function deviceName(): string {
 		const p = navigator.userAgent;
@@ -50,16 +48,6 @@
 			busy = false;
 		}
 	}
-
-	async function copy() {
-		try {
-			await navigator.clipboard.writeText(command);
-			copied = true;
-			setTimeout(() => (copied = false), 1600);
-		} catch {
-			error = 'Couldn’t copy. Press Show and copy the command by hand.';
-		}
-	}
 </script>
 
 <div class="mt-3">
@@ -75,14 +63,8 @@
 </div>
 
 {#if key}
-	<div class="cmd">
-		<code>{visible}</code>
-		<div class="flex flex-none gap-1">
-			<button class="ghost" type="button" onclick={() => (shown = !shown)} aria-pressed={shown}>
-				{shown ? 'Hide' : 'Show'}
-			</button>
-			<button class="copy" type="button" onclick={copy}>{copied ? 'Copied' : 'Copy'}</button>
-		</div>
+	<div class="mt-3">
+		<CopyField value={command} {masked} label="Install command" />
 	</div>
 	<p class="hint mt-2">
 		{os === 'windows' ? 'Paste it into PowerShell.' : 'Paste it into a terminal.'} The command has your
@@ -97,53 +79,3 @@
 	</div>
 {/if}
 {#if error}<p class="hint mt-2 text-ink" role="alert">{error}</p>{/if}
-
-<span class="sr-only" aria-live="polite">{copied ? 'Command copied' : ''}</span>
-
-<style>
-	.cmd {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: 12px;
-		margin-top: 12px;
-		padding: 8px 8px 8px 14px;
-		background: var(--color-fill);
-		border: 1px solid var(--color-rule);
-		font-family: var(--font-mono);
-		font-size: var(--text-sm);
-		min-width: 0;
-	}
-	code {
-		overflow-x: auto;
-		white-space: nowrap;
-		min-width: 0;
-		scrollbar-width: thin;
-		padding: 2px 0;
-	}
-	.copy,
-	.ghost {
-		font-family: var(--font-pixel);
-		font-size: var(--text-xs);
-		letter-spacing: 0.06em;
-		text-transform: uppercase;
-		border: 0;
-		padding: 6px 10px;
-		cursor: pointer;
-		transition: background 150ms ease-out;
-	}
-	.copy {
-		color: var(--color-ground);
-		background: var(--color-ink);
-	}
-	.copy:hover {
-		background: var(--color-ink-2);
-	}
-	.ghost {
-		color: var(--color-ink-2);
-		background: none;
-	}
-	.ghost:hover {
-		color: var(--color-ink);
-	}
-</style>
