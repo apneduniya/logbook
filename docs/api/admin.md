@@ -38,7 +38,7 @@ These match Hackatime at `43bde10` (`config/routes.rb` lines 287–302, `app/con
 
 Common rules:
 - **The user:** `id`, else `user_id` (Hackatime's `params[:id] || params[:user_id]`), is our numeric public id (ADR 0021). Blank: `422 {"error": "who?"}`. Read as ActiveRecord casts an id (the leading integer, so `12abc` is `12`); no such user: `404 {"error": "user not found"}`.
-- **Parameters** come from the query and, on the two `POST`s, a JSON or form body (the body wins). A body over 64 KiB is `413`; malformed JSON is `400`.
+- **Parameters** come from the query and, on the two `POST`s, a JSON or form body. A key in both is the query's, as Rails merges them (`request_parameters.merge(query_parameters)`). A body over 64 KiB is `413`; malformed JSON is `400`.
 - **Dates** (`start_date`, `end_date`), as `DateParsing#parse_ts`: digits are Unix seconds (milliseconds from 10¹² on), 0 to 9999-12-31; otherwise the value must start with a date (`YYYY-MM-DD`, `/` or `.` also accepted; the rest is ignored, as `Date.parse` does): the start of that UTC day, or its last second (23:59:59) for `end_date`. Anything else is `422 {"error": "invalid start_date"}` (or `end_date`). Both bounds are inclusive.
 - **Trust levels are unmasked:** admins see `yellow`. A user without a Hackatime link, or whose level couldn't be read (`unknown`), reads as `blue`; `logbook.trust_verified` is then `false` and `logbook.hackatime_trust_level` holds what is stored (`null` without a link).
 - Heartbeat text fields Logbook stores as `""` are `null`, as Hackatime stores what a client leaves out. Durations are Hackatime's `duration_seconds`: each heartbeat (by time, then id) is credited its gap to the previous one, at most 120 s, the first 0, summed and rounded to an integer.

@@ -18,38 +18,47 @@ import (
 // maxBody caps a POST body (the two POST calls take one short field).
 const maxBody = 64 << 10
 
-// params are a request's parameters as Rails merges them: the query, then
-// the body (JSON or a form) over it.
+// params are a request's parameters as Rails merges them
+// (ActionDispatch::Http::Parameters#parameters is
+// request_parameters.merge(query_parameters)): the body (JSON or a form),
+// then the query over it, so the query wins.
 type params map[string]string
 
-// readParams reads the query and, for a body, a JSON object or a form.
+// readParams reads, for a body, a JSON object or a form, then the query.
 // JSON values that aren't strings are kept as their JSON text.
 func readParams(r *http.Request) (params, error) {
 	p := params{}
+	if r.Body != nil && r.Method != http.MethodGet {
+		if err := readBody(r, p); err != nil {
+			return nil, err
+		}
+	}
 	for k, vs := range r.URL.Query() {
 		if len(vs) > 0 {
 			p[k] = vs[len(vs)-1] // Rails keeps the last of repeated keys
 		}
 	}
-	if r.Body == nil || r.Method == http.MethodGet {
-		return p, nil
-	}
+	return p, nil
+}
+
+// readBody adds a body's parameters to p.
+func readBody(r *http.Request, p params) error {
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxBody+1))
 	if err != nil {
-		return nil, fmt.Errorf("reading body: %w", err)
+		return fmt.Errorf("reading body: %w", err)
 	}
 	if len(body) > maxBody {
-		return nil, errBodyTooLarge
+		return errBodyTooLarge
 	}
 	if len(strings.TrimSpace(string(body))) == 0 {
-		return p, nil
+		return nil
 	}
 	ct, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	switch ct {
 	case "application/json":
 		var m map[string]json.RawMessage
 		if err := json.Unmarshal(body, &m); err != nil {
-			return nil, errBadJSON
+			return errBadJSON
 		}
 		for k, raw := range m {
 			var s string
@@ -62,7 +71,7 @@ func readParams(r *http.Request) (params, error) {
 	default:
 		form, err := url.ParseQuery(string(body))
 		if err != nil {
-			return nil, errBadForm
+			return errBadForm
 		}
 		for k, vs := range form {
 			if len(vs) > 0 {
@@ -70,7 +79,7 @@ func readParams(r *http.Request) (params, error) {
 			}
 		}
 	}
-	return p, nil
+	return nil
 }
 
 var (
