@@ -276,6 +276,83 @@ type Session struct {
 	LastSeenAt time.Time
 }
 
+type Submission struct {
+	ID                uuid.UUID
+	UserID            uuid.UUID
+	Project           string
+	FromDay           pgtype.Date
+	ToDay             pgtype.Date
+	ProgramAppID      pgtype.UUID
+	Status            string
+	Error             string
+	TokenHash         []byte
+	TokenEnc          []byte
+	TrustAtSubmission pgtype.Text
+	HackatimeUserID   pgtype.Int8
+	Packet            []byte
+	VerifiedMinutes   int32
+	MismatchMinutes   int32
+	UnbackedMinutes   int32
+	CountedSeconds    int64
+	RawSeconds        int64
+	PartsVersion      int32
+	CreatedAt         time.Time
+	VerifiedAt        *time.Time
+	DecidedAt         *time.Time
+	WithdrawnAt       *time.Time
+}
+
+type SubmissionCapInput struct {
+	SubmissionID uuid.UUID
+	DeviceID     uuid.UUID
+	Minute       time.Time
+	Project      string
+	Credited     int16
+}
+
+type SubmissionCapped struct {
+	SubmissionID uuid.UUID
+	Minute       time.Time
+	Seconds      int64
+}
+
+type SubmissionDecision struct {
+	ID              int64
+	SubmissionID    uuid.UUID
+	Value           string
+	ApprovedSeconds pgtype.Int8
+	Reason          string
+	DecidedBy       pgtype.UUID
+	DecidedAt       time.Time
+}
+
+type SubmissionMinute struct {
+	SubmissionID   uuid.UUID
+	DeviceID       uuid.UUID
+	Minute         time.Time
+	Label          string
+	Credited       int16
+	Cuts           []string
+	Flags          []string
+	RulesVersion   string
+	ComputedAt     *time.Time
+	Snapshot       pgtype.Int8
+	Result         pgtype.Text
+	Reason         string
+	ServerLabel    pgtype.Text
+	ServerCredited pgtype.Int2
+	ServerCuts     []string
+}
+
+type SubmissionPart struct {
+	SubmissionID uuid.UUID
+	DeviceID     uuid.UUID
+	Data         []byte
+	Bytes        int32
+	UploadedAt   time.Time
+	RawDeletedAt *time.Time
+}
+
 type User struct {
 	ID            uuid.UUID
 	HcaID         string

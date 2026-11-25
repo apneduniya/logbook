@@ -172,3 +172,12 @@ func Verify(pub ed25519.PublicKey, d Day, chainHash string, sig []byte) error {
 	}
 	return nil
 }
+
+// KeyFingerprint is a short, stable identifier for a device's public key:
+// the first 16 hex characters of its SHA-256. The server's device list,
+// `logbook status` and `logbook verify` show it, so a person can match a
+// key to a machine.
+func KeyFingerprint(pub ed25519.PublicKey) string {
+	sum := sha256.Sum256(pub)
+	return hex.EncodeToString(sum[:8])
+}

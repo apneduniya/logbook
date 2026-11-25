@@ -1,6 +1,6 @@
 # Programs, OAuth and the Hackatime-shaped program API
 
-How a YSWS program connects to Logbook (ADR 0008, ADR 0021). Packages: `internal/server/oauth` (apps and their members, consent, codes, tokens, grants and the bearer middleware), `internal/server/programapi` (the Hackatime-shaped read endpoints, using `internal/server/stats` for streaks), `internal/server/programs` (the submissions addressed to a program; later step). Package `internal/server` wires them together: it adapts OAuth access tokens and user API keys to the program API's `Authenticator` and registers every route.
+How a YSWS program connects to Logbook (ADR 0008, ADR 0021). Packages: `internal/server/oauth` (apps and their members, consent, codes, tokens, grants and the bearer middleware), `internal/server/programapi` (the Hackatime-shaped read endpoints, using `internal/server/stats` for streaks), `internal/server/submissions` (the submissions addressed to a program, [submissions.md](submissions.md#the-programs-inbox)). Package `internal/server` wires them together: it adapts OAuth access tokens and user API keys to the program API's `Authenticator` and registers every route.
 
 **Compatibility rule:** where a call exists on Hackatime, its path, parameters, status codes and JSON shape match Hackatime at commit `43bde10` exactly (`app/controllers/api/v1/stats_controller.rb`, `app/controllers/api/v1/authenticated/*`, `app/controllers/api/v1/my/heartbeats_controller.rb`, `app/services/project_stats_query.rb`, `lib/wakatime_service.rb`, `config/initializers/doorkeeper.rb`). Fields we add are extra keys that existing clients ignore. Contract tests in `internal/server/programapi/testdata/hackatime/` pin each request a program repo makes (Stardance, Flavortown, Save Point, Crossroads, Ari, the 11 project-picker repos) with its full response; run `go test ./internal/server/programapi -run Contract -update` to rewrite them after a deliberate change.
 
@@ -19,7 +19,7 @@ Session auth (`RequireSession`: cookie only; bearer tokens and API keys get `401
 | `GET /api/v1/me/apps/{id}/members` | Members. `{"members": [{username, role, added_at, added_by}]}`, owner first |
 | `POST /api/v1/me/apps/{id}/members` | Owner only. `{username}` (case-insensitive) becomes a `reviewer`: `201` with the member. `404` unknown user, `409` already a member or 50 reviewers already. Audited `app.member_add` |
 | `DELETE /api/v1/me/apps/{id}/members/{username}` | Owner only. `204`. The owner can't be removed (`400`). Audited `app.member_remove` |
-| `GET /api/v1/me/apps/{id}/submissions` | Members. Submissions addressed to the program, newest first, filter `status`, `decision` (step 5, submissions) |
+| `GET /api/v1/me/apps/{id}/submissions` | Members. Submissions addressed to the program, newest first, filter `status`, `decision`, paged by `limit` and `offset` ([submissions.md](submissions.md#the-programs-inbox)) |
 | `GET /api/v1/programs` | No auth, limited per IP. `{"programs": [{slug, name, homepage_url}]}`: live public apps by name, for the submit picker |
 
 `App`:
@@ -104,7 +104,7 @@ Session; `DELETE` needs CSRF. Browser endpoints with the usual `/api/` CORS.
 An access token is sent as `Authorization: Bearer lbo_…` (the only form accepted, as Doorkeeper's `from_bearer_authorization`; never in the query string). Refresh tokens and client secrets are never accepted as one, and OAuth tokens are never accepted by session or API-key endpoints (the web UI's `/api/v1/me/*`, ingest, the agent's routes): those answer `401`.
 
 - **The program API** (below) answers in Hackatime's shapes: on `authenticated/*` a missing or invalid token (unknown, expired, revoked, of a revoked grant, or of a deleted app) is `401` and a token without the call's scope `403`, both with an empty body and Doorkeeper's `WWW-Authenticate: Bearer realm="Doorkeeper", error="invalid_token"` (or `"insufficient_scope"`); on `users/{id}/*` a token that doesn't verify or lacks `read` is ignored. A client-credentials token has no user, so the program API treats it as invalid: `401` on `authenticated/*` and `my/heartbeats`, anonymous on `users/{id}/*`.
-- **Logbook's own bearer endpoints** (the program's submission calls, a later step) use `oauth.RequireScope`: `401` with `WWW-Authenticate: Bearer realm="logbook", error="invalid_token"`, or `403` with `error="insufficient_scope"`, each with a JSON `{"error": "…"}` body. A client-credentials token only ever passes `submissions`.
+- **Logbook's own bearer endpoints** (the program's submission calls, [submissions.md](submissions.md#the-programs-inbox)) use `oauth.RequireScope`: `401` with `WWW-Authenticate: Bearer realm="logbook", error="invalid_token"`, or `403` with `error="insufficient_scope"`, each with a JSON `{"error": "…"}` body. A client-credentials token only ever passes `submissions`.
 
 The server (`internal/server/router`) hands the program API an adapter over `oauth.Service.AuthenticateBearer` and `auth.Service.APIKeyOwner`; `internal/server/router/e2e_test.go` runs the whole flow (register, consent, exchange, read, revoke, client credentials) on the real handler.
 

@@ -44,6 +44,23 @@ func TestRepoIndexProject(t *testing.T) {
 	}
 }
 
+// RepoMap is the engine's own rule: the repo path first, else the event's
+// project name, normalised.
+func TestRepoMapProject(t *testing.T) {
+	m := NewRepoMap([]Repo{{Path: "/home/sam/app", Project: " app "}})
+	tests := []struct{ path, fallback, want string }{
+		{"/home/sam/app/main.go", "other", "app"},
+		{"/elsewhere/x.go", " other\t", "other"},
+		{"/elsewhere/x.go", "<<LAST_PROJECT>>", ""},
+		{"", "", ""},
+	}
+	for _, tt := range tests {
+		if got := m.Project(tt.path, tt.fallback); got != tt.want {
+			t.Errorf("Project(%q, %q) = %q, want %q", tt.path, tt.fallback, got, tt.want)
+		}
+	}
+}
+
 func TestSplitSeconds(t *testing.T) {
 	tests := []struct {
 		name   string

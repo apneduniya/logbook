@@ -190,8 +190,8 @@ func TestIsAIHeartbeat(t *testing.T) {
 		{wire.Heartbeat{HumanLineChanges: &n}, false},
 	}
 	for i, tt := range tests {
-		if got := isAIHeartbeat(tt.h); got != tt.want {
-			t.Errorf("case %d: isAIHeartbeat = %v", i, got)
+		if got := AIHeartbeat(tt.h); got != tt.want {
+			t.Errorf("case %d: AIHeartbeat = %v", i, got)
 		}
 	}
 }

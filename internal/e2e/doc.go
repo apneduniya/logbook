@@ -7,7 +7,11 @@
 // evidence tests also check ADR 0019 end to end: the server stores each
 // block's signed fields and their seq continuity, and proofs the agent
 // builds verify against the server's stored records, prove every window
-// complete, and replay (pkg/replay) to the server's stored rows. It has no
+// complete, and replay (pkg/replay) to the server's stored rows. The
+// submission test checks ADR 0020 end to end: `logbook submit` from two
+// devices against the server's submission handlers and River re-check job,
+// the review link, a program's decision, tampered parts, and `logbook
+// verify` on the bundle built from the server's stored data. It has no
 // code outside its tests, and it is the one place that imports both
 // internal/agent and internal/server.
 package e2e

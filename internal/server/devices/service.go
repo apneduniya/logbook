@@ -3,9 +3,7 @@ package devices
 import (
 	"context"
 	"crypto/ed25519"
-	"crypto/sha256"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,6 +17,7 @@ import (
 
 	"github.com/apneduniya/logbook/internal/server/store"
 	"github.com/apneduniya/logbook/internal/server/store/db"
+	"github.com/apneduniya/logbook/pkg/evidence"
 )
 
 // Limits on registration fields and devices per user.
@@ -182,13 +181,10 @@ type Device struct {
 	RevokedAt      *time.Time `json:"revoked_at"`
 }
 
-// Fingerprint is a short, stable identifier for a public key: the first 16
-// hex characters of its SHA-256. The agent shows the same value, so users
-// can match a listed device to a machine.
-func Fingerprint(publicKey []byte) string {
-	sum := sha256.Sum256(publicKey)
-	return hex.EncodeToString(sum[:8])
-}
+// Fingerprint is a short, stable identifier for a public key
+// (evidence.KeyFingerprint). The agent shows the same value, so users can
+// match a listed device to a machine.
+func Fingerprint(publicKey []byte) string { return evidence.KeyFingerprint(publicKey) }
 
 func toDevice(d db.Device) Device {
 	return Device{

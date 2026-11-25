@@ -28,6 +28,7 @@ laptop                                     server (Go + Postgres)
 | `pkg/evidence` | Canonical encoding of the agent's logged rows, salted minute buckets under a Merkle root (resumable hasher), proofs that reveal some buckets and the completeness of minute ranges, hash chain, ed25519 signing and verification |
 | `pkg/projectname` | Project name normalisation shared by heartbeat ingest and credited minutes |
 | `pkg/replay` | Turns evidence rows and a computation key into engine input, and says what a replay compares; shared by the agent's live runs and replays and the server's submission re-check (ADR 0020) |
+| `pkg/submission` | What a submission is, in one copy for `logbook submit`, the server and `logbook verify` (ADR 0020): the plan, upload, part and verification-bundle wire types; the verifier of a part against a device's signed chain (verified, mismatch or unbacked per frozen row); the multi-device cap recomputed exactly as `credited_project_minutes`; the review packet and its justification text; the whole offline check of a bundle |
 | `internal/server/config` | Typed env config |
 | `internal/server/store` | sqlc-generated queries and transaction helpers |
 | `internal/server/auth` | HCA sign-in, sessions, API keys, CSRF |
@@ -39,14 +40,15 @@ laptop                                     server (Go + Postgres)
 | `internal/server/credited` | Credited-minute uploads from the agent |
 | `internal/server/ledger` | Signed daily evidence chain per device: checks uploads (signature, chain and seq continuity) and reads stored records for the submission re-check |
 | `internal/server/live` | SSE fan-out |
-| `internal/server/submissions` | Submission upload, the re-check job, review packets, review links and decisions (ADR 0020) |
+| `internal/server/submissions` | Submission plans and uploads (gzip, trust gate, one-snapshot freeze), the re-check job (`pkg/submission` against the ledger's records) and raw-row retention, the verification bundle built from what it stored (`Checker.Bundle`, for the admin export), review links and decisions, the submitter's list and withdrawal, and each program's inbox for its members and its client-credentials token (ADR 0020) |
 | `internal/server/oauth` | OAuth 2 provider: apps (programs) and their members (owner, reviewers), consent requests, codes, tokens, grants, and the bearer middleware (`RequireScope`, `OptionalScope`) the program API uses (ADR 0021) |
-| `internal/server/programs` | The submissions addressed to a program, for its members (membership itself lives in `oauth`) |
 | `internal/server/admin` | Read-only admin API for Fraud Squad, admin keys (ADR 0022) |
 | `internal/server/httpapi` | HTTP handlers and middleware; thin, calls services |
 | `internal/server/router` | The server's whole route set on one mux, the global middleware and the CORS skip list; adapts OAuth tokens and API keys to the program API's `Authenticator`. End-to-end tests of the program flow run against it |
 | `internal/server/jobs` | River workers |
 | `internal/agent/...` | Agent: proxy, sensors, harness plugins, git, local store (an append-only event log, ADR 0017), crediting, uploader, tray |
+| `internal/agent/submit` | `logbook submit` (ADR 0020): fetches the plan, lists the minutes this device's part can back (proofs from `crediting.BuildProofs`), prints what the part reveals (other projects' rows by name, repo folders, unbacked minutes and why, other devices' minutes), asks before uploading, then uploads it gzip-compressed or writes `--preview` |
+| `internal/agent/audit` | `logbook verify`: checks a verification bundle offline, step by step, with `pkg/submission` only (it imports nothing else of the module) |
 | `internal/e2e` | Tests only: the agent's crediting pipeline against the real minutes and evidence-day endpoints and Postgres, ending each test with the ADR 0017 checks (agent, server and replays at each minute's key agree; sealed blocks re-hash), plus the ADR 0019 checks (stored block fields and seq continuity; agent proofs verify against stored records, prove windows complete and replay to the stored rows). The one place importing both sides |
 | `web/` | SvelteKit UI |
 | `migrations/` | goose SQL migrations |

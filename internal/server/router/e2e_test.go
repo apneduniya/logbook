@@ -32,6 +32,7 @@ import (
 	"github.com/apneduniya/logbook/internal/server/store"
 	"github.com/apneduniya/logbook/internal/server/store/seedtest"
 	"github.com/apneduniya/logbook/internal/server/store/storetest"
+	"github.com/apneduniya/logbook/internal/server/submissions"
 )
 
 const (
@@ -45,9 +46,10 @@ var now = time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
 
 // server is the real API handler (router.New) over a fresh database.
 type server struct {
-	t  *testing.T
-	st *store.Store
-	h  http.Handler
+	t   *testing.T
+	st  *store.Store
+	h   http.Handler
+	box *secretbox.Box
 }
 
 func newServer(t *testing.T) *server {
@@ -74,10 +76,11 @@ func newServer(t *testing.T) *server {
 	t.Cleanup(hub.Close)
 	statsSvc := stats.NewService(st)
 	profileSvc := profiles.NewService(st, hub)
+	oauthSvc := oauth.NewService(st, oauth.Options{WebURL: webOrigin, Now: clock})
 	h := router.New(router.Services{
 		Ping:       st.Pool.Ping,
 		Auth:       authSvc,
-		OAuth:      oauth.NewService(st, oauth.Options{WebURL: webOrigin, Now: clock}),
+		OAuth:      oauthSvc,
 		Stats:      statsSvc,
 		Profiles:   profileSvc,
 		Projects:   projects.NewService(st, profileSvc),
@@ -88,8 +91,10 @@ func newServer(t *testing.T) *server {
 		Ledger:     ledger.NewService(st),
 		Hackatime:  hackatime.NewService(st, box, htClient, nil, hackatime.ServiceOptions{}),
 		ProgramAPI: programapi.NewService(st, statsSvc, clock),
+		// Submissions are only read here; nothing is queued.
+		Submissions: submissions.NewService(st, box, submissions.Options{ReviewBaseURL: webOrigin, Members: oauthSvc, Now: clock}),
 	}, router.Options{WebOrigin: webOrigin})
-	return &server{t: t, st: st, h: h}
+	return &server{t: t, st: st, h: h, box: box}
 }
 
 // request describes one call. Only the credentials that are set are sent.
@@ -516,6 +521,10 @@ func TestCORSCoversOnlyBrowserRoutes(t *testing.T) {
 		{"/api/v1/users/orpheus/projects/details", false},
 		{"/api/v1/my/heartbeats", false},
 		{"/oauth/authorize", false},
+		{"/api/v1/me/submissions", true},
+		{"/api/v1/review/AAAAAAAAAAAAAAAAAAAAAA", true},
+		{"/api/v1/me/submissions/plan", false},
+		{"/api/v1/submissions", false},
 	} {
 		rec := s.do(request{target: tc.target, browser: orpheus, origin: webOrigin})
 		if got := rec.Header().Get("Access-Control-Allow-Origin") == webOrigin; got != tc.cors {

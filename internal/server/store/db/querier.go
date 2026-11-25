@@ -380,6 +380,94 @@ type Querier interface {
 	// Aggregates read user_minutes only, never heartbeats (ADR 0002).
 	// Credited time is label = 'you'; other labels are reported separately.
 	StatsUserTimezone(ctx context.Context, id uuid.UUID) (string, error)
+	// The days among days for which the device has a stored evidence record
+	// with block fields (ADR 0019), which a proof can be checked against.
+	SubmissionBlockDays(ctx context.Context, arg SubmissionBlockDaysParams) ([]string, error)
+	SubmissionByTokenHash(ctx context.Context, tokenHash []byte) (Submission, error)
+	SubmissionCapInputs(ctx context.Context, submissionID uuid.UUID) ([]SubmissionCapInputsRow, error)
+	SubmissionCapped(ctx context.Context, submissionID uuid.UUID) ([]SubmissionCappedRow, error)
+	SubmissionDecisionInsert(ctx context.Context, arg SubmissionDecisionInsertParams) (int64, error)
+	// Deletes the raw rows (the stored parts) of one submission.
+	SubmissionDeleteRaw(ctx context.Context, arg SubmissionDeleteRawParams) (int64, error)
+	// Deletes the raw rows of submissions whose latest decision (or, with
+	// none, creation) is before cutoff.
+	SubmissionExpireRaw(ctx context.Context, arg SubmissionExpireRawParams) (int64, error)
+	// Freezes every credited row of the user, any project and device, at the
+	// minutes of the frozen rows.
+	SubmissionFreezeCapInputs(ctx context.Context, submissionID uuid.UUID) (int64, error)
+	// Freezes the project's capped seconds at the minutes of the frozen rows,
+	// as credited_project_minutes gives them.
+	SubmissionFreezeCapped(ctx context.Context, submissionID uuid.UUID) (int64, error)
+	// Freezes the user's rows of the submission's project and range, every
+	// device and label.
+	SubmissionFreezeMinutes(ctx context.Context, submissionID uuid.UUID) (int64, error)
+	// The devices with frozen rows of a submission: the last day each has
+	// sealed (null when none) and whether it is revoked.
+	SubmissionFrozenDevices(ctx context.Context, submissionID uuid.UUID) ([]SubmissionFrozenDevicesRow, error)
+	SubmissionFrozenMinutes(ctx context.Context, submissionID uuid.UUID) ([]SubmissionFrozenMinutesRow, error)
+	// One device's frozen rows of a submission.
+	SubmissionFrozenMinutesOfDevice(ctx context.Context, arg SubmissionFrozenMinutesOfDeviceParams) ([]SubmissionFrozenMinutesOfDeviceRow, error)
+	// One submission by id, for the re-check job (which got the id from a job
+	// the server queued) and for callers that have already checked access.
+	SubmissionGet(ctx context.Context, id uuid.UUID) (Submission, error)
+	SubmissionInsert(ctx context.Context, arg SubmissionInsertParams) error
+	// The newest decision of each submission, with the decider's username
+	// ("" once their account is gone).
+	SubmissionLatestDecisions(ctx context.Context, ids []uuid.UUID) ([]SubmissionLatestDecisionsRow, error)
+	SubmissionLock(ctx context.Context, id uuid.UUID) (Submission, error)
+	SubmissionLockByTokenHash(ctx context.Context, tokenHash []byte) (Submission, error)
+	// Locks one of the user's submissions until the transaction ends.
+	SubmissionLockOfUser(ctx context.Context, arg SubmissionLockOfUserParams) (Submission, error)
+	SubmissionOfProgram(ctx context.Context, arg SubmissionOfProgramParams) (Submission, error)
+	SubmissionOfUser(ctx context.Context, arg SubmissionOfUserParams) (Submission, error)
+	// One device's stored part; null once its raw rows were deleted.
+	SubmissionPartData(ctx context.Context, arg SubmissionPartDataParams) ([]byte, error)
+	// The devices with a part, and whether its raw rows were deleted, without
+	// the parts themselves (the re-check reads them one at a time).
+	SubmissionPartDevices(ctx context.Context, submissionID uuid.UUID) ([]SubmissionPartDevicesRow, error)
+	// Stores a device's part. No row is written when the device already has one.
+	SubmissionPartInsert(ctx context.Context, arg SubmissionPartInsertParams) (int64, error)
+	SubmissionParts(ctx context.Context, submissionID uuid.UUID) ([]SubmissionPartsRow, error)
+	// A part was added: the whole submission is checked again.
+	SubmissionPartsChanged(ctx context.Context, id uuid.UUID) (int32, error)
+	// The devices with credited rows of one project in [from_time, to_time):
+	// the last day each has sealed (null when none), whether it is revoked,
+	// and how many of its rows carry credit.
+	SubmissionPlanDevices(ctx context.Context, arg SubmissionPlanDevicesParams) ([]SubmissionPlanDevicesRow, error)
+	// Queries for internal/server/submissions (ADR 0020). Every read of a
+	// submission is scoped by its owner (user_id), its program (program_app_id),
+	// or its review token's hash, which the caller has already resolved.
+	// The user's credited rows of one project with a minute in [from_time,
+	// to_time), every device and label, by (device, minute).
+	SubmissionPlanRows(ctx context.Context, arg SubmissionPlanRowsParams) ([]SubmissionPlanRowsRow, error)
+	// The slug and name of apps by id, deleted ones included: a submission
+	// keeps its program's name.
+	SubmissionPrograms(ctx context.Context, ids []uuid.UUID) ([]SubmissionProgramsRow, error)
+	// A live public app by slug: what a submission may be addressed to.
+	SubmissionPublicProgram(ctx context.Context, slug string) (SubmissionPublicProgramRow, error)
+	// Time at the keyboard (user_minutes, label you, as /api/v1/me/summary
+	// counts it) for one project per UTC day in [from_time, to_time), and its
+	// part in category "ai coding".
+	SubmissionRawDays(ctx context.Context, arg SubmissionRawDaysParams) ([]SubmissionRawDaysRow, error)
+	// Whether any stored part of a submission has been deleted.
+	SubmissionRawDeleted(ctx context.Context, submissionID uuid.UUID) (bool, error)
+	SubmissionSetDecided(ctx context.Context, arg SubmissionSetDecidedParams) error
+	SubmissionSetFailed(ctx context.Context, arg SubmissionSetFailedParams) error
+	SubmissionSetReady(ctx context.Context, arg SubmissionSetReadyParams) error
+	// Writes the re-check's result of every frozen row. rows is a JSON array of
+	// objects with device_id, minute (RFC 3339), result, reason and, on a
+	// mismatch, server_label, server_credited and server_cuts.
+	SubmissionSetResults(ctx context.Context, arg SubmissionSetResultsParams) error
+	// What reviewers see of submitters: username, display name and Hackatime
+	// user id (null when not linked).
+	SubmissionSubmitters(ctx context.Context, ids []uuid.UUID) ([]SubmissionSubmittersRow, error)
+	// One of the user's devices, revoked or not.
+	SubmissionUserDevice(ctx context.Context, arg SubmissionUserDeviceParams) (SubmissionUserDeviceRow, error)
+	SubmissionWithdraw(ctx context.Context, arg SubmissionWithdrawParams) error
+	// The submissions addressed to an app, newest first. A null status or
+	// decision is no filter; decision 'none' matches submissions without one.
+	SubmissionsOfProgram(ctx context.Context, arg SubmissionsOfProgramParams) ([]Submission, error)
+	SubmissionsOfUser(ctx context.Context, userID uuid.UUID) ([]Submission, error)
 	// Totals a user's 'you' seconds in [start_time, end_time) per rollup group.
 	SumUserMinutesByGroup(ctx context.Context, arg SumUserMinutesByGroupParams) ([]SumUserMinutesByGroupRow, error)
 	TouchAPIKey(ctx context.Context, arg TouchAPIKeyParams) error

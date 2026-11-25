@@ -80,7 +80,7 @@ func WriteError(w http.ResponseWriter, r *http.Request, err error) {
 		he = &Error{Status: http.StatusInternalServerError, Message: "internal error", Err: err}
 	}
 	if he.Status >= 500 {
-		slog.ErrorContext(r.Context(), "request failed", "err", err, "path", r.URL.Path)
+		slog.ErrorContext(r.Context(), "request failed", "err", err, "path", LoggedPath(r))
 	}
 	WriteJSON(w, he.Status, map[string]string{"error": he.Message})
 }

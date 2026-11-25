@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"path"
 	"runtime/debug"
+	"strings"
 	"time"
 )
 
@@ -45,16 +47,44 @@ func (s *statusRecorder) WriteHeader(code int) {
 func (s *statusRecorder) Unwrap() http.ResponseWriter { return s.ResponseWriter }
 
 // Logger logs one line per request. It never logs query strings, bodies or
-// headers, which may carry API keys.
+// headers, which may carry API keys, nor a review link's token: the path is
+// logged as LoggedPath gives it.
 func Logger(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(rec, r)
 		slog.InfoContext(r.Context(), "http",
-			"method", r.Method, "path", r.URL.Path, "status", rec.status,
+			"method", r.Method, "path", LoggedPath(r), "status", rec.status,
 			"dur_ms", time.Since(start).Milliseconds(), "req_id", RequestIDFrom(r.Context()))
 	})
+}
+
+// tokenPathPrefix is the path under which the next segment is a
+// credential: a review link's token (ADR 0020).
+const tokenPathPrefix = "/api/v1/review/" //nolint:gosec // a path prefix, not a credential
+
+// LoggedPath is the request's path as logs may record it: with the segment
+// after /api/v1/review/ replaced by {token} (matched on the cleaned path,
+// in any case, whether or not a route matched: a CORS preflight, a 404 or
+// a redirect carries the token too), and a path whose route pattern names
+// a {token} logged as that pattern. Every other path is logged as it is.
+func LoggedPath(r *http.Request) string {
+	clean := path.Clean("/" + r.URL.Path)
+	if len(clean) >= len(tokenPathPrefix) && strings.EqualFold(clean[:len(tokenPathPrefix)], tokenPathPrefix) {
+		rest := clean[len(tokenPathPrefix):]
+		if _, after, ok := strings.Cut(rest, "/"); ok {
+			return tokenPathPrefix + "{token}/" + after
+		}
+		return tokenPathPrefix + "{token}"
+	}
+	if strings.Contains(r.Pattern, "{token}") {
+		if _, p, ok := strings.Cut(r.Pattern, " "); ok {
+			return p
+		}
+		return r.Pattern
+	}
+	return r.URL.Path
 }
 
 // Recover turns panics into 500 responses and logs the stack.
