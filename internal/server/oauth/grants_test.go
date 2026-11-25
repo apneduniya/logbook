@@ -261,11 +261,58 @@ func TestCleanup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n != 2 { // the pending request and the used code
-		t.Fatalf("deleted %d rows, want 2", n)
+	if n != 1 { // the pending request; the used code stays while its token lives
+		t.Fatalf("deleted %d rows, want 1", n)
 	}
 	if rec := e.probe("/probe/profile", live.AccessToken); rec.Code != http.StatusOK {
 		t.Fatalf("live token after cleanup = %d", rec.Code)
+	}
+}
+
+// TestReplayAfterCleanup: a used code or rotated refresh token deleted by
+// cleanup while its family still had a live token could be replayed without
+// revoking the family. Cleanup now keeps dead rows while any token of their
+// family is usable, and deletes the family once it is all dead.
+func TestReplayAfterCleanup(t *testing.T) {
+	e := newEnv(t)
+	owner, alice := e.user("owner"), e.user("alice")
+	app := e.createApp(owner, "stardance")
+	refresh := func(tok string) *httptest.ResponseRecorder {
+		return e.post("/oauth/token", url.Values{"grant_type": {"refresh_token"}, "refresh_token": {tok}}, creds(app))
+	}
+
+	// Refresh token replay, 31 days after rotation.
+	r0 := e.mustExchange(app, e.codeFor(alice, authParams(app, "profile")), "")
+	rec := refresh(r0.RefreshToken)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("refresh = %d %s", rec.Code, rec.Body)
+	}
+	r1 := decode[tokenJSON](t, rec)
+
+	// Code replay, 25 hours after the exchange.
+	code := e.codeFor(alice, authParams(app, "profile"))
+	c1 := e.mustExchange(app, code, "")
+
+	e.clock.Advance(31 * 24 * time.Hour)
+	if _, err := e.svc.Cleanup(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	expectOAuthError(t, refresh(r0.RefreshToken), http.StatusBadRequest, "invalid_grant")
+	if rec := e.probe("/probe/profile", r1.AccessToken); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("R1 after R0 was replayed past cleanup = %d, want 401", rec.Code)
+	}
+	expectOAuthError(t, e.exchange(app, code, ""), http.StatusBadRequest, "invalid_grant")
+	if rec := e.probe("/probe/profile", c1.AccessToken); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("token after its code was replayed past cleanup = %d, want 401", rec.Code)
+	}
+
+	// Both families are now dead: cleanup removes them after the retention.
+	e.clock.Advance(31 * 24 * time.Hour)
+	if _, err := e.svc.Cleanup(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if n := e.count(`SELECT count(*)::int FROM oauth_tokens`) + e.count(`SELECT count(*)::int FROM oauth_codes`); n != 0 {
+		t.Fatalf("%d dead rows left after cleanup", n)
 	}
 }
 

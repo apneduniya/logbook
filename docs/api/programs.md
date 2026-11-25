@@ -76,6 +76,8 @@ No CORS. Form-encoded; a flat JSON object is also accepted, as Doorkeeper (Rails
 
 - `grant_type=authorization_code`: `code`, `redirect_uri` (exactly the one used to authorize; also still registered), `code_verifier` when a challenge was sent. Any attempt by the code's own client uses the code up, right or wrong. Presenting a used code again revokes every token issued from it and their refreshes (RFC 6749 §4.1.2). A `code_verifier` for a code that had no challenge is refused. Another client's attempt fails without using the code.
 - `grant_type=refresh_token`: `refresh_token`, optional `scope` (the same or fewer scopes). Returns a new access and refresh token and revokes the old pair. Presenting a rotated refresh token again revokes the whole family, even while another refresh of the family is in flight. Refresh tokens last 2 years from issue.
+
+Used codes and rotated refresh tokens are kept for as long as any token issued from the same code is still usable, so a replay at any point in the family's life revokes it. Once nothing in the family is usable, a code is deleted 24 hours after it expired and a token 30 days after it expired or was revoked.
 - `grant_type=client_credentials`: confidential apps only (`unauthorized_client` otherwise). `scope` empty or `submissions`. The token acts as the app, has no refresh token and lasts 1 hour (ADR 0021 doesn't set it; a short life costs the program nothing, because it can always ask again).
 
 A user grant that was revoked, or an app that was deleted, makes every grant type fail.

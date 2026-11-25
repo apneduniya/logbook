@@ -168,9 +168,14 @@ type Querier interface {
 	OAuthCodesBurnForApp(ctx context.Context, arg OAuthCodesBurnForAppParams) error
 	// Marks the user's unused codes for the app as used, so none can be exchanged.
 	OAuthCodesBurnForGrant(ctx context.Context, arg OAuthCodesBurnForGrantParams) error
-	// Tokens that can no longer be used: both halves expired, or revoked.
-	OAuthDeleteDeadTokens(ctx context.Context, before time.Time) (int64, error)
-	OAuthDeleteExpiredCodes(ctx context.Context, expiresAt time.Time) (int64, error)
+	// Tokens dead since before `before` (both halves expired, or revoked),
+	// unless a token of their family is still usable at `now`: a rotated refresh
+	// token is the record that replaying it must revoke its family.
+	OAuthDeleteDeadTokens(ctx context.Context, arg OAuthDeleteDeadTokensParams) (int64, error)
+	// Codes that expired before `before`, unless a token of their family is
+	// still usable at `now`: a used code is the record that replaying it must
+	// revoke that family, so it is kept as long as there is something to revoke.
+	OAuthDeleteExpiredCodes(ctx context.Context, arg OAuthDeleteExpiredCodesParams) (int64, error)
 	OAuthDeleteExpiredRequests(ctx context.Context, expiresAt time.Time) (int64, error)
 	// Serialises issuing a token into a family with revoking the family, until
 	// the transaction ends: a revocation that waited here then sees every token
