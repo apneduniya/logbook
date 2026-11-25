@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/apneduniya/logbook/internal/server/oauth"
+	"github.com/apneduniya/logbook/internal/server/store"
 	"github.com/apneduniya/logbook/internal/server/store/db"
 	"github.com/apneduniya/logbook/pkg/submission"
 )
@@ -141,7 +142,11 @@ func (in DecisionInput) check(counted int64) (string, error) {
 // same Hackatime account now (unlinked, or switched to another account):
 // the level read now isn't the level of the account they submitted under.
 // Every decision is kept, the newest wins, and each is audited
-// submission.decide.
+// submission.decide. Membership is checked again in the transaction that
+// records the decision, under the submission's lock and then the
+// program's (lockMember), so a reviewer removed meanwhile can't decide;
+// the submission's lock also makes the retention job wait for the new
+// deadline (ExpireRaw).
 func (s *Service) Decide(ctx context.Context, reviewer uuid.UUID, token string, in DecisionInput) (Decision, error) {
 	sub, err := s.byToken(ctx, token)
 	if err != nil {
@@ -194,6 +199,9 @@ func (s *Service) Decide(ctx context.Context, reviewer uuid.UUID, token string, 
 		if cur.Status == StatusWithdrawn {
 			return ErrWithdrawn
 		}
+		if err := lockMember(ctx, q, app, reviewer); err != nil {
+			return err
+		}
 		v := sub.PartsVersion
 		if in.Version != nil {
 			v = *in.Version
@@ -229,6 +237,28 @@ func (s *Service) Decide(ctx context.Context, reviewer uuid.UUID, token string, 
 		return Decision{}, err
 	}
 	return *ds[sub.ID], nil
+}
+
+// lockMember is ErrForbidden unless reviewer is a member of the live
+// program app. It locks the app FOR SHARE until the transaction ends, then
+// reads the membership: removing a member or deleting the app takes FOR NO
+// KEY UPDATE on the app, so neither can commit between this check and the
+// decision the transaction records. Taken after the submission's lock.
+func lockMember(ctx context.Context, q *db.Queries, app, reviewer uuid.UUID) error {
+	forbidden := fmt.Errorf("%w: only the program's owner and reviewers can decide", ErrForbidden)
+	if _, err := q.SubmissionProgramLock(ctx, app); err != nil {
+		if store.IsNotFound(err) {
+			return forbidden
+		}
+		return fmt.Errorf("locking program: %w", err)
+	}
+	if _, err := q.SubmissionProgramMember(ctx, db.SubmissionProgramMemberParams{AppID: app, UserID: reviewer}); err != nil {
+		if store.IsNotFound(err) {
+			return forbidden
+		}
+		return fmt.Errorf("checking membership: %w", err)
+	}
+	return nil
 }
 
 // hackatimeID is the linked Hackatime account for the audit log, nil when

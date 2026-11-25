@@ -10,6 +10,9 @@ import (
 	"time"
 )
 
+// devC is a device with no frozen rows.
+const devC = "c0000000-0000-4000-8000-000000000003"
+
 // bundle is the packet fixture as the admin API exports it.
 func bundle(t *testing.T) (Bundle, Packet) {
 	t.Helper()
@@ -85,6 +88,23 @@ func TestCheckBundleRejects(t *testing.T) {
 			// The cap inputs agree with it; only the frozen row is missing.
 			b.CapInputs = append(slices.Clone(b.CapInputs), CapInput{DeviceID: devA, Minute: at(0, 57), Project: "app"})
 			b.Capped = append(slices.Clone(b.Capped), CappedMinute{Minute: at(0, 57)})
+		}, ErrCapMismatch},
+		"a cap input of the project from a device with no frozen row": {func(b *Bundle) {
+			// A third device "credits" 15 s more of the project in a frozen
+			// minute; capped agrees with the inputs, but no frozen row
+			// backs the extra seconds.
+			b.Devices = append(slices.Clone(b.Devices), BundleDevice{ID: devC, Name: "phantom", PublicKey: b.Devices[1].PublicKey})
+			b.CapInputs = append(slices.Clone(b.CapInputs), CapInput{DeviceID: devC, Minute: b.Minutes[0].Minute, Project: "app", Credited: 15})
+			b.Capped = CapProject(b.CapInputs, "app")
+		}, ErrCapMismatch},
+		"a cap input at a minute with no frozen row": {func(b *Bundle) {
+			b.CapInputs = append(slices.Clone(b.CapInputs), CapInput{DeviceID: devB, Minute: at(0, 57), Project: "lib", Credited: 60})
+		}, ErrCapMismatch},
+		"another project's negative credit lifting the cap": {func(b *Bundle) {
+			i := slices.IndexFunc(b.CapInputs, func(c CapInput) bool { return c.Project == "lib" })
+			b.CapInputs = slices.Clone(b.CapInputs)
+			b.CapInputs[i].Credited = -60
+			b.Capped = CapProject(b.CapInputs, "app")
 		}, ErrCapMismatch},
 		"a tampered part": {func(b *Bundle) {
 			b.Parts = slices.Clone(b.Parts)

@@ -119,6 +119,17 @@ SELECT * FROM submissions WHERE id = $1;
 -- name: SubmissionLock :one
 SELECT * FROM submissions WHERE id = $1 FOR UPDATE;
 
+-- name: SubmissionProgramLock :one
+-- Locks a live program app against member changes and deletion, which
+-- take FOR NO KEY UPDATE on it (oauth.ownedApp), until the transaction
+-- ends. Taken after the submission's lock.
+SELECT id FROM oauth_apps WHERE id = $1 AND deleted_at IS NULL FOR SHARE;
+
+-- name: SubmissionProgramMember :one
+-- The user's role in the app; read after SubmissionProgramLock, so it is
+-- the membership as committed when the lock was taken.
+SELECT role FROM app_members WHERE app_id = sqlc.arg(app_id) AND user_id = sqlc.arg(user_id);
+
 -- name: SubmissionFrozenMinutes :many
 SELECT device_id, minute, label, credited, cuts, flags, rules_version, computed_at, snapshot
 FROM submission_minutes
@@ -304,9 +315,18 @@ WHERE submission_id = sqlc.arg(submission_id) AND raw_deleted_at IS NULL;
 
 -- name: SubmissionExpireRaw :execrows
 -- Deletes the raw rows of submissions whose latest decision (or, with
--- none, creation) is before cutoff.
+-- none, creation) is before cutoff. Each such submission is locked FOR
+-- UPDATE first, as a decision locks it (SubmissionLock): a decision being
+-- recorded makes this wait, and its new decided_at is then re-checked
+-- against cutoff, so its parts are kept.
+WITH due AS (
+    SELECT s.id FROM submissions s
+    WHERE coalesce(s.decided_at, s.created_at) < sqlc.arg(cutoff)::timestamptz
+      AND EXISTS (SELECT 1 FROM submission_parts x WHERE x.submission_id = s.id AND x.raw_deleted_at IS NULL)
+    ORDER BY s.id
+    FOR UPDATE
+)
 UPDATE submission_parts p SET data = NULL, raw_deleted_at = sqlc.arg(deleted_at)::timestamptz
-FROM submissions s
-WHERE p.submission_id = s.id
-  AND p.raw_deleted_at IS NULL
-  AND coalesce(s.decided_at, s.created_at) < sqlc.arg(cutoff)::timestamptz;
+FROM due
+WHERE p.submission_id = due.id
+  AND p.raw_deleted_at IS NULL;

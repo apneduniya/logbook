@@ -357,3 +357,87 @@ func (e *env) status(id uuid.UUID) string {
 	}
 	return s
 }
+
+// gate holds every statement that reaches a row trigger until release, so
+// a test can line up a concurrent transaction behind one held there.
+type gate struct {
+	e        *env
+	ctx      context.Context
+	release  func()
+	released bool
+}
+
+// gateAt installs a gate at a row trigger point such as
+// "BEFORE INSERT ON submission_decisions": every statement reaching it
+// waits there until release (also deferred by the caller).
+func (e *env) gateAt(ctx context.Context, when string) *gate {
+	e.t.Helper()
+	const lock = 727022
+	hold, err := e.st.Pool.Acquire(ctx)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	e.t.Cleanup(hold.Release)
+	if _, err := hold.Exec(ctx, "SELECT pg_advisory_lock($1)", lock); err != nil {
+		e.t.Fatal(err)
+	}
+	g := &gate{e: e, ctx: ctx}
+	g.release = func() {
+		if !g.released {
+			g.released = true
+			if _, err := hold.Exec(context.WithoutCancel(ctx), "SELECT pg_advisory_unlock($1)", lock); err != nil {
+				e.t.Errorf("unlocking: %v", err)
+			}
+		}
+	}
+	if _, err := e.st.Pool.Exec(ctx, `
+		CREATE FUNCTION test_gate() RETURNS trigger LANGUAGE plpgsql AS $$
+		BEGIN PERFORM pg_advisory_xact_lock(727022); RETURN NEW; END $$;
+		CREATE TRIGGER test_gate `+when+` FOR EACH ROW EXECUTE FUNCTION test_gate();`); err != nil {
+		e.t.Fatal(err)
+	}
+	return g
+}
+
+// blocked returns how many of this database's backends wait on a lock.
+func (g *gate) blocked() int {
+	g.e.t.Helper()
+	var n int
+	if err := g.e.st.Pool.QueryRow(g.ctx, `SELECT count(*)::int FROM pg_stat_activity
+		WHERE datname = current_database() AND wait_event_type = 'Lock'`).Scan(&n); err != nil {
+		g.e.t.Fatalf("counting blocked backends: %v", err)
+	}
+	return n
+}
+
+// waiting returns once n of this database's backends wait on a lock.
+func (g *gate) waiting(n int) {
+	g.e.t.Helper()
+	for g.ctx.Err() == nil {
+		if g.blocked() >= n {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	g.e.t.Fatalf("timed out waiting for %d blocked backends", n)
+}
+
+// behind returns nil once n backends wait on a lock, or what done sent
+// first: a transaction that should have queued behind the gated one
+// finished instead.
+func behind[T any](g *gate, n int, done <-chan T) *T {
+	g.e.t.Helper()
+	for g.ctx.Err() == nil {
+		select {
+		case v := <-done:
+			return &v
+		default:
+		}
+		if g.blocked() >= n {
+			return nil
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	g.e.t.Fatalf("timed out waiting for %d blocked backends", n)
+	return nil
+}

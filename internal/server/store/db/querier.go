@@ -390,7 +390,10 @@ type Querier interface {
 	// Deletes the raw rows (the stored parts) of one submission.
 	SubmissionDeleteRaw(ctx context.Context, arg SubmissionDeleteRawParams) (int64, error)
 	// Deletes the raw rows of submissions whose latest decision (or, with
-	// none, creation) is before cutoff.
+	// none, creation) is before cutoff. Each such submission is locked FOR
+	// UPDATE first, as a decision locks it (SubmissionLock): a decision being
+	// recorded makes this wait, and its new decided_at is then re-checked
+	// against cutoff, so its parts are kept.
 	SubmissionExpireRaw(ctx context.Context, arg SubmissionExpireRawParams) (int64, error)
 	// Freezes every credited row of the user, any project and device, at the
 	// minutes of the frozen rows.
@@ -440,6 +443,13 @@ type Querier interface {
 	// The user's credited rows of one project with a minute in [from_time,
 	// to_time), every device and label, by (device, minute).
 	SubmissionPlanRows(ctx context.Context, arg SubmissionPlanRowsParams) ([]SubmissionPlanRowsRow, error)
+	// Locks a live program app against member changes and deletion, which
+	// take FOR NO KEY UPDATE on it (oauth.ownedApp), until the transaction
+	// ends. Taken after the submission's lock.
+	SubmissionProgramLock(ctx context.Context, id uuid.UUID) (uuid.UUID, error)
+	// The user's role in the app; read after SubmissionProgramLock, so it is
+	// the membership as committed when the lock was taken.
+	SubmissionProgramMember(ctx context.Context, arg SubmissionProgramMemberParams) (string, error)
 	// The slug and name of apps by id, deleted ones included: a submission
 	// keeps its program's name.
 	SubmissionPrograms(ctx context.Context, ids []uuid.UUID) ([]SubmissionProgramsRow, error)

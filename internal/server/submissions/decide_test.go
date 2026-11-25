@@ -1,6 +1,7 @@
 package submissions_test
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"strings"
@@ -269,4 +270,86 @@ func TestDecisionLinkedAfterSubmitting(t *testing.T) {
 		t.Fatalf("trust = %+v", tr)
 	}
 	w.decide(w.rita, token, `{"value": "approved"}`, http.StatusOK)
+}
+
+// decideAsync posts a decision in the background and sends its status.
+func (w *world) decideAsync(user uuid.UUID, token, body string) <-chan int {
+	out := make(chan int, 1)
+	go func() {
+		out <- w.do(call{method: http.MethodPost, target: "/api/v1/review/" + token + "/decision", user: user, body: []byte(body)}).Code
+	}()
+	return out
+}
+
+// A reviewer removed while their decision is being recorded: the removal
+// waits for the decision, which checked membership under the program's
+// lock, so a decision never lands after its reviewer's removal.
+func TestDecisionRacesMemberRemoval(t *testing.T) {
+	t.Parallel()
+	w := newWorld(t)
+	ctx := t.Context()
+	created, token := w.submit("terra")
+	w.verify(created.ID)
+
+	g := w.gateAt(ctx, "BEFORE INSERT ON submission_decisions")
+	defer g.release()
+	decided := w.decideAsync(w.rita, token, `{"value": "rejected", "reason": "no"}`)
+	g.waiting(1) // the decision, at the gate, its membership checked
+	removed := make(chan error, 1)
+	go func() { removed <- w.oauth.RemoveMember(context.WithoutCancel(ctx), w.fiona, w.terra, "rita") }()
+	if err := behind(g, 2, removed); err != nil {
+		g.release()
+		<-decided
+		t.Fatalf("rita was removed (err %v) while her decision was in flight, and it was then recorded", *err)
+	}
+	g.release()
+	if code := <-decided; code != http.StatusOK {
+		t.Fatalf("decision = %d", code)
+	}
+	if err := <-removed; err != nil {
+		t.Fatal(err)
+	}
+	// Removed now: her next decision is refused.
+	w.decide(w.rita, token, `{"value": "rejected", "reason": "again"}`, http.StatusForbidden)
+}
+
+// A decision extends the raw rows' deadline to a year after it, so the
+// retention job, running while the decision is recorded, waits for it and
+// then keeps the parts.
+func TestRetentionRacesDecision(t *testing.T) {
+	t.Parallel()
+	w := newWorld(t)
+	ctx := t.Context()
+	created, token := w.submit("terra")
+	w.verify(created.ID)
+	w.clock = now.AddDate(1, 0, 1) // past the deadline of an undecided submission
+
+	g := w.gateAt(ctx, "BEFORE INSERT ON submission_decisions")
+	defer g.release()
+	decided := w.decideAsync(w.rita, token, `{"value": "rejected", "reason": "no"}`)
+	g.waiting(1) // the decision, at the gate, holding the submission
+	type expired struct {
+		n   int64
+		err error
+	}
+	done := make(chan expired, 1)
+	go func() {
+		n, err := w.checker.ExpireRaw(context.WithoutCancel(ctx))
+		done <- expired{n, err}
+	}()
+	if got := behind(g, 2, done); got != nil {
+		g.release()
+		<-decided
+		t.Fatalf("the retention job deleted %d parts (err %v) while a decision was being recorded", got.n, got.err)
+	}
+	g.release()
+	if code := <-decided; code != http.StatusOK {
+		t.Fatalf("decision = %d", code)
+	}
+	if got := <-done; got.err != nil || got.n != 0 {
+		t.Fatalf("the retention job deleted %d parts (err %v) a year before the decision's deadline", got.n, got.err)
+	}
+	if n := w.count(`SELECT count(*) FROM submission_parts WHERE submission_id = $1 AND data IS NOT NULL`, created.ID); n != 1 {
+		t.Fatalf("%d parts kept, want 1", n)
+	}
 }

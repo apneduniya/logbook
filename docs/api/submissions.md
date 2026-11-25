@@ -204,7 +204,7 @@ Every answer, errors and `429` included, carries the three headers above.
 
 ## `POST /api/v1/review/{token}/decision`
 
-Auth: session + CSRF; the caller must be a member (owner or reviewer, ADR 0021) of the submission's program while the app is live, and not its submitter. Membership is the `oauth` package's (`GetApp`).
+Auth: session + CSRF; the caller must be a member (owner or reviewer, ADR 0021) of the submission's program while the app is live, and not its submitter. Membership is the `oauth` package's (`GetApp`), and is checked again in the transaction that records the decision: after locking the submission (`FOR UPDATE`), the app is locked `FOR SHARE` and the membership read. Removing a member and deleting the app lock the app `FOR NO KEY UPDATE`, so a reviewer removed while their decision is being recorded is removed after it, and one removed before is refused (`403`).
 
 ```json
 {"value": "adjusted", "approved_seconds": 40000, "reason": "Two days of idle editor time", "version": 1}
@@ -257,7 +257,7 @@ How the server runs it (`submissions.Checker.Verify`, job kind `submission_verif
 
 ## Retention
 
-A periodic job (`submission_raw_retention`, every 6 hours, queue `submissions`) deletes the stored parts (the revealed raw rows) of submissions whose newest decision, or creation when there is none, is more than a year old: `data` becomes `null` and `raw_deleted_at` is set. The packet, frozen rows, cap inputs and decisions stay while the account exists. Withdrawal deletes the parts at once.
+A periodic job (`submission_raw_retention`, every 6 hours, queue `submissions`) deletes the stored parts (the revealed raw rows) of submissions whose newest decision, or creation when there is none, is more than a year old: `data` becomes `null` and `raw_deleted_at` is set. It locks each such submission `FOR UPDATE` before deleting, as a decision does, so a decision being recorded makes it wait, and the new deadline is then checked again: that submission's parts stay. The packet, frozen rows, cap inputs and decisions stay while the account exists. Withdrawal deletes the parts at once.
 
 ## The verification bundle
 
@@ -284,7 +284,7 @@ A periodic job (`submission_raw_retention`, every 6 hours, queue `submissions`) 
 - `devices` are every device with a frozen row or a part. `evidence_days` are each device's every stored record with block fields, in the JSON of `POST /api/v1/devices/{id}/evidence-days` plus the stored chain hash and signature.
 - `parts` are the parts exactly as uploaded (at most one per device); `minutes` the frozen rows; `capped` the frozen capped seconds, one per minute of the frozen rows; `cap_inputs` every `credited_minutes` row of the user at those minutes, any project, any device, whatever its credit.
 - The server builds it with `submissions.Checker.Bundle` from what it stored: the frozen rows, capped seconds and cap inputs as frozen, the stored parts (decoded from their gzip), and each device's records and key read as the re-check reads them. It checks no caller; the admin route must. Once the parts are deleted (withdrawal or retention) it fails with `submissions.ErrEvidenceDeleted`, which the route answers `410`. The end-to-end test (`internal/e2e`) runs `logbook verify`'s check on it and gets the packet's counts.
-- `CheckBundle` verifies each part as the job does, marks rows of devices with no part `unbacked`, and checks that the frozen rows are among the cap inputs, that `capped` is exactly the cap recomputed from them (`submission.Cap`, the `credited_project_minutes` rule: a project's credit summed over devices, and when the minute's total over every project and device is above 60, `credit × 60 / total` rounded down) and that every capped minute has a frozen row. It reports the packet's `minutes` counts and `counted_seconds`.
+- `CheckBundle` verifies each part as the job does, marks rows of devices with no part `unbacked`, and checks the cap (`submission.CheckCap`, which the re-check runs too, so the server and `logbook verify` refuse the same bundles): the frozen rows are unique per device and minute and among the cap inputs with the same credit; every cap input lies at a minute of a frozen row and credits 0 to 60 s; every cap input of the submitted project is a frozen row (so the project's credit in a minute comes only from frozen rows, each `verified`, `mismatch` or `unbacked` on its own, and the minute's capped seconds never exceed what they credit); and `capped` is exactly the cap recomputed from the inputs (`submission.Cap`, the `credited_project_minutes` rule: a project's credit summed over devices, and when the minute's total over every project and device is above 60, `credit × 60 / total` rounded down), so every capped minute has a frozen row. It reports the packet's `minutes` counts and `counted_seconds`.
 
 ## Storage
 
