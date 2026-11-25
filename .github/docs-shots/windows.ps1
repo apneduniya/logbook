@@ -97,7 +97,7 @@ Set-ItemProperty $console FaceName 'Consolas'
 Set-ItemProperty $console FontFamily 0x36 -Type DWord
 Set-ItemProperty $console FontWeight 400 -Type DWord
 Set-ItemProperty $console FontSize 0x00160000 -Type DWord      # 22 px tall (about 16.5 pt)
-Set-ItemProperty $console WindowSize 0x001A005A -Type DWord    # 90 x 26
+Set-ItemProperty $console WindowSize 0x001D005A -Type DWord    # 90 x 29
 Set-ItemProperty $console ScreenBufferSize 0x0BB8005A -Type DWord  # 90 x 3000
 Set-ItemProperty $console WindowPosition 0x00280028 -Type DWord   # 40, 40
 Set-ItemProperty $console QuickEdit 0 -Type DWord
@@ -212,7 +212,7 @@ $installer = 'irm https://raw.githubusercontent.com/apneduniya/logbook/main/scri
 $exe = '& "$env:LOCALAPPDATA\Programs\Logbook\logbook.exe"'
 
 Invoke-ConsoleShot 'install' $installer
-Start-Sleep -Seconds 5   # let the daemon finish its first cycle
+Start-Sleep -Seconds 15   # let the daemon register the device
 Invoke-ConsoleShot 'status' "$exe status"
 Invoke-ConsoleShot 'doctor' "$exe doctor"
 
