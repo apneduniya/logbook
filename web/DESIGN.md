@@ -4,22 +4,26 @@ The approved direction is **B3, mono HUD**, on the Doop canvas _Logbook web UI_.
 
 ## References (why this direction)
 
-| Reference                                        | What we took                                                              |
-| ------------------------------------------------ | ------------------------------------------------------------------------- |
-| parkerhendo, "the correct aesthetic of software" | Dense data in a strict hairline grid, read like a terminal or HUD         |
-| mkdir.directory                                  | Ranked lists as big rows on hairlines, counts on the right                |
-| Maritime, Detent UI                              | Generous framing, near-black dark mode (never navy)                       |
-| Departure Mono (Helena Zhang)                    | One pixel voice for figures and panel heads                               |
-| Hackatime's dashboard (what teens know)          | Today, streak, week, projects and languages are the questions people ask  |
-| Invoice layouts                                  | The review page as one document: meta block, totals, itemised lines       |
-| Sentry's issue page                              | Figures at the head, the body on the left, a rail of actions on the right |
-| GitHub Actions run summary and run list          | A fact strip of figures; list rows with a status glyph, not a pill        |
-| GitHub's Verified badge                          | The evidence line's small bordered `VERIFIED` tag                         |
-| Harvest and Toggl Track approvals                | One total with its split; the decision as "APPROVED by …" plus a comment  |
-| Vercel's deployment summary                      | One row per day with its numbers right-aligned                            |
-| Vercel's deployment status filter                | Filter segments carry their counts (`READY 2`)                            |
-| Reticket's event list                            | A mono dateline over the name, the amount on the right                    |
-| GitHub's authorized OAuth apps                   | Apps with access: a count sentence, then one row per app with Revoke      |
+| Reference                                        | What we took                                                                      |
+| ------------------------------------------------ | --------------------------------------------------------------------------------- |
+| parkerhendo, "the correct aesthetic of software" | Dense data in a strict hairline grid, read like a terminal or HUD                 |
+| mkdir.directory                                  | Ranked lists as big rows on hairlines, counts on the right                        |
+| Maritime, Detent UI                              | Generous framing, near-black dark mode (never navy)                               |
+| Departure Mono (Helena Zhang)                    | One pixel voice for figures and panel heads                                       |
+| Hackatime's dashboard (what teens know)          | Today, streak, week, projects and languages are the questions people ask          |
+| Invoice layouts                                  | The review page as one document: meta block, totals, itemised lines               |
+| Sentry's issue page                              | Figures at the head, the body on the left, a rail of actions on the right         |
+| GitHub Actions run summary and run list          | A fact strip of figures; list rows with a status glyph, not a pill                |
+| GitHub's Verified badge                          | The evidence line's small bordered `VERIFIED` tag                                 |
+| Harvest and Toggl Track approvals                | One total with its split; the decision as "APPROVED by …" plus a comment          |
+| Vercel's deployment summary                      | One row per day with its numbers right-aligned                                    |
+| Vercel's deployment status filter                | Filter segments carry their counts (`READY 2`)                                    |
+| Reticket's event list                            | A mono dateline over the name, the amount on the right                            |
+| GitHub's authorized OAuth apps                   | Apps with access: a count sentence, then one row per app with Revoke              |
+| Linear's OAuth app page and new-app form         | An app as a record: facts apart from credentials; a form the size of the API body |
+| GitHub's and Linear's consent screens            | One framed sheet: who asks, what each scope allows, where you go back to          |
+| Google's account-linking consent                 | Scope rows in plain words; "remove this access any time"                          |
+| Discord's install settings                       | Each scope with a one-line explanation                                            |
 
 ## Tokens
 
@@ -83,6 +87,15 @@ Don't make the whole UI pixel or mono; hierarchy comes from the contrast between
 - Row actions start on their column's left edge, so Copy link lines up from row to row whatever else a row offers. While Withdraw asks, Copy link steps aside.
 - A command people paste is shown whole and copyable. Its placeholders are caps words (`PROJECT`), never `<angle brackets>`, which a shell reads as redirects.
 - "Submit these hours" reuses the settings form layout (label left, field right), a little wider so the command fits on one line.
+
+## Apps and consent
+
+- **An app's page** is a record: FACTS beside CREDENTIALS on the 8/4 grid, the INBOX across the page (it needs the width), REVIEWERS and the owner's DELETE APP under it. The app's mark is the identicon of its slug; there are no uploaded logos.
+- **Owner-only actions are hidden** for reviewers, never shown disabled.
+- **A one-time secret** sits in a `CopyField`, masked until "Show", with one ink sentence saying it can't be shown again. Afterwards only "Set <date> UTC" is shown, never a masked value that looks retrievable.
+- **Mono fields:** `.field` resets the font, so fields for URIs, slugs and usernames add `.field.mono` locally.
+- **The consent page** has only the wordmark in its header. One sheet about 520 px wide, centred in space, holds the two identicons (the app's → yours), "<App> by <owner> wants to:", scope rows with their label in `.lbl` on the right, the host you go back to in mono, then Allow and Deny side by side from the left edge, at the same 44 px height. The trust sentence and the way to remove access sit under the sheet as `.hint`. No checkboxes per scope (there are no partial grants) and no colour.
+- **Dead ends are sentences without buttons:** an ended request or a broken app link says what happened and what to do, and offers no button that would only fail.
 
 ## Words
 
