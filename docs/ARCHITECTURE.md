@@ -48,6 +48,8 @@ laptop                                     server (Go + Postgres)
 | `internal/server/router` | The server's whole route set on one mux, the global middleware and the CORS skip list; adapts OAuth tokens and API keys to the program API's `Authenticator`. End-to-end tests of the program flow run against it |
 | `internal/server/jobs` | River workers |
 | `internal/agent/...` | Agent: proxy, sensors, harness plugins, git, local store (an append-only event log, ADR 0017), crediting, uploader, tray |
+| `internal/agent/submit` | `logbook submit` (ADR 0020): fetches the plan, lists the minutes this device's part can back (proofs from `crediting.BuildProofs`), prints what the part reveals (other projects' rows by name, repo folders, unbacked minutes and why, other devices' minutes), asks before uploading, then uploads it gzip-compressed or writes `--preview` |
+| `internal/agent/audit` | `logbook verify`: checks a verification bundle offline, step by step, with `pkg/submission` only (it imports nothing else of the module) |
 | `internal/e2e` | Tests only: the agent's crediting pipeline against the real minutes and evidence-day endpoints and Postgres, ending each test with the ADR 0017 checks (agent, server and replays at each minute's key agree; sealed blocks re-hash), plus the ADR 0019 checks (stored block fields and seq continuity; agent proofs verify against stored records, prove windows complete and replay to the stored rows). The one place importing both sides |
 | `web/` | SvelteKit UI |
 | `migrations/` | goose SQL migrations |

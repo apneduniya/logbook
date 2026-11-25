@@ -448,6 +448,10 @@ func TestProofsVerifyAgainstServerRecords(t *testing.T) {
 		}
 	})
 
+	t.Run("submit part verifies", func(t *testing.T) {
+		r.wantSubmitPartVerifies(t, stored, start, end)
+	})
+
 	t.Run("hidden bucket fails completeness", func(t *testing.T) {
 		at := minutes[0]
 		k := r.serverMinute(at).key

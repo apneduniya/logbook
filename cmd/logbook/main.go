@@ -22,7 +22,7 @@ type Command struct {
 func commands() []Command {
 	return append([]Command{
 		runCommand(), loginCommand(), statusCommand(), doctorCommand(),
-		installCommand(), uninstallCommand(),
+		installCommand(), uninstallCommand(), submitCommand(), verifyCommand(),
 	}, hookCommands()...)
 }
 
