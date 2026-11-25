@@ -15,9 +15,11 @@ import (
 
 	"github.com/apneduniya/logbook/internal/agent/config"
 	"github.com/apneduniya/logbook/internal/agent/crediting"
+	"github.com/apneduniya/logbook/internal/agent/devicekey"
 	"github.com/apneduniya/logbook/internal/agent/localdb"
 	"github.com/apneduniya/logbook/internal/agent/status"
 	"github.com/apneduniya/logbook/internal/agent/version"
+	"github.com/apneduniya/logbook/pkg/evidence"
 )
 
 func statusCommand() Command {
@@ -57,7 +59,7 @@ func showStatus(ctx context.Context, args []string, stdout io.Writer) error {
 		return nil
 	}
 	var b strings.Builder
-	printStatus(&b, snap, cfg.LocalAddr)
+	printStatus(&b, snap, cfg.LocalAddr, keyFingerprint(dir))
 	if _, err := io.WriteString(stdout, b.String()); err != nil {
 		return fmt.Errorf("writing status: %w", err)
 	}
@@ -104,8 +106,20 @@ func (emptyStore) HeartbeatTimes(context.Context, time.Time) ([]time.Time, error
 
 func (emptyStore) Prefix(context.Context, string) (map[string]string, error) { return nil, nil }
 
-// printStatus formats s into w, an in-memory builder (so writes can't fail).
-func printStatus(w *strings.Builder, s status.Snapshot, addr string) {
+// keyFingerprint is the fingerprint of the device key in dir
+// (evidence.KeyFingerprint), or "" when there is none yet or it can't be
+// read: an auditor compares it with the keys in a verification bundle.
+func keyFingerprint(dir string) string {
+	k, err := devicekey.Load(config.DeviceKeyPath(dir))
+	if err != nil {
+		return ""
+	}
+	return evidence.KeyFingerprint(k.Public())
+}
+
+// printStatus formats s into w, an in-memory builder (so writes can't
+// fail). key is the device key's fingerprint, "" when there is none.
+func printStatus(w *strings.Builder, s status.Snapshot, addr, key string) {
 	p := func(format string, a ...any) { fmt.Fprintf(w, format+"\n", a...) }
 	if s.DaemonRunning {
 		p("Agent:      running at http://%s (status page)", addr)
@@ -124,6 +138,9 @@ func printStatus(w *strings.Builder, s status.Snapshot, addr string) {
 		p("Hackatime:  mirroring off")
 	}
 	printCrediting(p, s.Crediting)
+	if key != "" {
+		p("Key:        %s (this device's key fingerprint; `logbook verify --key` checks a bundle against it)", key)
+	}
 	p("Today:      %s coding (local estimate), %d heartbeats, %d AI events, %d git events",
 		s.Today.CodingText, s.Today.Heartbeats, s.Today.AIEvents, s.Today.GitEvents)
 	if s.SpoolBytes > 0 {

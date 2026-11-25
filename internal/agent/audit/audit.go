@@ -11,8 +11,10 @@ import (
 	"io"
 	"maps"
 	"slices"
+	"strings"
 	"time"
 
+	"github.com/apneduniya/logbook/pkg/evidence"
 	"github.com/apneduniya/logbook/pkg/submission"
 )
 
@@ -91,11 +93,19 @@ type Report struct {
 	Unbacked     map[string]int
 	Mismatches   []submission.RowResult
 	MismatchRows int
+	// Pinned is true once PinKeys checked the devices' keys against
+	// fingerprints from outside the bundle.
+	Pinned bool
 }
 
 // DeviceReport is one device's checks.
 type DeviceReport struct {
 	ID, Name string
+	// Fingerprint is the device's public key in the bundle
+	// (evidence.KeyFingerprint), and Key why it isn't one of the
+	// fingerprints PinKeys was given (nil when it is, or none were given).
+	Fingerprint string
+	Key         error
 	// Records is how many signed records the bundle holds for it, and
 	// Chain why they don't verify or form one chain (nil when they do).
 	Records int
@@ -114,7 +124,28 @@ func (r Report) OK() bool {
 	if r.Err != nil || r.Cap != nil {
 		return false
 	}
-	return !slices.ContainsFunc(r.Devices, func(d DeviceReport) bool { return d.Chain != nil || d.Proofs != nil })
+	return !slices.ContainsFunc(r.Devices, func(d DeviceReport) bool { return d.Chain != nil || d.Proofs != nil || d.Key != nil })
+}
+
+// PinKeys checks every device's key in the bundle against fingerprints
+// the auditor got from outside it (`logbook status` on each device, or the
+// student's device list): the bundle's own keys sign its evidence, so
+// without this a bundle signed with substituted keys checks out too. No
+// fingerprints checks nothing.
+func (r *Report) PinKeys(fingerprints []string) {
+	if len(fingerprints) == 0 {
+		return
+	}
+	want := map[string]bool{}
+	for _, f := range fingerprints {
+		want[strings.ToLower(strings.TrimSpace(f))] = true
+	}
+	r.Pinned = true
+	for i, d := range r.Devices {
+		if !want[d.Fingerprint] {
+			r.Devices[i].Key = fmt.Errorf("key %s is none of the fingerprints given", d.Fingerprint)
+		}
+	}
 }
 
 // Check checks b step by step, then as a whole with
@@ -163,7 +194,8 @@ func Check(b submission.Bundle) Report {
 // VerifyPart checks the chain first, so a part's failure that isn't
 // submission.ErrBadChain is a failure of its proofs or replays.
 func checkDevice(d submission.BundleDevice, parts map[string]submission.Part, rows []submission.Minute) DeviceReport {
-	out := DeviceReport{ID: d.ID, Name: d.Name, Records: len(d.EvidenceDays), Rows: len(rows)}
+	out := DeviceReport{ID: d.ID, Name: d.Name, Records: len(d.EvidenceDays), Rows: len(rows),
+		Fingerprint: evidence.KeyFingerprint(ed25519.PublicKey(d.PublicKey))}
 	dev := submission.Device{ID: d.ID, PublicKey: ed25519.PublicKey(d.PublicKey), Records: d.EvidenceDays}
 	p, ok := parts[d.ID]
 	if !ok {

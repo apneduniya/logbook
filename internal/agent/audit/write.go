@@ -23,6 +23,14 @@ func (r Report) Write(w io.Writer) error {
 	p("Submission %s: %s, %s to %s (created %s)", s.ID, s.Project, s.From, s.To, r.created())
 	for _, d := range r.Devices {
 		p("Device %s (%s)", d.Name, d.ID)
+		switch {
+		case d.Key != nil:
+			p("  key                   FAIL  %v", d.Key)
+		case r.Pinned:
+			p("  key                   OK    %s, one of the fingerprints given", d.Fingerprint)
+		default:
+			p("  key                   %s (not checked: compare it with `logbook status` on that device)", d.Fingerprint)
+		}
 		if d.Chain != nil {
 			p("  signatures and chain  FAIL  %v", d.Chain)
 		} else {
@@ -60,8 +68,12 @@ func (r Report) Write(w io.Writer) error {
 		p("Counted                 %.1f h (%s s), from the frozen capped seconds", float64(r.CountedSeconds)/3600, num(int(r.CountedSeconds)))
 	}
 	switch {
+	case r.OK() && r.Pinned:
+		p("Result                  OK: every key, signature, chain, proof, replay and the cap check out")
 	case r.OK():
-		p("Result                  OK: every signature, chain, proof, replay and the cap check out")
+		p("Result                  OK: every signature, chain, proof, replay and the cap check out against the keys in the bundle")
+		p("                        The bundle names its own keys: compare each fingerprint above with `logbook status` on that")
+		p("                        device, or pass them with --key, before trusting it beyond the server that exported it.")
 	case r.Err != nil:
 		p("Result                  FAIL: %v", r.Err)
 	default:

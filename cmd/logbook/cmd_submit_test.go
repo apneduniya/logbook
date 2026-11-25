@@ -96,7 +96,15 @@ func TestVerifyCommand(t *testing.T) {
 	if err := runVerify([]string{bad}, &out); !errors.Is(err, errVerifyFailed) || !strings.Contains(out.String(), "FAIL") {
 		t.Fatalf("bad bundle: %v\n%s", err, out.String())
 	}
-	for _, args := range [][]string{nil, {"a", "b"}, {"--x"}, {filepath.Join(dir, "missing.json")}} {
+	// --key pins the devices' keys, before or after the file; the empty
+	// bundle has no device, so any fingerprint passes.
+	for _, args := range [][]string{{"--key", "66687aadf862bd77", good}, {good, "--key", "66687aadf862bd77"}} {
+		out.Reset()
+		if err := runVerify(args, &out); err != nil || !strings.Contains(out.String(), "every key, signature") {
+			t.Fatalf("%q: %v\n%s", args, err, out.String())
+		}
+	}
+	for _, args := range [][]string{nil, {"a", "b"}, {"--x"}, {"--key"}, {good, "--key"}, {filepath.Join(dir, "missing.json")}} {
 		if err := runVerify(args, &out); err == nil {
 			t.Errorf("%q: no error", args)
 		}

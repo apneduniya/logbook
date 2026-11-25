@@ -198,6 +198,45 @@ func TestGoodBundle(t *testing.T) {
 	}
 }
 
+// The bundle names its own keys, so the report prints each device's key
+// fingerprint and says it wasn't checked; given fingerprints from outside
+// the bundle, a key that isn't among them fails, as a bundle re-signed
+// with a substituted key would.
+func TestPinKeys(t *testing.T) {
+	b := goodBundle(t)
+	var fps []string
+	for _, d := range b.Devices {
+		fps = append(fps, evidence.KeyFingerprint(ed25519.PublicKey(d.PublicKey)))
+	}
+	report := func(r Report) string {
+		var out bytes.Buffer
+		if err := r.Write(&out); err != nil {
+			t.Fatal(err)
+		}
+		return out.String()
+	}
+
+	r := Check(clone(t, b))
+	out := report(r)
+	if !r.OK() || r.Pinned || !strings.Contains(out, "key                   "+fps[0]+" (not checked") ||
+		!strings.Contains(out, "against the keys in the bundle") {
+		t.Fatalf("unpinned report:\n%s", out)
+	}
+
+	r = Check(clone(t, b))
+	r.PinKeys([]string{strings.ToUpper(fps[0]), " " + fps[1] + " "})
+	if out := report(r); !r.OK() || !strings.Contains(out, "OK    "+fps[0]) ||
+		!strings.Contains(out, "every key, signature") {
+		t.Fatalf("pinned report:\n%s", out)
+	}
+
+	r = Check(clone(t, b))
+	r.PinKeys(fps[:1])
+	if out := report(r); r.OK() || !strings.Contains(out, "FAIL  key "+fps[1]+" is none of the fingerprints given") {
+		t.Fatalf("report with a key not given:\n%s", out)
+	}
+}
+
 // Every kind of tampering fails, at the step it belongs to; a frozen row
 // the replay disagrees with is reported as a mismatch, not a failure.
 func TestTamperedBundles(t *testing.T) {
