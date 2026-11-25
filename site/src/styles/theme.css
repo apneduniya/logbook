@@ -1,0 +1,196 @@
+/*
+ * Logbook docs theme. Tokens follow web/DESIGN.md: ledger paper and iron-gall ink,
+ * hairline rules, no radii, no shadows. Ultramarine is used for two things only:
+ * the current-page marker and the focus ring. Everything Starlight would tint with
+ * its accent is ink here.
+ *
+ * Starlight's default :root is its dark theme, and [data-theme='light'] is light.
+ * This file is unlayered, so it wins over Starlight's layered styles.
+ */
+
+/* Dark (Starlight's default): near-black, never navy. */
+:root {
+	--lb-ground: #0e0e0d;
+	--lb-ink: #eceae2;
+	--lb-ink-2: #9b988f;
+	--lb-ink-3: #85827a;
+	--lb-rule: #262523;
+	--lb-fill: #1a1a18;
+	--lb-accent: #7387ff;
+
+	--sl-color-white: var(--lb-ink);
+	--sl-color-gray-1: var(--lb-ink);
+	--sl-color-gray-2: #d6d3ca;
+	--sl-color-gray-3: var(--lb-ink-2);
+	--sl-color-gray-4: var(--lb-ink-3);
+	--sl-color-gray-5: #3a3935;
+	--sl-color-gray-6: var(--lb-fill);
+	--sl-color-black: var(--lb-ground);
+
+	--sl-color-accent-low: var(--lb-fill);
+	--sl-color-accent: var(--lb-ink);
+	--sl-color-accent-high: var(--lb-ink);
+	--sl-color-text: #d6d3ca;
+	--sl-color-text-accent: var(--lb-ink);
+	--sl-color-text-invert: var(--lb-ground);
+	--sl-color-bg: var(--lb-ground);
+	--sl-color-bg-nav: var(--lb-ground);
+	--sl-color-bg-sidebar: var(--lb-ground);
+	--sl-color-bg-inline-code: var(--lb-fill);
+	--sl-color-bg-accent: var(--lb-ink);
+	--sl-color-hairline-light: var(--lb-rule);
+	--sl-color-hairline: var(--lb-rule);
+	--sl-color-hairline-shade: var(--lb-rule);
+
+	--sl-shadow-sm: none;
+	--sl-shadow-md: none;
+	--sl-shadow-lg: none;
+
+	--sl-font: 'Geist', sans-serif;
+	--sl-font-mono: 'Geist Mono', monospace;
+	--lb-font-pixel: 'Departure Mono', monospace;
+
+	/* Readable body: 16 px, about 70 characters a line. */
+	--sl-text-body: 1rem;
+	--sl-line-height: 1.65;
+	--sl-content-width: 46rem;
+}
+
+:root[data-theme='light'] {
+	--lb-ground: #f1efe8;
+	--lb-ink: #17160f;
+	--lb-ink-2: #5f5b51;
+	--lb-ink-3: #6e6a61;
+	--lb-rule: #d8d4c8;
+	--lb-fill: #e6e3d9;
+	--lb-accent: #2740d6;
+
+	--sl-color-white: var(--lb-ink);
+	--sl-color-gray-1: var(--lb-ink);
+	--sl-color-gray-2: #2b2a22;
+	--sl-color-gray-3: var(--lb-ink-2);
+	--sl-color-gray-4: var(--lb-ink-3);
+	--sl-color-gray-5: #b9b5a9;
+	--sl-color-gray-6: var(--lb-rule);
+	--sl-color-gray-7: var(--lb-fill);
+	--sl-color-black: var(--lb-ground);
+
+	--sl-color-accent-low: var(--lb-fill);
+	--sl-color-accent: var(--lb-ink);
+	--sl-color-accent-high: var(--lb-ink);
+	--sl-color-text: #2b2a22;
+	--sl-color-text-accent: var(--lb-ink);
+	--sl-color-text-invert: var(--lb-ground);
+	--sl-color-bg: var(--lb-ground);
+	--sl-color-bg-nav: var(--lb-ground);
+	--sl-color-bg-sidebar: var(--lb-ground);
+	--sl-color-bg-inline-code: var(--lb-fill);
+	--sl-color-bg-accent: var(--lb-ink);
+	--sl-color-hairline-light: var(--lb-rule);
+	--sl-color-hairline: var(--lb-rule);
+	--sl-color-hairline-shade: var(--lb-rule);
+
+	--sl-shadow-sm: none;
+	--sl-shadow-md: none;
+	--sl-shadow-lg: none;
+}
+
+body {
+	background: var(--lb-ground);
+	color: var(--sl-color-text);
+	-webkit-font-smoothing: antialiased;
+	text-rendering: optimizeLegibility;
+}
+
+/* No radii and no shadows anywhere, including plugin UI. */
+*,
+*::before,
+*::after {
+	border-radius: 0 !important;
+	box-shadow: none !important;
+}
+
+/* The pixel voice: site title and the page's h1 only. */
+.site-title,
+h1#_top {
+	font-family: var(--lb-font-pixel);
+	font-weight: 400;
+	letter-spacing: 0;
+}
+
+.site-title {
+	font-size: 1.125rem;
+	color: var(--lb-ink);
+}
+
+h1#_top {
+	font-size: clamp(1.75rem, 1.4rem + 1.5vw, 2.25rem);
+	line-height: 1.15;
+}
+
+/* Keep running text near 70 characters a line. */
+.sl-markdown-content :is(p, li, blockquote) {
+	max-width: 70ch;
+}
+
+/* Links are ink with an underline; colour never carries meaning here. */
+.sl-markdown-content a:not(:where(.not-content *)) {
+	color: var(--lb-ink);
+	text-decoration-thickness: 1px;
+	text-underline-offset: 0.2em;
+}
+
+/* Page links in the sidebar read as a list, not a column of headings. */
+nav.sidebar a.large {
+	font-weight: 400;
+}
+
+/* Current page in the sidebar: ink text with an ultramarine edge, no filled block. */
+nav.sidebar a[aria-current='page'],
+nav.sidebar a[aria-current='page']:hover,
+nav.sidebar a[aria-current='page']:focus {
+	color: var(--lb-ink);
+	background: transparent;
+	box-shadow: inset 2px 0 0 var(--lb-accent) !important;
+	font-weight: 600;
+}
+
+/* The focus ring: the other use of the accent. */
+:focus-visible {
+	outline: 2px solid var(--lb-accent);
+	outline-offset: 2px;
+}
+
+/* Cards and other boxes: hairline rules on paper. */
+.card,
+.sl-link-card {
+	border: 1px solid var(--lb-rule);
+	background: transparent;
+}
+
+.card .icon {
+	color: var(--lb-ink);
+	background: transparent;
+	border: 1px solid var(--lb-rule);
+}
+
+.sl-link-card:hover {
+	border-color: var(--lb-ink);
+	background: var(--lb-fill);
+}
+
+/* Tabs: the active tab is an inverted block, as in the web UI. */
+starlight-tabs [role='tab'][aria-selected='true'] {
+	color: var(--lb-ground);
+	background: var(--lb-ink);
+	border-color: var(--lb-ink);
+}
+
+@media (prefers-reduced-motion: reduce) {
+	*,
+	*::before,
+	*::after {
+		transition: none !important;
+		animation: none !important;
+	}
+}
