@@ -148,3 +148,63 @@ func TestDecisionNeedsALiveProgram(t *testing.T) {
 		t.Fatalf("program = %v", p)
 	}
 }
+
+// A decision that echoes the version the reviewer read is refused once a
+// part was added since: the packet changed under them.
+func TestDecisionOnAStalePacket(t *testing.T) {
+	t.Parallel()
+	w := newWorld(t)
+	created, token := w.submit("terra")
+	w.verify(created.ID)
+	read := decode[review](t, w.expect(call{target: "/api/v1/review/" + token}, http.StatusOK))
+	stale, ok := read.Submission["version"].(float64)
+	if !ok {
+		t.Fatalf("review submission = %v", read.Submission)
+	}
+
+	part := mustJSON(t, map[string]any{"device_id": w.b.id.String(), "blocks": []any{}, "minutes": []any{}})
+	w.expect(call{method: http.MethodPost, target: "/api/v1/submissions/" + created.ID.String() + "/parts", user: w.alice,
+		body: part, gz: true}, http.StatusAccepted)
+	w.verify(created.ID)
+
+	body := w.decide(w.rita, token, fmt.Sprintf(`{"value": "approved", "version": %d}`, int(stale)), http.StatusConflict)
+	if !strings.Contains(string(body), "reload") {
+		t.Fatalf("refusal = %s", body)
+	}
+	cur := decode[review](t, w.expect(call{target: "/api/v1/review/" + token}, http.StatusOK)).Submission["version"].(float64)
+	if cur == stale {
+		t.Fatal("version unchanged by a new part")
+	}
+	w.decide(w.rita, token, fmt.Sprintf(`{"value": "approved", "version": %d}`, int(cur)), http.StatusOK)
+}
+
+// A submitter who was linked at submission and unlinked Hackatime since
+// can't be approved: a ban can no longer be checked. The review page says
+// they aren't linked now; rejecting is still allowed.
+func TestDecisionAfterUnlinking(t *testing.T) {
+	t.Parallel()
+	w := newWorld(t)
+	created, token := w.submit("terra")
+	w.verify(created.ID)
+	w.exec(`DELETE FROM hackatime_links WHERE user_id = $1`, w.alice)
+
+	r := decode[review](t, w.expect(call{target: "/api/v1/review/" + token}, http.StatusOK))
+	if tr := r.Packet.Trust; !tr.HackatimeLinked || tr.HackatimeLinkedNow == nil || *tr.HackatimeLinkedNow {
+		t.Fatalf("trust = %+v", tr)
+	}
+	body := w.decide(w.rita, token, `{"value": "approved"}`, http.StatusConflict)
+	if !strings.Contains(string(body), "unlinked Hackatime") {
+		t.Fatalf("refusal = %s", body)
+	}
+	w.decide(w.rita, token, fmt.Sprintf(`{"value": "adjusted", "approved_seconds": %d, "reason": "x"}`, w.counted(created.ID)-1),
+		http.StatusConflict)
+	w.decide(w.rita, token, `{"value": "rejected", "reason": "can't check Hackatime"}`, http.StatusOK)
+
+	// Linking again restores approvals.
+	w.link(w.alice, 4321, "green", now)
+	w.decide(w.fiona, token, `{"value": "approved"}`, http.StatusOK)
+	r = decode[review](t, w.expect(call{target: "/api/v1/review/" + token}, http.StatusOK))
+	if tr := r.Packet.Trust; tr.HackatimeLinkedNow == nil || !*tr.HackatimeLinkedNow {
+		t.Fatalf("trust after linking again = %+v", tr)
+	}
+}

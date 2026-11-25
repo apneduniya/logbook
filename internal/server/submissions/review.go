@@ -36,6 +36,9 @@ type ReviewSubmission struct {
 	User      Submitter `json:"user"`
 	Program   *Program  `json:"program"`
 	CreatedAt time.Time `json:"created_at"`
+	// Version identifies the packet: it changes whenever a part is added
+	// (and the submission is checked again). A decision may echo it.
+	Version int32 `json:"version"`
 }
 
 // Review is GET /api/v1/review/{token}. Packet is nil unless the
@@ -78,7 +81,7 @@ func (s *Service) Review(ctx context.Context, token string) (Review, error) {
 	r := Review{
 		Submission: ReviewSubmission{
 			ID: sub.ID, Project: sub.Project, From: sum.From, To: sum.To, Status: sub.Status,
-			User: *sum.User, Program: sum.Program, CreatedAt: sub.CreatedAt.UTC(),
+			User: *sum.User, Program: sum.Program, CreatedAt: sub.CreatedAt.UTC(), Version: sub.PartsVersion,
 		},
 		Decision: sum.Decision,
 	}
@@ -91,6 +94,10 @@ type DecisionInput struct {
 	Value           string  `json:"value"`
 	ApprovedSeconds *int64  `json:"approved_seconds"`
 	Reason          *string `json:"reason"`
+	// Version is the review's submission.version the reviewer read, or
+	// nil. When given, the decision is refused if the submission was
+	// checked again since (a part was added).
+	Version *int32 `json:"version"`
 }
 
 // check validates the input against the submission's counted seconds and
@@ -126,9 +133,12 @@ func (in DecisionInput) check(counted int64) (string, error) {
 // Decide records a program member's decision on the submission a review
 // token names (ADR 0020 "Decisions"). The reviewer must be a member (owner
 // or reviewer) of the submission's live program and not its submitter
-// (ErrForbidden); the submission must be ready (ErrConflict). The
+// (ErrForbidden); the submission must be ready, and still at the version
+// the reviewer read when the input gives one (ErrConflict). The
 // submitter's trust level is refreshed first when it is more than 24 hours
-// old, and approving or adjusting while they are banned is ErrConflict.
+// old, and approving or adjusting is ErrConflict while they are banned or,
+// when they were linked at submission, after they unlinked Hackatime: their
+// trust can't be checked any more.
 // Every decision is kept, the newest wins, and each is audited
 // submission.decide.
 func (s *Service) Decide(ctx context.Context, reviewer uuid.UUID, token string, in DecisionInput) (Decision, error) {
@@ -152,8 +162,8 @@ func (s *Service) Decide(ctx context.Context, reviewer uuid.UUID, token string, 
 		}
 		return Decision{}, fmt.Errorf("checking membership: %w", err)
 	}
-	if sub.Status != StatusReady {
-		return Decision{}, fmt.Errorf("%w: the submission is %s, not ready", ErrConflict, sub.Status)
+	if err := current(sub, in.Version); err != nil {
+		return Decision{}, err
 	}
 	reason, err := in.check(sub.CountedSeconds)
 	if err != nil {
@@ -163,21 +173,29 @@ func (s *Service) Decide(ctx context.Context, reviewer uuid.UUID, token string, 
 	if err != nil {
 		return Decision{}, err
 	}
-	if trust.banned() && in.Value != DecisionRejected {
-		return Decision{}, fmt.Errorf("%w: the submitter's Hackatime account is banned now, so the hours can only be rejected", ErrConflict)
+	if in.Value != DecisionRejected {
+		switch {
+		case trust.banned():
+			return Decision{}, fmt.Errorf("%w: the submitter's Hackatime account is banned now, so the hours can only be rejected", ErrConflict)
+		case sub.TrustAtSubmission.Valid && !trust.Linked:
+			return Decision{}, fmt.Errorf("%w: the submitter unlinked Hackatime after submitting, so their trust level "+
+				"can't be checked; the hours can only be rejected until they link it again", ErrConflict)
+		}
 	}
 	err = s.st.InTx(ctx, func(q *db.Queries) error {
 		cur, err := q.SubmissionLock(ctx, sub.ID)
 		if err != nil {
 			return fmt.Errorf("locking submission: %w", err)
 		}
-		switch {
-		case cur.Status == StatusWithdrawn:
+		if cur.Status == StatusWithdrawn {
 			return ErrWithdrawn
-		case cur.Status != StatusReady:
-			return fmt.Errorf("%w: the submission is %s, not ready", ErrConflict, cur.Status)
-		case cur.CountedSeconds != sub.CountedSeconds:
-			return fmt.Errorf("%w: the submission was re-checked meanwhile; reload it", ErrConflict)
+		}
+		v := sub.PartsVersion
+		if in.Version != nil {
+			v = *in.Version
+		}
+		if err := current(cur, &v); err != nil {
+			return err
 		}
 		now := s.now()
 		var approved pgtype.Int8
@@ -206,6 +224,18 @@ func (s *Service) Decide(ctx context.Context, reviewer uuid.UUID, token string, 
 		return Decision{}, err
 	}
 	return *ds[sub.ID], nil
+}
+
+// current is ErrConflict unless sub is ready and, when version isn't nil,
+// at that version: a part added since changes the packet the reviewer read.
+func current(sub db.Submission, version *int32) error {
+	switch {
+	case sub.Status != StatusReady:
+		return fmt.Errorf("%w: the submission is %s, not ready", ErrConflict, sub.Status)
+	case version != nil && *version != sub.PartsVersion:
+		return fmt.Errorf("%w: the submission was checked again since you read it (a part was added); reload it", ErrConflict)
+	}
+	return nil
 }
 
 // Withdraw withdraws one of the user's submissions (DELETE

@@ -208,8 +208,8 @@ func (s *Service) detail(ctx context.Context, sub db.Submission, v view) (Detail
 }
 
 // servePacket returns a ready submission's stored packet with what is
-// filled in when it is served: the submitter's trust level now (masked)
-// and when it was checked, the justification with the link, and the day
+// filled in when it is served: the submitter's trust level now (masked),
+// when it was checked and whether Hackatime is linked now, the justification with the link, and the day
 // the raw rows are deleted. It is nil unless the submission is ready.
 func (s *Service) servePacket(ctx context.Context, sub db.Submission, link string) (*submission.Packet, error) {
 	if sub.Status != StatusReady || sub.Packet == nil {
@@ -224,6 +224,7 @@ func (s *Service) servePacket(ctx context.Context, sub db.Submission, link strin
 		return nil, err
 	}
 	p.Trust.Now = maskTrust(t.Level, t.Linked)
+	p.Trust.HackatimeLinkedNow = &t.Linked
 	if t.CheckedAt != nil {
 		at := t.CheckedAt.UTC()
 		p.Trust.CheckedAt = &at
