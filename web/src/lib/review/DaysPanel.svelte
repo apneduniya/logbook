@@ -1,12 +1,20 @@
 <!--
   The review page's DAYS panel: one row per UTC day of the range, counted
-  and at-the-keyboard time on the right, the day's 1,440 minutes as a strip
-  under them, and commits as ticks above it. One scale and one legend for
-  every strip, at the top.
+  and at-the-keyboard time on the right, the day's minutes as a strip under
+  them, and commits as ticks above it. Every strip shows the same window of
+  the day (#lib/strip.ts dayWindow: the active hours, rounded out to
+  whole hours), so one scale and one legend at the top serve them all.
 -->
 <script lang="ts">
 	import type { DayView } from '#lib/review.ts';
-	import { KIND_NAMES, stripTotals, type MinuteKind } from '#lib/strip.ts';
+	import {
+		dayWindow,
+		KIND_NAMES,
+		minuteClock,
+		stripTotals,
+		windowHours,
+		type MinuteKind
+	} from '#lib/strip.ts';
 	import MinuteStrip from '#lib/components/MinuteStrip.svelte';
 	import Panel from '#lib/components/Panel.svelte';
 
@@ -25,7 +33,21 @@
 			name: k === 'c' ? 'cut or idle' : KIND_NAMES[k]
 		}));
 	});
-	const scale = ['00:00', '06:00', '12:00', '18:00', '24:00'];
+	const win = $derived(
+		dayWindow(
+			days.map((d) => d.strip),
+			days.flatMap((d) => d.ticks.map((t) => t.at))
+		)
+	);
+	const scale = $derived(
+		windowHours(win).map((m) => ({
+			text: minuteClock(m),
+			left: ((m - win.start) / (win.end - win.start)) * 100
+		}))
+	);
+	// The window starts and ends on whole hours, so the outer labels sit on the
+	// strip's ends; they stay inside the panel.
+	const edge = (left: number) => (left <= 0 ? 'none' : left >= 100 ? 'translateX(-100%)' : null);
 </script>
 
 <Panel title="Days" meta="{days.length} {days.length === 1 ? 'day' : 'days'} · UTC">
@@ -35,7 +57,9 @@
 		{/each}
 	</div>
 	<div class="lbl scale" aria-hidden="true">
-		{#each scale as s, i (s)}<span style:left="{i * 25}%">{s}</span>{/each}
+		{#each scale as s (s.text)}<span style:left="{s.left}%" style:transform={edge(s.left)}>
+				{s.text}
+			</span>{/each}
 	</div>
 	<ol class="days" role="list">
 		{#each days as d (d.day)}
@@ -50,7 +74,14 @@
 				{#if d.gaps.length}
 					<p class="lbl">No signed record from {d.gaps.join(', ')} this day.</p>
 				{/if}
-				<MinuteStrip strip={d.strip} label="{d.label}, minute by minute (UTC)" ticks={d.ticks} />
+				<MinuteStrip
+					strip={d.strip.slice(win.start, win.end)}
+					start={win.start}
+					label="{d.label}, {minuteClock(win.start)} to {minuteClock(
+						win.end
+					)}, minute by minute (UTC)"
+					ticks={d.ticks.map((t) => ({ ...t, at: t.at - win.start }))}
+				/>
 			</li>
 		{/each}
 	</ol>
@@ -73,12 +104,6 @@
 		position: absolute;
 		top: 0;
 		transform: translateX(-50%);
-	}
-	.scale span:first-child {
-		transform: none;
-	}
-	.scale span:last-child {
-		transform: translateX(-100%);
 	}
 	.days {
 		list-style: none;

@@ -3,9 +3,11 @@
   (#lib/strip.ts: y counted, a agent alone, c cut, i idle, u unbacked,
   m mismatch). Short strips (up to two hours, like the signed-out home's
   example hour) draw one cell per minute; longer ones (a day's 1,440) draw
-  runs. Ticks above it mark moments such as commits: each is a button whose
-  detail shows under the strip on hover, focus or tap. The runs are also in
-  a visually hidden table (web/DESIGN.md, "Charts").
+  runs. Ticks above it mark moments such as commits: each draws a 1 px mark,
+  and a 24 px button over it shows the detail under the strip on hover, focus
+  or tap. Ticks closer than one button share it, and its detail lists each
+  of them. The runs are also in a visually hidden table (web/DESIGN.md,
+  "Charts").
 
   Props:
   - strip: one character per minute.
@@ -34,18 +36,46 @@
 
 	/** Up to this many minutes, each minute is its own cell. */
 	const CELLS_MAX = 120;
+	/** A tick button's width and height: the smallest comfortable target. */
+	const TARGET = 24;
 
 	const runs = $derived(stripRuns(strip));
 	const cells = $derived(strip.length <= CELLS_MAX);
 	const cellKinds = $derived(cells ? Array.from(strip, minuteKind) : []);
 	const n = $derived(Math.max(1, strip.length));
 
-	// The tick under the pointer or focus wins over the one pinned by a tap.
+	const noun = (k: number) => `${k} ${k === 1 ? tickNoun : `${tickNoun}s`}`;
+	const count = $derived(noun(ticks.length));
+
+	// Ticks closer than one button (at the strip's drawn width) share a button.
+	let width = $state(0);
+	const groups = $derived.by(() => {
+		const near = width > 0 ? (TARGET / width) * n : 0;
+		const sorted = [...ticks].sort((a, b) => a.at - b.at);
+		const out: Tick[][] = [];
+		for (const t of sorted) {
+			const g = out[out.length - 1];
+			if (g && t.at - g[g.length - 1].at < near) g.push(t);
+			else out.push([t]);
+		}
+		return out.map((g) => {
+			const times = g.map((t) => minuteClock(start + t.at)).join(', ');
+			return {
+				ticks: g,
+				// The button's centre: midway between its first and last tick.
+				at: (g[0].at + g[g.length - 1].at) / 2,
+				head: g.length > 1 ? `${noun(g.length)} · ${times}` : null,
+				label: g.length > 1 ? `${noun(g.length)}. ${g.map((t) => t.label).join('. ')}` : g[0].label
+			};
+		});
+	});
+
+	// The group under the pointer or focus wins over the one pinned by a tap.
 	let hovered = $state<number | null>(null);
 	let pinned = $state<number | null>(null);
 	const shown = $derived(hovered ?? pinned);
-	const detail = $derived(shown === null ? null : (ticks[shown] ?? null));
-	const count = $derived(`${ticks.length} ${ticks.length === 1 ? tickNoun : `${tickNoun}s`}`);
+	const detail = $derived(shown === null ? null : (groups[shown] ?? null));
+	const lit = $derived(new Set(detail?.ticks ?? []));
 
 	function onkeydown(e: KeyboardEvent) {
 		if (e.key === 'Escape') {
@@ -55,15 +85,18 @@
 	}
 </script>
 
-<div class="ms" class:tall>
+<div class="ms" class:tall bind:clientWidth={width}>
 	{#if ticks.length}
 		<div class="ticks">
 			{#each ticks as t, i (i)}
+				<i class="mark" class:lit={lit.has(t)} style:left="{((t.at + 0.5) / n) * 100}%"></i>
+			{/each}
+			{#each groups as g, i (i)}
 				<button
 					type="button"
 					class="tick"
-					style:left="{((t.at + 0.5) / n) * 100}%"
-					aria-label={t.label}
+					style:left="{((g.at + 0.5) / n) * 100}%"
+					aria-label={g.label}
 					aria-pressed={pinned === i}
 					onclick={() => (pinned = pinned === i ? null : i)}
 					onpointerenter={() => (hovered = i)}
@@ -87,12 +120,17 @@
 	{#if ticks.length}
 		<p class="detail" aria-hidden={detail === null}>
 			{#if detail}
-				<span class="mono">{detail.text}</span>
-				{#if detail.href}
-					<a class="link" href={detail.href} rel="external noopener noreferrer">
-						GitHub <span aria-hidden="true">↗</span>
-					</a>
-				{/if}
+				{#if detail.head}<span class="lbl whole">{detail.head}</span>{/if}
+				{#each detail.ticks as t, i (i)}
+					<span class="one">
+						<span class="mono">{t.text}</span>
+						{#if t.href}
+							<a class="link" href={t.href} rel="external noopener noreferrer">
+								GitHub <span aria-hidden="true">↗</span>
+							</a>
+						{/if}
+					</span>
+				{/each}
 			{:else}
 				<span class="lbl">
 					{count}<span class="hover-only">{HOVER_HINT}</span><span class="touch-only">
@@ -103,22 +141,25 @@
 		</p>
 	{/if}
 
-	<table class="sr-only">
-		<caption>{label}</caption>
-		<thead>
-			<tr><th>From</th><th>To</th><th>Minutes</th><th>What</th></tr>
-		</thead>
-		<tbody>
-			{#each runs as r (r.from)}
-				<tr>
-					<td>{minuteClock(start + r.from)}</td>
-					<td>{minuteClock(start + r.to)}</td>
-					<td>{r.to - r.from}</td>
-					<td>{KIND_NAMES[r.kind]}</td>
-				</tr>
-			{/each}
-		</tbody>
-	</table>
+	<!-- A table ignores the 1 px height of .sr-only, so a wrapper carries it. -->
+	<div class="sr-only">
+		<table>
+			<caption>{label}</caption>
+			<thead>
+				<tr><th>From</th><th>To</th><th>Minutes</th><th>What</th></tr>
+			</thead>
+			<tbody>
+				{#each runs as r (r.from)}
+					<tr>
+						<td>{minuteClock(start + r.from)}</td>
+						<td>{minuteClock(start + r.to)}</td>
+						<td>{r.to - r.from}</td>
+						<td>{KIND_NAMES[r.kind]}</td>
+					</tr>
+				{/each}
+			</tbody>
+		</table>
+	</div>
 </div>
 
 <style>
@@ -152,35 +193,35 @@
 		position: relative;
 		height: 12px;
 	}
-	/* The hit area is wider than the 1 px mark it draws. */
-	.tick {
+	/* Each tick's 1 px mark; it grows (by transform) while its button is lit. */
+	.mark {
 		position: absolute;
 		bottom: 0;
-		width: 16px;
-		height: 16px;
+		width: 1px;
+		height: 12px;
+		background: var(--color-ink-2);
+		transform: scaleY(0.75);
+		transform-origin: bottom;
+		transition:
+			background 150ms ease-out,
+			transform 150ms ease-out;
+	}
+	.mark.lit {
+		background: var(--color-ink);
+		transform: scaleY(1);
+	}
+	/* The 24 px hit area reaches down over the strip, not up over the line
+	   above, so the tick row stays 12 px. */
+	.tick {
+		position: absolute;
+		top: 0;
+		width: 24px;
+		height: 24px;
 		transform: translateX(-50%);
 		padding: 0;
 		border: 0;
 		background: none;
 		cursor: pointer;
-	}
-	.tick::after {
-		content: '';
-		position: absolute;
-		left: 50%;
-		bottom: 2px;
-		width: 1px;
-		height: 9px;
-		background: var(--color-ink-2);
-		transition:
-			background 150ms ease-out,
-			height 150ms ease-out;
-	}
-	.tick:hover::after,
-	.tick:focus-visible::after,
-	.tick[aria-pressed='true']::after {
-		background: var(--color-ink);
-		height: 12px;
 	}
 	.tick:focus-visible {
 		outline-offset: 0;
@@ -193,6 +234,15 @@
 		min-height: 20px;
 		margin-top: 6px;
 		font-size: var(--text-xs);
+	}
+	.detail .whole {
+		flex-basis: 100%;
+	}
+	.detail .one {
+		display: inline-flex;
+		flex-wrap: wrap;
+		gap: 4px 14px;
+		align-items: baseline;
 	}
 	.touch-only {
 		display: none;

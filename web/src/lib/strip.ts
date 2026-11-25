@@ -69,3 +69,57 @@ export function utcMinuteOfDay(instant: string): number {
 	const d = new Date(instant);
 	return d.getUTCHours() * 60 + d.getUTCMinutes();
 }
+
+/** A stretch of the day in minutes: [start, end). */
+export interface Window {
+	start: number;
+	end: number;
+}
+
+const DAY = 1440;
+/** Shorter windows would switch MinuteStrip to per-minute cells. */
+const MIN_WINDOW = 180;
+/** Minutes kept clear either side of the activity. */
+const MARGIN = 30;
+
+/**
+ * The one window every day's strip shares: from the earliest to the latest
+ * minute that isn't idle (or carries a mark, such as a commit), with at
+ * least half an hour either side, rounded out to whole hours; at least three
+ * hours and never more than the day. 10:00–11:15 gives 09:00–12:00. With
+ * nothing in it, the whole day.
+ */
+export function dayWindow(strips: string[], marks: number[] = []): Window {
+	let first = DAY;
+	let last = -1;
+	for (const s of strips) {
+		for (let i = 0; i < s.length; i++) {
+			if (minuteKind(s[i]) === 'i') continue;
+			first = Math.min(first, i);
+			last = Math.max(last, i);
+		}
+	}
+	for (const m of marks) {
+		first = Math.min(first, m);
+		last = Math.max(last, m);
+	}
+	if (last < 0) return { start: 0, end: DAY };
+	let start = Math.max(0, Math.floor((first - MARGIN) / 60) * 60);
+	let end = Math.min(DAY, Math.ceil((last + 1 + MARGIN) / 60) * 60);
+	if (end - start < MIN_WINDOW) {
+		end = Math.min(DAY, start + MIN_WINDOW);
+		start = Math.max(0, end - MIN_WINDOW);
+	}
+	return { start, end };
+}
+
+/** Hour marks for a window's scale: every hour, or every 2, 3 or 6 when it's wide. */
+export function windowHours({ start, end }: Window): number[] {
+	const span = (end - start) / 60;
+	const step = span <= 8 ? 1 : span <= 14 ? 2 : span <= 18 ? 3 : 6;
+	const out: number[] = [];
+	for (let h = Math.ceil(start / 60); h * 60 <= end; h++) {
+		if (h % step === 0) out.push(h * 60);
+	}
+	return out;
+}
