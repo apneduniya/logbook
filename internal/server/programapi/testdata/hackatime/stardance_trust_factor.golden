@@ -1,0 +1,12 @@
+# Stardance and 17 more repos that read trust
+# GET /api/v1/users/100000001/trust_factor
+status: 200
+cache-control: 
+
+{
+  "trust_level": "green",
+  "trust_value": 2,
+  "logbook": {
+    "trust_verified": true
+  }
+}

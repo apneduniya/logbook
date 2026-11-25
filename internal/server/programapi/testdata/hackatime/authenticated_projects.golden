@@ -1,0 +1,44 @@
+# 3am-ysws, Re-Dream, cq, disposition, fellow-ysws, hackrail, macondo, pixl, shrink, the-carnival, twisted
+# GET /api/v1/authenticated/projects
+# Authorization: Bearer <orpheus-profile-read token>
+status: 200
+cache-control: no-store
+
+{
+  "projects": [
+    {
+      "name": "logbook",
+      "total_seconds": 1200,
+      "most_recent_heartbeat": "2026-06-10T09:39:00Z",
+      "languages": [
+        "Go"
+      ],
+      "archived": false,
+      "credited_seconds": 1200,
+      "raw_seconds": 2400,
+      "repo_url": "https://github.com/orpheus/logbook"
+    },
+    {
+      "name": "agent-only",
+      "total_seconds": 180,
+      "most_recent_heartbeat": "2026-06-10T13:03:00Z",
+      "languages": [],
+      "archived": false,
+      "credited_seconds": 180,
+      "raw_seconds": 0,
+      "repo_url": null
+    },
+    {
+      "name": "site",
+      "total_seconds": 90,
+      "most_recent_heartbeat": "2026-06-10T10:00:30Z",
+      "languages": [
+        "Svelte"
+      ],
+      "archived": false,
+      "credited_seconds": 90,
+      "raw_seconds": 300,
+      "repo_url": null
+    }
+  ]
+}

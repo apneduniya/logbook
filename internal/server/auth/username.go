@@ -10,6 +10,18 @@ import (
 // usernameRe mirrors the users.username CHECK constraint.
 var usernameRe = regexp.MustCompile(`^[a-zA-Z0-9_-]{2,39}$`)
 
+// reservedUsername is the alias the program API reads as "the token's own
+// user" (/api/v1/users/my/stats, ADR 0021), so nobody may hold it. The
+// users_username_not_reserved constraint enforces the same rule.
+const reservedUsername = "my"
+
+// usableUsername reports whether name may be given to a new user: it fits
+// the users table and isn't reserved (case-insensitively, as usernames are
+// citext).
+func usableUsername(name string) bool {
+	return usernameRe.MatchString(name) && !strings.EqualFold(name, reservedUsername)
+}
+
 const (
 	// maxBaseUsername leaves room for a numeric suffix within 39 characters.
 	maxBaseUsername  = 32

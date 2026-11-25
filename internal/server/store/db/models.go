@@ -114,6 +114,13 @@ type HackatimeLink struct {
 	LinkedAt          time.Time
 }
 
+type HackatimeTrustHistory struct {
+	ID        int64
+	UserID    uuid.UUID
+	Level     string
+	CheckedAt time.Time
+}
+
 type Heartbeat struct {
 	ID               int64
 	UserID           uuid.UUID
@@ -281,6 +288,7 @@ type User struct {
 	Role          string
 	CreatedAt     time.Time
 	UpdatedAt     time.Time
+	PublicID      int64
 }
 
 type UserMinute struct {

@@ -1,9 +1,11 @@
-// Package seedtest inserts users, user_minutes rows, devices and credited
-// minutes, and reads the audit log, for tests of packages that read those
-// tables (stats, projects, profiles, live). It uses the SeedTest* queries in
+// Package seedtest inserts users, user_minutes rows, devices, credited
+// minutes, heartbeats, Hackatime links and project settings, and reads the
+// audit log, for tests of packages that read those tables (stats, projects,
+// profiles, live, programapi). It uses the SeedTest* queries in
 // store/queries/seedtest.sql and is only imported from _test.go files.
-// Creating users in production belongs to auth, writing minutes to ingest,
-// and devices and credited minutes to devices and credited.
+// Creating users in production belongs to auth, writing minutes and
+// heartbeats to ingest, devices and credited minutes to devices and
+// credited, links to hackatime, and settings to projects.
 package seedtest
 
 import (
@@ -167,4 +169,69 @@ func CreditedSpan(t testing.TB, st *store.Store, userID, deviceID uuid.UUID, fro
 			t.Fatalf("seeding credited minute %v: %v", at, err)
 		}
 	}
+}
+
+// Heartbeat describes one heartbeats row. Empty fields get defaults:
+// project "logbook", language "Go", editor "vscode", category "coding",
+// entity "main.go". The source is always "editor".
+type Heartbeat struct {
+	At       time.Time
+	Project  string
+	Language string
+	Editor   string
+	Category string
+	Entity   string
+}
+
+// Heartbeats inserts heartbeats for userID with random fields hashes.
+func Heartbeats(t testing.TB, st *store.Store, userID uuid.UUID, hs ...Heartbeat) {
+	t.Helper()
+	for _, h := range hs {
+		m := withDefaults(Minute{Project: h.Project, Language: h.Language, Editor: h.Editor, Category: h.Category})
+		if h.Entity == "" {
+			h.Entity = "main.go"
+		}
+		hash := make([]byte, 32)
+		_, _ = rand.Read(hash) // crypto/rand.Read never returns an error
+		err := st.SeedTestHeartbeat(context.Background(), db.SeedTestHeartbeatParams{
+			UserID: userID, Time: h.At.UTC(), FieldsHash: hash, Entity: h.Entity,
+			Category: m.Category, Project: m.Project, Language: m.Language, Editor: m.Editor,
+		})
+		if err != nil {
+			t.Fatalf("seeding heartbeat %v: %v", h.At, err)
+		}
+	}
+}
+
+// HackatimeLink links userID to Hackatime account hackatimeID with the given
+// trust level and GitHub username. The stored token is a placeholder.
+func HackatimeLink(t testing.TB, st *store.Store, userID uuid.UUID, hackatimeID int64, github, trust string) {
+	t.Helper()
+	err := st.SeedTestHackatimeLink(context.Background(), db.SeedTestHackatimeLinkParams{
+		UserID: userID, HackatimeUserID: hackatimeID, HackatimeUsername: github, TrustLevel: trust,
+	})
+	if err != nil {
+		t.Fatalf("seeding hackatime link: %v", err)
+	}
+}
+
+// ProjectSettings stores settings for one of userID's projects.
+func ProjectSettings(t testing.TB, st *store.Store, userID uuid.UUID, name, repoURL string, hidden, archived bool) {
+	t.Helper()
+	err := st.SeedTestProjectSettings(context.Background(), db.SeedTestProjectSettingsParams{
+		UserID: userID, Name: name, RepoUrl: repoURL, Hidden: hidden, Archived: archived,
+	})
+	if err != nil {
+		t.Fatalf("seeding project settings: %v", err)
+	}
+}
+
+// PublicID returns userID's public id.
+func PublicID(t testing.TB, st *store.Store, userID uuid.UUID) int64 {
+	t.Helper()
+	id, err := st.SeedTestPublicID(context.Background(), userID)
+	if err != nil {
+		t.Fatalf("reading public id: %v", err)
+	}
+	return id
 }

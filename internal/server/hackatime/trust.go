@@ -81,7 +81,13 @@ func (r *TrustRefresher) Refresh(ctx context.Context, userID uuid.UUID) error {
 		if err != nil {
 			return fmt.Errorf("saving hackatime trust level: %w", err)
 		}
-		if n == 0 || TrustLevel(link.TrustLevel) == level {
+		if n == 0 {
+			return nil // relinked meanwhile; the new link stored its own level
+		}
+		if err := recordTrust(ctx, q, userID, level, r.now()); err != nil {
+			return err
+		}
+		if TrustLevel(link.TrustLevel) == level {
 			return nil
 		}
 		r.log.InfoContext(ctx, "hackatime trust level changed", "user_id", userID, "from", link.TrustLevel, "to", level)
@@ -108,6 +114,18 @@ func (r *TrustRefresher) fetch(ctx context.Context, userID uuid.UUID, link db.Ha
 	default:
 		return "", fmt.Errorf("refreshing hackatime trust: %w", err)
 	}
+}
+
+// recordTrust adds a level read at checkedAt to the user's trust history
+// (hackatime_trust_history): the newest row is extended while the level is
+// unchanged, and a new row starts when it changes.
+func recordTrust(ctx context.Context, q *db.Queries, userID uuid.UUID, level TrustLevel, checkedAt time.Time) error {
+	if err := q.RecordHackatimeTrust(ctx, db.RecordHackatimeTrustParams{
+		UserID: userID, Level: string(level), CheckedAt: checkedAt,
+	}); err != nil {
+		return fmt.Errorf("recording hackatime trust history: %w", err)
+	}
+	return nil
 }
 
 // unverifiable is the level to record when Hackatime can't be asked about

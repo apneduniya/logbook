@@ -1,0 +1,8 @@
+# any program, private user without a token
+# GET /api/v1/users/pat/stats
+status: 403
+cache-control: 
+
+{
+  "error": "user has disabled public stats"
+}

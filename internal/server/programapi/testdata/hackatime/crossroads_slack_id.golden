@@ -1,0 +1,8 @@
+# Crossroads: a Slack id (not supported in V1)
+# GET /api/v1/users/U01ABCDEF12/stats
+status: 404
+cache-control: 
+
+{
+  "error": "User not found"
+}

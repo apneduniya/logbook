@@ -121,6 +121,8 @@ type Querier interface {
 	LastHeartbeatTime(ctx context.Context, userID uuid.UUID) (time.Time, error)
 	ListActiveAPIKeys(ctx context.Context, userID uuid.UUID) ([]ApiKey, error)
 	ListHackatimeLinksDueForTrustCheck(ctx context.Context, arg ListHackatimeLinksDueForTrustCheckParams) ([]uuid.UUID, error)
+	// The user's newest trust readings, newest first.
+	ListHackatimeTrustHistory(ctx context.Context, arg ListHackatimeTrustHistoryParams) ([]ListHackatimeTrustHistoryRow, error)
 	// Reads the heartbeats a rollup recompute needs. The ranges are inclusive and
 	// never overlap, so no row is returned twice. The read is driven from the
 	// ranges: each one gets its own index range scan on (user_id, time) with
@@ -208,6 +210,42 @@ type Querier interface {
 	ProfileTimezoneKnown(ctx context.Context, name string) (bool, error)
 	// Partial update: a NULL argument keeps the current value.
 	ProfileUpdate(ctx context.Context, arg ProfileUpdateParams) (ProfileUpdateRow, error)
+	// Counted (capped credited) seconds per project in [from_time, to_time). The
+	// project filters apply after the 60-second cap (see the view).
+	ProgramCreditedTotals(ctx context.Context, arg ProgramCreditedTotalsParams) ([]ProgramCreditedTotalsRow, error)
+	// The parts of a Hackatime link the program API shows: never the token.
+	ProgramHackatimeLink(ctx context.Context, userID uuid.UUID) (ProgramHackatimeLinkRow, error)
+	// Heartbeats per non-empty project in [from_time, to_time], with the first
+	// and last heartbeat time.
+	ProgramHeartbeatCounts(ctx context.Context, arg ProgramHeartbeatCountsParams) ([]ProgramHeartbeatCountsRow, error)
+	// Heartbeats in [from_time, to_time] split into runs wherever the gap to the
+	// previous heartbeat is longer than gap_seconds, as Hackatime's to_span does.
+	// Each run is its first and last heartbeat time in Unix seconds, in order.
+	ProgramHeartbeatRuns(ctx context.Context, arg ProgramHeartbeatRunsParams) ([]ProgramHeartbeatRunsRow, error)
+	// The user's heartbeats in [from_time, to_time], oldest first, at most
+	// max_rows of them.
+	ProgramHeartbeats(ctx context.Context, arg ProgramHeartbeatsParams) ([]ProgramHeartbeatsRow, error)
+	// The user's project settings rows that differ from the defaults.
+	ProgramProjectSettings(ctx context.Context, userID uuid.UUID) ([]ProgramProjectSettingsRow, error)
+	// Raw seconds per (project, language) in [from_time, to_time), with the
+	// first and last minute seen. A NULL projects or categories array means no
+	// filter; exclude_categories is compared case-insensitively.
+	ProgramRawTotals(ctx context.Context, arg ProgramRawTotalsParams) ([]ProgramRawTotalsRow, error)
+	// Raw seconds of category 'coding' across the given projects, each minute
+	// counted at most once (60 s), however many projects shared it.
+	ProgramRawUniqueCoding(ctx context.Context, arg ProgramRawUniqueCodingParams) (int64, error)
+	ProgramUserByID(ctx context.Context, id uuid.UUID) (ProgramUserByIDRow, error)
+	// Queries for the Hackatime-shaped program API (ADR 0021): user lookup by
+	// public id or username, and range totals for packages stats and programapi.
+	// Every aggregate is keyed by one user id that the caller has already
+	// authorised.
+	//
+	// Raw time is heartbeat time from user_minutes (label 'you'); counted time is
+	// capped credited time from credited_project_minutes (ADR 0014). Hidden
+	// projects are excluded by name through exclude_projects, which callers fill
+	// for reads that aren't authorised by the user.
+	ProgramUserByPublicID(ctx context.Context, publicID int64) (ProgramUserByPublicIDRow, error)
+	ProgramUserByUsername(ctx context.Context, username string) (ProgramUserByUsernameRow, error)
 	// All-time capped credited seconds per project (ADR 0014), and the last
 	// minute any device reported for it.
 	ProjectsCreditedTotals(ctx context.Context, arg ProjectsCreditedTotalsParams) ([]ProjectsCreditedTotalsRow, error)
@@ -224,6 +262,10 @@ type Querier interface {
 	// Partial update: a NULL argument keeps the current (or default) value.
 	ProjectsSettingsUpsert(ctx context.Context, arg ProjectsSettingsUpsertParams) (Project, error)
 	PublicPrograms(ctx context.Context) ([]PublicProgramsRow, error)
+	// Adds a level read for the user to hackatime_trust_history: when the newest
+	// row has the same level, its checked_at moves forward; otherwise (a change,
+	// or the first read) a new row starts.
+	RecordHackatimeTrust(ctx context.Context, arg RecordHackatimeTrustParams) error
 	// Makes the 'you' rows inside the given windows equal to the supplied set in
 	// one round trip: upserts the fresh rows and deletes every other 'you' row in
 	// the windows. Both parts see the same snapshot and touch disjoint rows.
@@ -233,6 +275,10 @@ type Querier interface {
 	SeedTestAuditLog(ctx context.Context, actorUserID pgtype.UUID) ([]SeedTestAuditLogRow, error)
 	SeedTestCreditedMinute(ctx context.Context, arg SeedTestCreditedMinuteParams) error
 	SeedTestDevice(ctx context.Context, arg SeedTestDeviceParams) (uuid.UUID, error)
+	SeedTestHackatimeLink(ctx context.Context, arg SeedTestHackatimeLinkParams) error
+	SeedTestHeartbeat(ctx context.Context, arg SeedTestHeartbeatParams) error
+	SeedTestProjectSettings(ctx context.Context, arg SeedTestProjectSettingsParams) error
+	SeedTestPublicID(ctx context.Context, id uuid.UUID) (int64, error)
 	// Test fixtures for package store/seedtest. Production code must not call
 	// these; creating users belongs to auth and writing minutes to ingest.
 	SeedTestUser(ctx context.Context, arg SeedTestUserParams) (uuid.UUID, error)

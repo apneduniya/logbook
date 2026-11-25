@@ -238,3 +238,22 @@ func (s *Service) authenticateRequest(r *http.Request) (httpapi.CurrentUser, err
 	}
 	return s.authenticateAPIKey(r.Context(), key)
 }
+
+// ErrInvalidAPIKey is returned by APIKeyOwner for a key that is malformed,
+// unknown or revoked.
+var ErrInvalidAPIKey = errors.New("invalid API key")
+
+// APIKeyOwner returns the user an API key belongs to, for callers that take
+// the key from somewhere other than RequireAPIKey's forms (the program API
+// reads it from a Bearer or Basic header, as Hackatime does). It returns
+// ErrInvalidAPIKey when the key doesn't verify.
+func (s *Service) APIKeyOwner(ctx context.Context, key string) (uuid.UUID, error) {
+	u, err := s.authenticateAPIKey(ctx, key)
+	if errors.Is(err, errInvalidAPIKey) {
+		return uuid.Nil, ErrInvalidAPIKey
+	}
+	if err != nil {
+		return uuid.Nil, err
+	}
+	return u.ID, nil
+}

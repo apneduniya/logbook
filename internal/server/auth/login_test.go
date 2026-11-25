@@ -103,6 +103,16 @@ func TestUsernameNeverComesFromEmail(t *testing.T) {
 	}
 }
 
+// TestReservedUsernameIsSkipped: "my" names the token's own user on the
+// program API, so a person whose name sanitises to it gets "my2".
+func TestReservedUsernameIsSkipped(t *testing.T) {
+	e := newEnv(t)
+	b := e.login(fakeIdentity{ID: "ident!my", FirstName: "My"})
+	if b.name != "my2" {
+		t.Fatalf("username = %q, want my2", b.name)
+	}
+}
+
 func TestCallbackRejectsBadState(t *testing.T) {
 	e := newEnv(t)
 	tests := []struct {

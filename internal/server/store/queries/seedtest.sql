@@ -28,3 +28,23 @@ RETURNING id;
 INSERT INTO credited_minutes (device_id, user_id, minute, project, label, credited, flags, rules_version)
 VALUES (sqlc.arg(device_id), sqlc.arg(user_id), sqlc.arg(minute), sqlc.arg(project), sqlc.arg(label),
         sqlc.arg(credited), sqlc.arg(flags), 'v1');
+
+-- name: SeedTestHeartbeat :exec
+INSERT INTO heartbeats (user_id, time, fields_hash, source, entity, category, project, language, editor)
+VALUES (sqlc.arg(user_id), sqlc.arg(time), sqlc.arg(fields_hash), 'editor', sqlc.arg(entity),
+        sqlc.arg(category), sqlc.arg(project), sqlc.arg(language), sqlc.arg(editor));
+
+-- name: SeedTestHackatimeLink :exec
+INSERT INTO hackatime_links (user_id, hackatime_user_id, hackatime_username, access_token_enc,
+                             trust_level, trust_checked_at)
+VALUES (sqlc.arg(user_id), sqlc.arg(hackatime_user_id), sqlc.arg(hackatime_username), '\x00',
+        sqlc.arg(trust_level), now());
+
+-- name: SeedTestProjectSettings :exec
+INSERT INTO projects (user_id, name, repo_url, hidden, archived)
+VALUES (sqlc.arg(user_id), sqlc.arg(name), sqlc.arg(repo_url), sqlc.arg(hidden), sqlc.arg(archived))
+ON CONFLICT (user_id, name) DO UPDATE SET
+    repo_url = EXCLUDED.repo_url, hidden = EXCLUDED.hidden, archived = EXCLUDED.archived;
+
+-- name: SeedTestPublicID :one
+SELECT public_id FROM users WHERE id = $1;
