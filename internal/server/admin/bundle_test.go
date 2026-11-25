@@ -192,4 +192,6 @@ func TestFailedExportAuditedAgainstOwner(t *testing.T) {
 // deletedBundles answers every export as deleted.
 type deletedBundles struct{ bigBundles }
 
-func (deletedBundles) CheckBundle(context.Context, uuid.UUID) error { return submissions.ErrEvidenceDeleted }
+func (deletedBundles) CheckBundle(context.Context, uuid.UUID) error {
+	return submissions.ErrEvidenceDeleted
+}
