@@ -369,6 +369,11 @@ type Querier interface {
 	SubmissionLockOfUser(ctx context.Context, arg SubmissionLockOfUserParams) (Submission, error)
 	SubmissionOfProgram(ctx context.Context, arg SubmissionOfProgramParams) (Submission, error)
 	SubmissionOfUser(ctx context.Context, arg SubmissionOfUserParams) (Submission, error)
+	// One device's stored part; null once its raw rows were deleted.
+	SubmissionPartData(ctx context.Context, arg SubmissionPartDataParams) ([]byte, error)
+	// The devices with a part, and whether its raw rows were deleted, without
+	// the parts themselves (the re-check reads them one at a time).
+	SubmissionPartDevices(ctx context.Context, submissionID uuid.UUID) ([]SubmissionPartDevicesRow, error)
 	// Stores a device's part. No row is written when the device already has one.
 	SubmissionPartInsert(ctx context.Context, arg SubmissionPartInsertParams) (int64, error)
 	SubmissionParts(ctx context.Context, submissionID uuid.UUID) ([]SubmissionPartsRow, error)

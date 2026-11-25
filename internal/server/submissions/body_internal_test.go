@@ -17,7 +17,7 @@ import (
 // gets 503. Both say when to retry.
 func TestUploadGate(t *testing.T) {
 	t.Parallel()
-	g := newUploadGate(1, 20*time.Millisecond)
+	g := newUploadGate(NewDecodeSlots(1), 20*time.Millisecond)
 	alice, bob := uuid.New(), uuid.New()
 	status := func(err error) int {
 		var he *httpapi.Error

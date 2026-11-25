@@ -44,11 +44,10 @@ type HandlerOptions struct {
 	RequireSubmissionsScope httpapi.Middleware
 	// ClientKey keys the review link's per-client limit.
 	ClientKey func(*http.Request) string
-	// UploadSlots is how many upload bodies are decoded at once (default
-	// 2), and UploadWait how long a body waits for a slot (default a
-	// minute) before it is refused with 503.
-	UploadSlots int
-	UploadWait  time.Duration
+	// UploadWait is how long an upload body waits for one of the
+	// Service's decode slots (Options.DecodeSlots) before it is refused
+	// with 503 (default a minute).
+	UploadWait time.Duration
 }
 
 // Handler serves the submission routes.
@@ -66,7 +65,7 @@ func NewHandler(svc *Service, opts HandlerOptions) *Handler {
 		return httpapi.NewRateLimiter(float64(burst)/per.Seconds(), burst, limiterMaxKeys, limiterIdleTTL)
 	}
 	return &Handler{
-		svc: svc, opts: opts, uploads: newUploadGate(opts.UploadSlots, opts.UploadWait),
+		svc: svc, opts: opts, uploads: newUploadGate(svc.slots, opts.UploadWait),
 		uploadLimit:   limiter(uploadBurst, time.Hour).Middleware(httpapi.UserKey),
 		planLimit:     limiter(planBurst, time.Minute).Middleware(httpapi.UserKey),
 		reviewLimit:   limiter(reviewBurst, time.Minute).Middleware(opts.ClientKey),

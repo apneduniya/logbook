@@ -140,7 +140,11 @@ func run() error {
 		return fmt.Errorf("registering workers: %w", err)
 	}
 	// The submission re-check and raw-row retention (ADR 0020).
-	if err := submissions.AddWorkers(workers, submissions.NewChecker(st, ledgerSvc, logger, nil)); err != nil {
+	// Uploads and re-checks share one set of decode slots, so at most
+	// submissions.DefaultDecodeSlots parts are decoded at once server-wide.
+	decodeSlots := submissions.NewDecodeSlots(submissions.DefaultDecodeSlots)
+	checker := submissions.NewChecker(st, ledgerSvc, submissions.CheckerOptions{DecodeSlots: decodeSlots, Logger: logger})
+	if err := submissions.AddWorkers(workers, checker); err != nil {
 		return fmt.Errorf("registering workers: %w", err)
 	}
 	jobClient, err := jobs.New(st.Pool, jobs.Options{
@@ -174,7 +178,8 @@ func run() error {
 		// Submissions: review links on the web UI's origin, membership from
 		// the OAuth provider, trust refreshed through Hackatime (ADR 0020).
 		Submissions: submissions.NewService(st, box, submissions.Options{
-			ReviewBaseURL: cfg.WebOrigin(), Enqueuer: jobClient.River(), Members: oauthSvc, Trust: trust, Logger: logger,
+			ReviewBaseURL: cfg.WebOrigin(), Enqueuer: jobClient.River(), Members: oauthSvc, Trust: trust,
+			DecodeSlots: decodeSlots, Logger: logger,
 		}),
 	}, router.Options{
 		WebOrigin:  cfg.WebOrigin(),

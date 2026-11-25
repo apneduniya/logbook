@@ -82,6 +82,10 @@ type Options struct {
 	Trust TrustRefresher
 	// TrustTimeout bounds one refresh (default 10 s).
 	TrustTimeout time.Duration
+	// DecodeSlots bounds how many parts are decoded at once server-wide;
+	// pass the same value to the Checker. nil gets its own
+	// DefaultDecodeSlots, shared with nothing.
+	DecodeSlots *DecodeSlots
 	// MaxCompressedBytes and MaxDecompressedBytes bound an upload body
 	// (default submission.MaxCompressedBytes and MaxDecompressedBytes).
 	MaxCompressedBytes, MaxDecompressedBytes int64
@@ -100,6 +104,7 @@ type Service struct {
 	members      Members
 	trust        TrustRefresher
 	trustTimeout time.Duration
+	slots        *DecodeSlots
 	maxGzip      int64
 	maxJSON      int64
 	log          *slog.Logger
@@ -111,7 +116,10 @@ func NewService(st *store.Store, box *secretbox.Box, opts Options) *Service {
 	s := &Service{
 		st: st, box: box, reviewBase: strings.TrimRight(opts.ReviewBaseURL, "/"),
 		enq: opts.Enqueuer, members: opts.Members, trust: opts.Trust, trustTimeout: opts.TrustTimeout,
-		maxGzip: opts.MaxCompressedBytes, maxJSON: opts.MaxDecompressedBytes, log: opts.Logger,
+		slots: opts.DecodeSlots, maxGzip: opts.MaxCompressedBytes, maxJSON: opts.MaxDecompressedBytes, log: opts.Logger,
+	}
+	if s.slots == nil {
+		s.slots = NewDecodeSlots(0)
 	}
 	if s.trustTimeout <= 0 {
 		s.trustTimeout = 10 * time.Second

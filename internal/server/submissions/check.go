@@ -32,23 +32,44 @@ var (
 	lastDay  = time.Date(9999, 12, 31, 0, 0, 0, 0, time.UTC)
 )
 
-// Checker runs the re-check job and the raw-row retention job.
-type Checker struct {
-	st  *store.Store
-	ev  Evidence
-	log *slog.Logger
-	now func() time.Time
+// CheckerOptions configures a Checker.
+type CheckerOptions struct {
+	// DecodeSlots bounds how many parts are decoded at once server-wide:
+	// pass the Service's (Options.DecodeSlots), so uploads and re-checks
+	// share them. nil gets its own DefaultDecodeSlots, shared with nothing.
+	DecodeSlots *DecodeSlots
+	Logger      *slog.Logger
+	// Now overrides the clock (tests).
+	Now func() time.Time
 }
 
-// NewChecker returns a Checker. logger and now may be nil.
-func NewChecker(st *store.Store, ev Evidence, logger *slog.Logger, now func() time.Time) *Checker {
-	if logger == nil {
-		logger = slog.Default()
+// Checker runs the re-check job and the raw-row retention job.
+type Checker struct {
+	st    *store.Store
+	ev    Evidence
+	slots *DecodeSlots
+	log   *slog.Logger
+	now   func() time.Time
+	// decoded, when set, is told +1 when the re-check holds a decoded part
+	// and -1 when it has dropped it (tests).
+	decoded func(delta int)
+}
+
+// NewChecker returns a Checker.
+func NewChecker(st *store.Store, ev Evidence, opts CheckerOptions) *Checker {
+	c := &Checker{st: st, ev: ev, slots: opts.DecodeSlots, log: opts.Logger}
+	if c.slots == nil {
+		c.slots = NewDecodeSlots(0)
 	}
+	if c.log == nil {
+		c.log = slog.Default()
+	}
+	now := opts.Now
 	if now == nil {
 		now = time.Now
 	}
-	return &Checker{st: st, ev: ev, log: logger, now: func() time.Time { return now().UTC() }}
+	c.now = func() time.Time { return now().UTC() }
+	return c
 }
 
 // outcome is what one re-check found: a failure reason, or every frozen
@@ -63,6 +84,9 @@ type outcome struct {
 // "The re-check job"): each stored part with submission.VerifyPart against
 // every stored evidence record of its device and the device's public key;
 // rows of devices with no part are unbacked; then the cap and the packet.
+// Parts are read, decoded and verified one at a time, each within one of
+// the shared decode slots (waiting for one as long as the job runs), and
+// dropped before the next is read.
 // A malformed part, a cap that doesn't recompute or a rules version this
 // server can't run sets the submission failed; anything else is returned
 // for River to retry. The result is written only if no part was added
@@ -102,19 +126,26 @@ func (c *Checker) check(ctx context.Context, sub db.Submission) (outcome, error)
 	if err != nil {
 		return outcome{}, err
 	}
-	parts, failed, err := c.parts(ctx, sub.ID)
-	if err != nil || failed != "" {
-		return outcome{failed: failed}, err
+	pr, err := c.st.SubmissionPartDevices(ctx, sub.ID)
+	if err != nil {
+		return outcome{}, fmt.Errorf("reading parts: %w", err)
+	}
+	hasPart := make(map[uuid.UUID]bool, len(pr))
+	for _, r := range pr {
+		if r.Deleted {
+			return outcome{failed: evidenceDeleted}, nil
+		}
+		hasPart[r.DeviceID] = true
 	}
 	devs, err := c.st.DeviceList(ctx, sub.UserID)
 	if err != nil {
 		return outcome{}, fmt.Errorf("reading devices: %w", err)
 	}
-	ids := make([]uuid.UUID, 0, len(rows)+len(parts))
+	ids := make([]uuid.UUID, 0, len(rows)+len(hasPart))
 	for id := range rows {
 		ids = append(ids, id)
 	}
-	for id := range parts {
+	for id := range hasPart {
 		if _, ok := rows[id]; !ok {
 			ids = append(ids, id)
 		}
@@ -141,18 +172,17 @@ func (c *Checker) check(ctx context.Context, sub db.Submission) (outcome, error)
 		if len(rows[id]) > 0 {
 			in.Devices = append(in.Devices, submission.DeviceInfo{ID: id.String(), Name: dev.Name, OS: dev.Os, Sealed: sealed})
 		}
-		part, ok := parts[id]
-		if !ok {
+		if !hasPart[id] {
 			in.Results = append(in.Results, submission.Unbacked(rows[id], submission.ReasonNoPart)...)
 			continue
 		}
-		checked, err := submission.VerifyPart(part,
+		checked, failed, err := c.verifyPart(ctx, sub.ID, id,
 			submission.Device{ID: id.String(), PublicKey: ed25519.PublicKey(dev.PublicKey), Records: records}, rows[id])
-		if errors.Is(err, submission.ErrMalformed) {
-			return outcome{failed: fmt.Sprintf("the part from device %q: %s", dev.Name, reason(err))}, nil
-		}
 		if err != nil {
-			return outcome{}, fmt.Errorf("verifying the part of device %s: %w", id, err)
+			return outcome{}, err
+		}
+		if failed != "" {
+			return outcome{failed: fmt.Sprintf("the part from device %q: %s", dev.Name, failed)}, nil
 		}
 		in.Results = append(in.Results, checked.Results...)
 		in.Revealed = append(in.Revealed, submission.DeviceRows{DeviceID: id.String(), Rows: checked.Revealed})
@@ -209,8 +239,50 @@ func (c *Checker) cap(ctx context.Context, id uuid.UUID) ([]submission.CappedMin
 	return capped, inputs, nil
 }
 
-// parts reads and decodes the stored parts. failed is set when a part's
-// raw rows were deleted, so it can't be checked any more.
+// evidenceDeleted is the failure reason once a part's raw rows were
+// deleted, so the submission can't be checked any more.
+const evidenceDeleted = "the evidence was deleted"
+
+// verifyPart reads one device's stored part, decodes it and verifies it,
+// all within a decode slot, waiting for one until ctx ends. The decoded
+// part is dropped when it returns; only its results and revealed rows
+// stay. failed is why the submission fails (a malformed part, or its raw
+// rows deleted meanwhile); err is for River to retry.
+func (c *Checker) verifyPart(ctx context.Context, id, device uuid.UUID, dev submission.Device, frozen []submission.Minute) (
+	checked submission.Checked, failed string, err error,
+) {
+	release, err := c.slots.acquire(ctx)
+	if err != nil {
+		return submission.Checked{}, "", fmt.Errorf("waiting for a decode slot: %w", err)
+	}
+	defer release()
+	data, err := c.st.SubmissionPartData(ctx, db.SubmissionPartDataParams{SubmissionID: id, DeviceID: device})
+	if store.IsNotFound(err) || (err == nil && data == nil) {
+		return submission.Checked{}, evidenceDeleted, nil // withdrawn or expired since it was listed
+	}
+	if err != nil {
+		return submission.Checked{}, "", fmt.Errorf("reading the part of device %s: %w", device, err)
+	}
+	part, err := decodePart(data)
+	if err != nil {
+		return submission.Checked{}, "", fmt.Errorf("part of device %s: %w", device, err)
+	}
+	if c.decoded != nil {
+		c.decoded(1)
+		defer c.decoded(-1)
+	}
+	checked, err = submission.VerifyPart(part, dev, frozen)
+	if errors.Is(err, submission.ErrMalformed) {
+		return submission.Checked{}, reason(err), nil
+	}
+	if err != nil {
+		return submission.Checked{}, "", fmt.Errorf("verifying the part of device %s: %w", device, err)
+	}
+	return checked, "", nil
+}
+
+// parts reads and decodes every stored part at once, for the bundle.
+// failed is set when a part's raw rows were deleted.
 func (c *Checker) parts(ctx context.Context, id uuid.UUID) (parts map[uuid.UUID]submission.Part, failed string, err error) {
 	pr, err := c.st.SubmissionParts(ctx, id)
 	if err != nil {
@@ -219,7 +291,7 @@ func (c *Checker) parts(ctx context.Context, id uuid.UUID) (parts map[uuid.UUID]
 	parts = make(map[uuid.UUID]submission.Part, len(pr))
 	for _, r := range pr {
 		if r.Data == nil {
-			return nil, "the evidence was deleted", nil
+			return nil, evidenceDeleted, nil
 		}
 		p, err := decodePart(r.Data)
 		if err != nil {

@@ -744,6 +744,57 @@ func (q *Queries) SubmissionOfUser(ctx context.Context, arg SubmissionOfUserPara
 	return i, err
 }
 
+const submissionPartData = `-- name: SubmissionPartData :one
+SELECT data FROM submission_parts
+WHERE submission_id = $1 AND device_id = $2
+`
+
+type SubmissionPartDataParams struct {
+	SubmissionID uuid.UUID
+	DeviceID     uuid.UUID
+}
+
+// One device's stored part; null once its raw rows were deleted.
+func (q *Queries) SubmissionPartData(ctx context.Context, arg SubmissionPartDataParams) ([]byte, error) {
+	row := q.db.QueryRow(ctx, submissionPartData, arg.SubmissionID, arg.DeviceID)
+	var data []byte
+	err := row.Scan(&data)
+	return data, err
+}
+
+const submissionPartDevices = `-- name: SubmissionPartDevices :many
+SELECT device_id, (data IS NULL)::boolean AS deleted FROM submission_parts
+WHERE submission_id = $1
+ORDER BY device_id
+`
+
+type SubmissionPartDevicesRow struct {
+	DeviceID uuid.UUID
+	Deleted  bool
+}
+
+// The devices with a part, and whether its raw rows were deleted, without
+// the parts themselves (the re-check reads them one at a time).
+func (q *Queries) SubmissionPartDevices(ctx context.Context, submissionID uuid.UUID) ([]SubmissionPartDevicesRow, error) {
+	rows, err := q.db.Query(ctx, submissionPartDevices, submissionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []SubmissionPartDevicesRow{}
+	for rows.Next() {
+		var i SubmissionPartDevicesRow
+		if err := rows.Scan(&i.DeviceID, &i.Deleted); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const submissionPartInsert = `-- name: SubmissionPartInsert :execrows
 INSERT INTO submission_parts (submission_id, device_id, data, bytes, uploaded_at)
 VALUES ($1, $2, $3, $4,

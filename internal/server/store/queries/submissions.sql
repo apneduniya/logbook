@@ -156,6 +156,18 @@ SELECT device_id, minute, project, credited FROM submission_cap_inputs
 WHERE submission_id = $1
 ORDER BY minute, device_id, project;
 
+-- name: SubmissionPartDevices :many
+-- The devices with a part, and whether its raw rows were deleted, without
+-- the parts themselves (the re-check reads them one at a time).
+SELECT device_id, (data IS NULL)::boolean AS deleted FROM submission_parts
+WHERE submission_id = $1
+ORDER BY device_id;
+
+-- name: SubmissionPartData :one
+-- One device's stored part; null once its raw rows were deleted.
+SELECT data FROM submission_parts
+WHERE submission_id = $1 AND device_id = $2;
+
 -- name: SubmissionParts :many
 SELECT device_id, data, bytes, uploaded_at, raw_deleted_at FROM submission_parts
 WHERE submission_id = $1

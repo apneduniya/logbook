@@ -73,7 +73,9 @@ func newSubServer(t *testing.T, r *rig) *subServer {
 	clock := func() time.Time { return serverNow }
 	s := &subServer{t: t, r: r, mux: http.NewServeMux()}
 	s.oauth = oauth.NewService(r.st, oauth.Options{WebURL: reviewWeb, Now: clock})
-	s.checker = submissions.NewChecker(r.st, ledger.NewService(r.st, ledger.WithClock(clock)), nil, clock)
+	slots := submissions.NewDecodeSlots(0)
+	s.checker = submissions.NewChecker(r.st, ledger.NewService(r.st, ledger.WithClock(clock)),
+		submissions.CheckerOptions{DecodeSlots: slots, Now: clock})
 	workers := river.NewWorkers()
 	if err := submissions.AddWorkers(workers, s.checker); err != nil {
 		t.Fatal(err)
@@ -104,7 +106,7 @@ func newSubServer(t *testing.T, r *rig) *subServer {
 		t.Fatal(err)
 	}
 	svc := submissions.NewService(r.st, box, submissions.Options{
-		ReviewBaseURL: reviewWeb, Enqueuer: s.river, Members: s.oauth, Now: clock,
+		ReviewBaseURL: reviewWeb, Enqueuer: s.river, Members: s.oauth, DecodeSlots: slots, Now: clock,
 	})
 	submissions.NewHandler(svc, submissions.HandlerOptions{
 		RequireSession: httpapitest.StubSession, RequireAPIKey: httpapitest.StubSession,

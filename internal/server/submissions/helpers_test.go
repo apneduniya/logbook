@@ -83,10 +83,13 @@ type env struct {
 	box     *secretbox.Box
 	svc     *submissions.Service
 	checker *submissions.Checker
-	oauth   *oauth.Service
-	trust   *fakeTrust
-	mux     *http.ServeMux
-	clock   time.Time
+	slots   *submissions.DecodeSlots
+	// uploadWait is HandlerOptions.UploadWait (0 for the default).
+	uploadWait time.Duration
+	oauth      *oauth.Service
+	trust      *fakeTrust
+	mux        *http.ServeMux
+	clock      time.Time
 }
 
 func newEnv(t *testing.T, opts ...func(*submissions.Options)) *env {
@@ -99,7 +102,9 @@ func newEnv(t *testing.T, opts ...func(*submissions.Options)) *env {
 	e := &env{t: t, st: st, box: box, clock: now, trust: &fakeTrust{st: st}}
 	clock := func() time.Time { return e.clock }
 	e.oauth = oauth.NewService(st, oauth.Options{WebURL: webURL, Now: clock})
-	e.checker = submissions.NewChecker(st, ledger.NewService(st, ledger.WithClock(clock)), nil, clock)
+	e.slots = submissions.NewDecodeSlots(1)
+	e.checker = submissions.NewChecker(st, ledger.NewService(st, ledger.WithClock(clock)),
+		submissions.CheckerOptions{DecodeSlots: e.slots, Now: clock})
 	workers := river.NewWorkers()
 	if err := submissions.AddWorkers(workers, e.checker); err != nil {
 		t.Fatal(err)
@@ -109,7 +114,7 @@ func newEnv(t *testing.T, opts ...func(*submissions.Options)) *env {
 		t.Fatal(err)
 	}
 	o := submissions.Options{
-		ReviewBaseURL: webURL, Enqueuer: jc.River(), Members: e.oauth, Trust: e.trust, Now: clock,
+		ReviewBaseURL: webURL, Enqueuer: jc.River(), Members: e.oauth, Trust: e.trust, DecodeSlots: e.slots, Now: clock,
 	}
 	for _, f := range opts {
 		f(&o)
@@ -125,6 +130,7 @@ func (e *env) resetLimits() {
 	submissions.NewHandler(e.svc, submissions.HandlerOptions{
 		RequireSession: httpapitest.StubSession, RequireAPIKey: httpapitest.StubSession,
 		RequireSubmissionsScope: stubScope, ClientKey: func(*http.Request) string { return "client" },
+		UploadWait: e.uploadWait,
 	}).Register(e.mux)
 }
 
