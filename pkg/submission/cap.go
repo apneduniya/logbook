@@ -80,29 +80,62 @@ func CapProject(inputs []CapInput, project string) []CappedMinute {
 // frozen cap inputs give.
 var ErrCapMismatch = fmt.Errorf("%w: capped seconds", ErrMalformed)
 
-// CheckCap checks a submission's frozen cap: every frozen row of the
-// project is among the cap inputs with the same credit, and the frozen
-// capped seconds are exactly CapProject(inputs, project), minute for
-// minute.
+// CheckCap checks a submission's frozen cap against its frozen rows, so
+// the capped seconds of a minute never exceed what the frozen rows of the
+// project credit in it:
+//   - every frozen row of the project is unique and among the cap inputs
+//     with the same credit;
+//   - every cap input lies at a minute of a frozen row, credits 0 to 60 s
+//     (as credited_minutes does), and when it is of the project, it is a
+//     frozen row: the project's credit in a minute comes only from frozen
+//     rows, each verified, mismatched or unbacked on its own;
+//   - the frozen capped seconds are exactly CapProject(inputs, project),
+//     minute for minute, so every capped minute has a frozen row.
 func CheckCap(project string, rows []Minute, capped []CappedMinute, inputs []CapInput) error {
 	type dm struct {
-		device  string
-		minute  int64
-		project string
+		device string
+		minute int64
 	}
-	in := make(map[dm]int, len(inputs))
-	for _, c := range inputs {
-		k := dm{c.DeviceID, c.Minute.Unix(), c.Project}
-		if _, dup := in[k]; dup {
-			return fmt.Errorf("%w: two cap inputs for %s %s %q", ErrCapMismatch, c.DeviceID, c.Minute.UTC().Format(time.RFC3339), c.Project)
-		}
-		in[k] = c.Credited
-	}
+	frozen := make(map[dm]int, len(rows))
 	for _, r := range rows {
 		if r.Project != project {
 			return fmt.Errorf("%w: a frozen row of project %q", ErrCapMismatch, r.Project)
 		}
-		if got, ok := in[dm{r.DeviceID, r.Minute.Unix(), r.Project}]; !ok || got != r.Credited {
+		k := dm{r.DeviceID, r.Minute.Unix()}
+		if _, dup := frozen[k]; dup {
+			return fmt.Errorf("%w: two frozen rows of %s at %s", ErrCapMismatch, r.DeviceID, r.Minute.UTC().Format(time.RFC3339))
+		}
+		frozen[k] = r.Credited
+	}
+	minutes := make(map[int64]bool, len(rows))
+	for k := range frozen {
+		minutes[k.minute] = true
+	}
+	type dmp struct {
+		dm
+		project string
+	}
+	in := make(map[dmp]int, len(inputs))
+	for _, c := range inputs {
+		at := c.Minute.UTC().Format(time.RFC3339)
+		k := dmp{dm{c.DeviceID, c.Minute.Unix()}, c.Project}
+		if _, dup := in[k]; dup {
+			return fmt.Errorf("%w: two cap inputs for %s %s %q", ErrCapMismatch, c.DeviceID, at, c.Project)
+		}
+		in[k] = c.Credited
+		switch {
+		case c.Credited < 0 || c.Credited > 60:
+			return fmt.Errorf("%w: the cap input of %s at %s credits %d s", ErrCapMismatch, c.DeviceID, at, c.Credited)
+		case !minutes[k.minute]:
+			return fmt.Errorf("%w: a cap input at %s, a minute with no frozen row", ErrCapMismatch, at)
+		case c.Project == project:
+			if got, ok := frozen[k.dm]; !ok || got != c.Credited {
+				return fmt.Errorf("%w: the cap input of %s at %s isn't a frozen row of the project", ErrCapMismatch, c.DeviceID, at)
+			}
+		}
+	}
+	for _, r := range rows {
+		if got, ok := in[dmp{dm{r.DeviceID, r.Minute.Unix()}, project}]; !ok || got != r.Credited {
 			return fmt.Errorf("%w: the row of %s at %s isn't among the cap inputs", ErrCapMismatch,
 				r.DeviceID, r.Minute.UTC().Format(time.RFC3339))
 		}

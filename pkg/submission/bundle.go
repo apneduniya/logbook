@@ -88,7 +88,7 @@ func CheckBundle(b Bundle) (Report, error) {
 		return Report{}, err
 	}
 	for _, c := range b.Capped {
-		if !minutes[c.Minute.Unix()] {
+		if !minutes[c.Minute.Unix()] { // CheckCap refuses it too; kept as a guard
 			return Report{}, fmt.Errorf("%w: capped minute %s has no frozen row", ErrCapMismatch, c.Minute.UTC().Format(time.RFC3339))
 		}
 		rep.CountedSeconds += c.Seconds

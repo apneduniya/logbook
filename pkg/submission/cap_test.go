@@ -90,6 +90,25 @@ func TestCheckCap(t *testing.T) {
 		"a frozen row's credit differs": func() ([]Minute, []CappedMinute, []CapInput) {
 			return []Minute{row("a", 0, 59), row("b", 0, 45), row("a", 1, 30)}, capped, inputs
 		},
+		"an input of the project with no frozen row": func() ([]Minute, []CappedMinute, []CapInput) {
+			// One verified 30 s row; a phantom device's 15 s lifts capped to 45.
+			in := append(inputs[:4:4], CapInput{DeviceID: "c", Minute: capAt(1), Project: "app", Credited: 15})
+			return rows, CapProject(in, "app"), in
+		},
+		"an input at a minute with no frozen row": func() ([]Minute, []CappedMinute, []CapInput) {
+			return rows, capped, append(inputs[:4:4], CapInput{DeviceID: "a", Minute: capAt(9), Project: "lib", Credited: 60})
+		},
+		"an input's credit above 60": func() ([]Minute, []CappedMinute, []CapInput) {
+			in := append(inputs[:2:2], CapInput{DeviceID: "b", Minute: capAt(0), Project: "lib", Credited: 61}, inputs[3])
+			return rows, CapProject(in, "app"), in
+		},
+		"an input's credit below 0": func() ([]Minute, []CappedMinute, []CapInput) {
+			in := append(inputs[:2:2], CapInput{DeviceID: "b", Minute: capAt(0), Project: "lib", Credited: -45}, inputs[3])
+			return rows, CapProject(in, "app"), in
+		},
+		"a frozen row twice": func() ([]Minute, []CappedMinute, []CapInput) {
+			return append(rows[:3:3], row("a", 1, 30)), capped, inputs
+		},
 		"an input twice": func() ([]Minute, []CappedMinute, []CapInput) {
 			return rows, capped, append(inputs, inputs[0])
 		},
