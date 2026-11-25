@@ -1,0 +1,151 @@
+{
+  "rules_version": "v1",
+  "counted_seconds": 2445,
+  "trust": {
+    "at_submission": "green",
+    "hackatime_linked": true
+  },
+  "raw_seconds": 5400,
+  "raw_ai_seconds": 900,
+  "one_third_rule_seconds": 4800,
+  "minutes": {
+    "verified": 49,
+    "mismatch": 1,
+    "unbacked": 5
+  },
+  "devices": [
+    {
+      "name": "laptop",
+      "os": "linux",
+      "gaps": []
+    },
+    {
+      "name": "desktop",
+      "os": "windows",
+      "gaps": [
+        "2026-11-20"
+      ]
+    }
+  ],
+  "made_of": {
+    "editing": 2085,
+    "with_ai": 180,
+    "other": 180
+  },
+  "cuts": [
+    {
+      "code": "agent_alone",
+      "rule": "The AI agent worked while the person was away",
+      "seconds": 540,
+      "ranges": [
+        [
+          "2026-11-20T00:28:00Z",
+          "2026-11-20T00:37:00Z"
+        ]
+      ]
+    },
+    {
+      "code": "idle",
+      "rule": "Nobody was at the keyboard and no AI agent was working",
+      "seconds": 180,
+      "ranges": [
+        [
+          "2026-11-20T00:37:00Z",
+          "2026-11-20T00:38:00Z"
+        ],
+        [
+          "2026-11-20T00:53:00Z",
+          "2026-11-20T00:55:00Z"
+        ]
+      ]
+    }
+  ],
+  "flags": [
+    {
+      "code": "low_signal",
+      "rule": "Credited without an OS input signal, from editor activity alone",
+      "minutes": 2,
+      "ranges": [
+        [
+          "2026-11-20T00:27:00Z",
+          "2026-11-20T00:28:00Z"
+        ],
+        [
+          "2026-11-20T00:52:00Z",
+          "2026-11-20T00:53:00Z"
+        ]
+      ]
+    },
+    {
+      "code": "multi_device",
+      "rule": "Time credited on two or more devices in the same minute",
+      "minutes": 6,
+      "ranges": [
+        [
+          "2026-11-20T00:40:00Z",
+          "2026-11-20T00:45:00Z"
+        ],
+        [
+          "2026-11-20T00:46:00Z",
+          "2026-11-20T00:47:00Z"
+        ]
+      ]
+    },
+    {
+      "code": "scripted_input",
+      "rule": "Input or heartbeat timing too regular for a person",
+      "minutes": 6,
+      "ranges": [
+        [
+          "2026-11-20T00:00:00Z",
+          "2026-11-20T00:06:00Z"
+        ]
+      ]
+    }
+  ],
+  "days": [
+    {
+      "day": "2026-11-20",
+      "strip": "yyyyyyyyyyyyyyymyyyyyyyyyyyyaaaaaaaaaiyyuuuuuyyyyyyyyiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+      "counted_seconds": 2445,
+      "raw_seconds": 5400,
+      "commits": [
+        {
+          "at": "2026-11-20T00:20:00Z",
+          "hash": "0123456",
+          "files": 2,
+          "added": 30,
+          "removed": 4,
+          "url": "https://github.com/fiona/app/commit/0123456789abcdef0123456789abcdef01234567"
+        }
+      ]
+    }
+  ],
+  "ai_sessions": [
+    {
+      "harness": "claude-code",
+      "model": "claude-x",
+      "from": "2026-11-20T00:24:00Z",
+      "to": "2026-11-20T00:37:00Z",
+      "prompts": 1,
+      "turns": 1,
+      "counted_seconds": 240,
+      "agent_alone_seconds": 540
+    }
+  ],
+  "mismatches": [
+    {
+      "minute": "2026-11-20T00:15:00Z",
+      "device": {
+        "label": "you",
+        "credited": 45,
+        "cuts": []
+      },
+      "server": {
+        "label": "you",
+        "credited": 60,
+        "cuts": []
+      }
+    }
+  ]
+}
