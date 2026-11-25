@@ -202,7 +202,13 @@ function Invoke-ConsoleShot([string]$name, [string]$command, [int]$timeoutSec = 
 
 # --- The shots -------------------------------------------------------------
 
-$installer = 'irm https://raw.githubusercontent.com/apneduniya/logbook/main/scripts/install.ps1 | iex'
+# This script runs in PowerShell 7, whose module path would make the
+# Windows PowerShell 5.1 consoles load 7's modules (and lose Get-FileHash).
+# Without the variable, 5.1 builds its own default path, as on a desktop.
+Import-Module Microsoft.PowerShell.Utility, Microsoft.PowerShell.Management
+Remove-Item Env:PSModulePath -ErrorAction SilentlyContinue
+
+$installer = 'irmhttps://raw.githubusercontent.com/apneduniya/logbook/main/scripts/install.ps1 | iex'
 $exe = '& "$env:LOCALAPPDATA\Programs\Logbook\logbook.exe"'
 
 Invoke-ConsoleShot 'install' $installer

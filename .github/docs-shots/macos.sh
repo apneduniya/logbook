@@ -7,7 +7,7 @@
 # (set by the workflow). The key goes into a file each Terminal window
 # sources before the screen is cleared, so it never appears on screen.
 # Writes macos-<step>.png and macos-<step>.txt to the directory in $1.
-set -euo pipefail
+set -eEuo pipefail
 
 out=$1
 mkdir -p "$out"
@@ -38,12 +38,17 @@ umask 022
 # not Terminal, so the first "tell Terminal" would wait on a consent dialog.
 now=$(date +%s)
 for client in /usr/bin/osascript /bin/bash /bin/zsh /opt/hca/hosted-compute-agent /usr/local/opt/runner/provisioner/provisioner; do
-	row="'kTCCServiceAppleEvents','$client',1,2,0,1,NULL,NULL,0,'com.apple.Terminal',NULL,NULL,$now,NULL,NULL,'UNUSED',$now"
-	sqlite3 "$HOME/Library/Application Support/com.apple.TCC/TCC.db" "INSERT OR REPLACE INTO access VALUES($row);" ||
-		log "user TCC insert failed for $client"
-	sudo sqlite3 "/Library/Application Support/com.apple.TCC/TCC.db" "INSERT OR REPLACE INTO access VALUES($row);" ||
-		log "system TCC insert failed for $client"
+	for target in com.apple.Terminal com.apple.Safari; do
+		row="'kTCCServiceAppleEvents','$client',1,2,0,1,NULL,NULL,0,'$target',NULL,NULL,$now,NULL,NULL,'UNUSED',$now"
+		sqlite3 "$HOME/Library/Application Support/com.apple.TCC/TCC.db" "INSERT OR REPLACE INTO access VALUES($row);" ||
+			log "user TCC insert failed for $client -> $target"
+		sudo sqlite3 "/Library/Application Support/com.apple.TCC/TCC.db" "INSERT OR REPLACE INTO access VALUES($row);" ||
+			log "system TCC insert failed for $client -> $target"
+	done
 done
+
+# New windows run zsh, the macOS default shell (the runner's user has bash).
+defaults write com.apple.Terminal Shell -string /bin/zsh
 
 # A Terminal profile setting: large Menlo, light background, ~1000x600.
 osascript <<'EOF'
@@ -63,7 +68,6 @@ tell application "Terminal"
 	end repeat
 end tell
 EOF
-defaults write com.apple.Terminal "Shell" -string "/bin/zsh"
 # zsh prints a one-time note when the shell has no rc file.
 touch "$HOME/.zshrc"
 
@@ -124,6 +128,41 @@ EOF
 
 terminal_shot install "$work/env-install.sh" \
 	'curl -fsSL https://raw.githubusercontent.com/apneduniya/logbook/main/scripts/install.sh | sh'
+datadir="$HOME/Library/Application Support/logbook"
+if [ ! -f "$datadir/config.json" ]; then
+	# The visible install failed. Record why, then install again out of
+	# sight so the remaining shots can still be taken.
+	log "install failed; diagnostics follow"
+	log show --last 3m --style compact --predicate 'eventMessage CONTAINS "dev.boogles.logbook"' 2>/dev/null | tail -40 || true
+	tail -20 "$datadir/agent.log" 2>/dev/null || true
+	log "retrying install out of sight"
+	set +e
+	start=$(date +%s)
+	(cd "$HOME" && curl -fsSL https://raw.githubusercontent.com/apneduniya/logbook/main/scripts/install.sh | sh) 2>&1 | tail -6
+	log "retry took $(($(date +%s) - start)) s"
+	set -e
+	if [ ! -f "$datadir/config.json" ]; then
+		# launchctl kickstart -k is what fails; run it in the background
+		# through a shim so install finishes, and say so in the report.
+		log "retry failed too; installing with a background kickstart shim"
+		mkdir -p "$work/shim"
+		cat >"$work/shim/launchctl" <<'EOF'
+#!/bin/sh
+if [ "$1" = kickstart ]; then
+	(/bin/launchctl "$@" >/dev/null 2>&1 &)
+	exit 0
+fi
+exec /bin/launchctl "$@"
+EOF
+		chmod +x "$work/shim/launchctl"
+		(cd "$HOME" && curl -fsSL https://raw.githubusercontent.com/apneduniya/logbook/main/scripts/install.sh |
+			PATH="$work/shim:$PATH" sh) 2>&1 | tail -4
+		echo "shim" >"$out/macos-install-workaround.txt"
+		sleep 35 # launchd throttles the restart
+	fi
+	launchctl print "gui/$(id -u)/dev.boogles.logbook" 2>&1 | grep -E 'state|pid|last exit' || true
+fi
+
 sleep 5 # let the daemon finish its first cycle
 terminal_shot status "$work/env-after.sh" 'logbook status'
 terminal_shot doctor "$work/env-after.sh" 'logbook doctor'
@@ -137,7 +176,7 @@ sleep 8
 osascript <<'EOF' || true
 tell application "Safari"
 	activate
-	set bounds of front window to {40, 40, 1320, 940}
+	set bounds of front window to {20, 30, 1004, 750}
 end tell
 EOF
 sleep 3
