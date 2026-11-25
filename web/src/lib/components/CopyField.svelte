@@ -71,8 +71,11 @@
 
 {#if bare}
 	<span class="bare">
-		<button class="btn" type="button" onclick={copy} aria-label="{button}: {label}">
-			{copied ? 'Copied' : button}
+		<!-- Both words share one cell, so "Copied" never narrows the button and
+		     moves what comes after it. -->
+		<button class="btn stack" type="button" onclick={copy} aria-label="{button}: {label}">
+			<span class:off={copied}>{button}</span>
+			<span class:off={!copied} aria-hidden="true">Copied</span>
 		</button>
 		{#if error}<span class="hint err" role="alert">{error}</span>{/if}
 	</span>
@@ -157,6 +160,15 @@
 	.bare {
 		display: inline-grid;
 		gap: 6px;
+	}
+	.stack {
+		display: inline-grid;
+	}
+	.stack > span {
+		grid-area: 1 / 1;
+	}
+	.stack > .off {
+		visibility: hidden;
 	}
 	.err {
 		color: var(--color-ink);
