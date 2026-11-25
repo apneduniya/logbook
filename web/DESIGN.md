@@ -17,6 +17,9 @@ The approved direction is **B3, mono HUD**, on the Doop canvas _Logbook web UI_.
 | GitHub's Verified badge                          | The evidence line's small bordered `VERIFIED` tag                         |
 | Harvest and Toggl Track approvals                | One total with its split; the decision as "APPROVED by …" plus a comment  |
 | Vercel's deployment summary                      | One row per day with its numbers right-aligned                            |
+| Vercel's deployment status filter                | Filter segments carry their counts (`READY 2`)                            |
+| Reticket's event list                            | A mono dateline over the name, the amount on the right                    |
+| GitHub's authorized OAuth apps                   | Apps with access: a count sentence, then one row per app with Revoke      |
 
 ## Tokens
 
@@ -43,7 +46,7 @@ Don't make the whole UI pixel or mono; hierarchy comes from the contrast between
 
 - **Desktop:** panels sit on an 8/4 grid (`calc((100% - 12px) * 8 / 12)`) with 12 px gaps. Panel heads are 36 px tall. Bodies are padded 18 × 16.
 - **Edges:** every element starts on its panel's left edge. Nothing bleeds past a column, including hover tints, which stay inside the element.
-- **Phones (under 900 px):** panels stack. Under 720 px the tabs wrap to their own row. Under 480 px project rows drop the keyboard column.
+- **Phones (under 900 px):** panels stack. Under 720 px the tabs wrap to their own row, and Profile steps aside unless it is open (the account menu has it), so the row fits a 375 px screen. Under 480 px project rows drop the keyboard column.
 
 ## Interaction
 
@@ -73,6 +76,13 @@ Don't make the whole UI pixel or mono; hierarchy comes from the contrast between
 - On desktop it uses the 8/4 grid, with a rail of TRUST, JUSTIFICATION and DECISION. On phones it is one column, and for program members the decision moves up under the figures.
 - Times are UTC and say so. Hours are programs' one-decimal hours (`12.4 h`). Line amounts and day totals use the usual `4h 00m`.
 - Warnings (a banned or switched Hackatime account) are sans sentences with a 2 px ink rule on the left. They are never coloured.
+
+## Submissions
+
+- The list is a run list: an ink glyph (○ verifying, ● ready, ✕ failed, — withdrawn), never a pill. Counted hours and their evidence (`870 min verified`, `2 differ · 35 unbacked`) stay on one line each on desktop; on phones they and the dateline wrap rather than cut the program's name.
+- Row actions start on their column's left edge, so Copy link lines up from row to row whatever else a row offers. While Withdraw asks, Copy link steps aside.
+- A command people paste is shown whole and copyable. Its placeholders are caps words (`PROJECT`), never `<angle brackets>`, which a shell reads as redirects.
+- "Submit these hours" reuses the settings form layout (label left, field right), a little wider so the command fits on one line.
 
 ## Words
 

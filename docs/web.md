@@ -32,16 +32,32 @@ The browser app at `https://logbook.boogles.dev`. Code: `web/`. Design: the B3 "
 | `/` signed in, no device yet, no history | user | Set-up steps: install command (creates an API key on request and shows it once), plugins and AI tools (automatic), Hackatime history (link and import progress); "What counts" rules | `POST /api/v1/api_keys`, `GET /api/v1/me/devices`, `GET /api/v1/hackatime/link` |
 | `/` signed in | user | Today (counted, at the keyboard, the you / agent alone / idle split); streak and the last 14 days; this week, 30 days or year by day; languages and editors; projects; agent status; the year as a grid | `GET /api/v1/me/today`, `GET /api/v1/me/summary`, `GET /api/v1/me/projects`, `GET /api/v1/me/devices`, live |
 | `/projects` | user | All projects: counted and keyboard time, last active, hidden or archived | `GET /api/v1/me/projects` |
-| `/projects/[name]` | user | One project: totals, the last 30 days by day, languages; settings (GitHub repo, hidden, archived) | `GET /api/v1/me/projects/{name}`, `GET /api/v1/me/summary?project=`, `PATCH` |
+| `/projects/[name]` | user | One project: totals, the last 30 days by day, languages; "Submit these hours" ("Submissions" below); settings (GitHub repo, hidden, archived) | `GET /api/v1/me/projects/{name}`, `GET /api/v1/me/summary?project=`, `GET /api/v1/programs`, `PATCH` |
 | `/u/[username]` | public | Public profile: totals, top projects, languages; live while open | `GET /api/v1/users/{username}/profile`, public live |
 | `/settings` | user | Profile (display name, time zone, public or private); API keys; devices; Hackatime link; apps with access; admin keys (admins only); sign out | session, profile, api_keys, devices, hackatime, grants, admin_keys |
-| `/submissions` | user | Their submissions: project, dates, program, status, counted hours, evidence counts, decision; copy the review link; withdraw before a decision. On a project page, "Submit these hours" shows the one command to run (`logbook submit …`) with the dates filled in | `GET /api/v1/me/submissions`, `DELETE` |
+| `/submissions` | user | Their submissions ("Submissions" below): project, dates, program, status, counted hours, evidence counts, decision; filter All · Verifying · Ready · Decided; copy the review link; withdraw before a decision | `GET /api/v1/me/submissions`, `DELETE /api/v1/me/submissions/{id}` |
 | `/r/[token]` | anyone with the link | The review page (ADR 0020, "Review page" below): headline counts against time at the keyboard and the one-third rule; the evidence line; what the hours are made of; cuts and flags with reasons; one strip per day with commits; AI sessions; what didn't verify; trust; the justification text with a copy button; the decision. Program members also get approve / adjust / reject. `noindex` | `GET /api/v1/review/{token}`, `POST …/decision`, `GET /api/v1/me/apps` (signed in) |
 | `/apps`, `/apps/[id]` | user | Programs: register an app (client id, secret shown once, redirect URIs, public or not), rotate the secret, add reviewers; the program's submission inbox for members | `/api/v1/me/apps…` |
 | `/oauth/authorize` | user | Consent: the app, its owner, what each scope lets it read; Allow / Deny | `GET`/`POST /api/v1/oauth/requests/{id}` |
 
 **Leaving out what the API can't back.** The B3 mock had a "longest run", a programs panel and the dates of the best streak.
 - The API has no endpoint for the first or the last, so those are dropped.
+
+**Navigation.** The header's tabs are Today, Projects, Submissions, Profile and Settings: the work first (submissions are made from projects, so they sit next to them), then the person's own pages. Under 720 px five tabs don't fit one row, so Profile steps aside unless it is the open page; the account menu links it.
+
+## Submissions
+
+Submitting happens in the agent (`logbook submit`, [docs/agent/submit.md](agent/submit.md)), because only the computer that holds the signed log can build the evidence. The web UI shows the command and then the results.
+
+- **"Submit these hours"** on `/projects/[name]` shows the one command with the project filled in, quoted for the browser's system (POSIX single quotes, or PowerShell's on Windows; a name starting with `-` goes after `--`). The days default to the 30 UTC days ending yesterday, and both can be changed. The page checks the range as the agent does (real days, last on or after first, ending yesterday UTC at the latest, at most 92 days) and says what's wrong once a day was changed or left; the command is still shown. A program from `GET /api/v1/programs` adds `--program <slug>`; if that list doesn't load, a sentence says how to add it by hand. A project with nothing counted says so instead of showing a command. `#lib/submit.ts` builds and checks it.
+- **`/submissions`** is a run list (`SubmissionRow`): a status glyph, the project over its dates and program, counted hours with their evidence, the decision stamp or status word, then **Copy link** and **Withdraw**. A row with a review link opens its review page.
+  - The filter (`Segmented`, with counts): All; Verifying; Ready (re-checked, no decision yet); Decided. Failed and withdrawn submissions show under All only.
+  - Copy link is offered while the link works and there is something to review (not on failed or withdrawn submissions). The link is copied, never printed.
+  - Withdraw asks once inline ("Withdraw it? The link stops working.") and is offered until there is a decision, failed submissions included, since withdrawing deletes the rows they uploaded. A `409` (decided meanwhile) shows the server's sentence by the row.
+  - A failed row shows the server's `error` under it.
+  - While any submission is verifying, the page asks again every 10 s and reloads when the set of verifying submissions changes.
+  - Empty: `( NO SUBMISSIONS YET )`, the command with `PROJECT`, `YYYY-MM-DD` and `PROGRAM` placeholders (caps, not `<…>`, which a shell would read as redirects), and a link to the projects, whose pages fill it in.
+- **Settings → Apps with access** (`#apps`, so the consent page can link to it): "You've given 2 apps access.", then one row per grant with the app's identicon (seeded by its slug), name, owner, what it reads ("profile and activity", from its scopes) and since when, and Revoke, which asks once. Revoking stops the app's tokens at once. With none, one sentence says when apps appear here.
 
 ## Review page
 
