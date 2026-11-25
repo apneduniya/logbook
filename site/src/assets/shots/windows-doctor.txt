@@ -1,0 +1,8 @@
+PS C:\Users\runneradmin> & "$env:LOCALAPPDATA\Programs\Logbook\logbook.exe" doctor
+[OK  ] config        server http://127.0.0.1:8080
+[OK  ] api key       accepted by the server
+[OK  ] clock         in sync with the server
+[OK  ] agent         running at 127.0.0.1:47231
+[OK  ] wakatime.cfg  editors send heartbeats to the agent
+[OK  ] uploads       0 waiting
+[OK  ] mirror        mirroring to Hackatime is off

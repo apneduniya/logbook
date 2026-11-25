@@ -1,0 +1,17 @@
+~ % logbook status
+Agent:      running at http://127.0.0.1:47231 (status page)
+Server:     http://127.0.0.1:8080 (signed in: yes)
+Logbook:    0 waiting, last upload never
+Hackatime:  mirroring off
+Device:     cfeee833-96c4-4e62-ab90-840f6f0d7af6
+Credited:   0 minutes waiting, last upload 2026-11-25 19:57:05
+            settling: waiting until 2026-11-25T20:12:05Z for events that arrive late after a start or wake before making minutes final
+Evidence:   no day sealed yet
+Key:        4ea5be3e5f80246e (this device's key fingerprint; `logbook verify --key` checks a bundle against it)
+Today:      0 secs coding (local estimate), 0 heartbeats, 0 AI events, 0 git events
+AI hooks:   claude-code not installed
+AI hooks:   codex not installed
+AI hooks:   gemini-cli not installed
+AI hooks:   opencode not installed
+AI hooks:   cursor not installed
+AI hooks:   copilot not installed
