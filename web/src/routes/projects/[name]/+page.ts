@@ -11,12 +11,14 @@ export const load: PageLoad = async ({ params, depends, url, parent }) => {
 	depends(ME);
 	const end = todayIn(app.timezone);
 	try {
-		const [project, summary] = await Promise.all([
+		const [project, summary, programs] = await Promise.all([
 			app.api.project(params.name),
-			app.api.summary({ start: addDays(end, -29), end, project: params.name })
+			app.api.summary({ start: addDays(end, -29), end, project: params.name }),
+			// Only "Submit these hours" uses the programs; without them it still works.
+			app.api.programs().catch(() => null)
 		]);
 		app.sawActivity(project.last_activity);
-		return { project, summary };
+		return { project, summary, programs };
 	} catch (err) {
 		if (err instanceof ApiError && (err.status === 404 || err.status === 400)) {
 			error(404, 'No project with that name.');
