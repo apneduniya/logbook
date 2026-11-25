@@ -49,6 +49,26 @@ func (idx repoIndex) project(path string) string {
 	return ""
 }
 
+// RepoMap resolves paths to projects exactly as the engine does for
+// heartbeats (by file path) and AI events (by working directory), for
+// callers that must attribute logged events the way a run did, such as a
+// submission's review packet (ADR 0020).
+type RepoMap struct{ idx repoIndex }
+
+// NewRepoMap builds the map from a repo mapping, as Input.Repos holds it.
+func NewRepoMap(repos []Repo) RepoMap { return RepoMap{idx: newRepoIndex(repos)} }
+
+// Project returns the project of the longest repo path containing path,
+// else fallback normalised as the server stores project names: the
+// engine's rule for Heartbeat.Entity with Heartbeat.Project, and for
+// AIEvent.Cwd with AIEvent.Project.
+func (m RepoMap) Project(path, fallback string) string {
+	if p := m.idx.project(path); p != "" {
+		return p
+	}
+	return projectname.Normalize(fallback)
+}
+
 // normPath makes paths from any OS comparable: backslashes become slashes,
 // trailing slashes go, and Windows drive paths (C:/...) are lower-cased
 // because NTFS paths are case-insensitive.

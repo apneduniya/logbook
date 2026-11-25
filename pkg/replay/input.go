@@ -189,13 +189,14 @@ func Repos(rows []evidence.Row, h int64) []struggle.Repo {
 func engineHeartbeat(h wire.Heartbeat) struggle.Heartbeat {
 	return struggle.Heartbeat{
 		Time: h.Timestamp(), Project: h.Project, Entity: h.Entity, IsWrite: h.IsWrite,
-		Lineno: h.Lineno, Cursorpos: h.Cursorpos, AI: isAIHeartbeat(h),
+		Lineno: h.Lineno, Cursorpos: h.Cursorpos, AI: AIHeartbeat(h),
 	}
 }
 
-// isAIHeartbeat reports whether the editor attributed the heartbeat to an
-// AI tool: category "ai coding" or any of Hackatime's ai_* fields.
-func isAIHeartbeat(h wire.Heartbeat) bool {
+// AIHeartbeat reports whether the editor attributed the heartbeat to an
+// AI tool: category "ai coding" or any of Hackatime's ai_* fields. Such a
+// heartbeat is not the person's own signal (docs/STRUGGLE-RULES.md).
+func AIHeartbeat(h wire.Heartbeat) bool {
 	return strings.EqualFold(h.Category, "ai coding") || h.AIModel != "" || h.AISession != "" ||
 		h.AIInputTokens != nil || h.AIOutputTokens != nil || h.AIPromptLength != nil || h.AILineChanges != nil
 }
