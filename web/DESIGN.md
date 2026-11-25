@@ -82,7 +82,7 @@ Don't make the whole UI pixel or mono; hierarchy comes from the contrast between
 - On desktop it uses the 8/4 grid, with a rail of TRUST, JUSTIFICATION and DECISION. On phones it is one column, and for program members the decision moves up under the figures.
 - Times are UTC and say so. Hours are programs' one-decimal hours (`12.4 h`). Line amounts and day totals use the usual `4h 00m`.
 - The decided stamp is inverted ink with a second hairline rule 3 px outside it, like a rubber stamp, so it never reads as a solid ink button. The small stamp in list rows has no rule.
-- On desktop the rail stays in view (sticky) while the document scrolls, on windows at least 760 px tall. On phones the page stacks in source order; the decision (for members) or the justification (for the submitter) is rendered again under the figures and the rail's copy hides, so tab order matches what people see.
+- On desktop the DECISION panel stays in view (sticky) while the document scrolls; the rest of the rail scrolls away, so an open Adjust form still fits a 800 px window. On phones the page stacks in source order; the decision (for members) or the justification (for the submitter) is rendered again under the figures and the rail's copy hides, so tab order matches what people see.
 - Days strips share one window of the day: the active hours with at least half an hour either side, on whole hours. Commit ticks closer than a 24 px target share one button whose detail lists each commit.
 - Warnings (a banned or switched Hackatime account) are sans sentences with a 2 px ink rule on the left. They are never coloured.
 

@@ -1,9 +1,8 @@
 <!--
   The review page (ADR 0020, docs/web.md "Review page"): an audited timesheet
   read top to bottom like an invoice. On desktop the document takes 8 columns
-  and a rail of 4 holds trust, the justification and the decision; the rail
-  stays in view while the document scrolls, on windows tall enough to hold
-  it. On phones everything stacks in source order, and the one thing a
+  and a rail of 4 holds trust, the justification and the decision; the
+  decision stays in view while the document scrolls. On phones everything stacks in source order, and the one thing a
   viewer came for comes up under the hours: the decision for program
   members, the justification for the submitter. Those are rendered there as
   phone-only copies (the rail's copy is hidden), so what people see and what
@@ -337,7 +336,7 @@
 				</div>
 			{/if}
 
-			<div class="slot" class:desk-only={member}>
+			<div class="slot decide" class:desk-only={member}>
 				{@render decision()}
 			</div>
 		</div>
@@ -530,10 +529,15 @@
 	.phone-only {
 		display: none;
 	}
-	/* Keep the decision beside the evidence while the document scrolls, when
-	   the window can hold the rail (an open Adjust form included). */
-	@media (min-width: 901px) and (min-height: 760px) {
+	/* Keep the decision beside the evidence while the document scrolls. Only
+	   the DECISION panel sticks: the whole rail with Adjust open is taller
+	   than a laptop window, which would hide its confirm button. The rail
+	   stretches to the document's height so the panel has room to move. */
+	@media (min-width: 901px) and (min-height: 600px) {
 		.rail {
+			align-self: stretch;
+		}
+		.decide {
 			position: sticky;
 			top: 12px;
 		}
