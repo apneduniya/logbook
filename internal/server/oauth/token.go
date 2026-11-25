@@ -214,6 +214,11 @@ func grantCovers(ctx context.Context, q *db.Queries, user, appID uuid.UUID, scop
 // refresh redeems a refresh token (RFC 6749 §6): the old access and refresh
 // tokens are revoked and a new pair is issued with the same or fewer
 // scopes. A refresh token presented after it was rotated revokes its family.
+//
+// The grant is locked (FOR SHARE) before the token, the same order as
+// RevokeGrant and app deletion take them. A revocation in flight therefore
+// either commits first, and the refresh sees the grant revoked, or waits for
+// the refresh to commit, and its token UPDATE then sees the new pair.
 func (s *Service) refresh(ctx context.Context, app db.OAuthAppByIDRow, req TokenRequest) (TokenResponse, error) {
 	if req.RefreshToken == "" {
 		return TokenResponse{}, tokenErr("invalid_request", "refresh_token is required")
@@ -224,16 +229,24 @@ func (s *Service) refresh(ctx context.Context, app db.OAuthAppByIDRow, req Token
 	var out TokenResponse
 	var failure *TokenError
 	err := s.st.InTx(ctx, func(q *db.Queries) error {
-		now := s.now()
-		t, err := q.OAuthTokenByRefreshForUpdate(ctx, hash(req.RefreshToken))
-		if store.IsNotFound(err) || (err == nil && t.AppID != app.ID) {
+		owner, err := q.OAuthTokenOwnerByRefresh(ctx, hash(req.RefreshToken))
+		if store.IsNotFound(err) || (err == nil && owner.AppID != app.ID) {
 			failure = errBadRefresh
 			return nil
 		}
 		if err != nil {
 			return fmt.Errorf("reading refresh token: %w", err)
 		}
-		user := fromPG(t.UserID)
+		user := fromPG(owner.UserID)
+		grant, active, err := lockGrant(ctx, q, user, app.ID)
+		if err != nil {
+			return err
+		}
+		now := s.now()
+		t, err := q.OAuthTokenByRefreshForUpdate(ctx, hash(req.RefreshToken))
+		if err != nil {
+			return fmt.Errorf("locking refresh token: %w", err)
+		}
 		if t.RevokedAt != nil {
 			failure = errBadRefresh
 			return s.revokeFamily(ctx, q, t.FamilyID, user, app.ID, "refresh_reuse")
@@ -254,11 +267,7 @@ func (s *Service) refresh(ctx context.Context, app db.OAuthAppByIDRow, req Token
 		if err := q.OAuthTokenRevoke(ctx, db.OAuthTokenRevokeParams{RevokedAt: now, ID: t.ID}); err != nil {
 			return fmt.Errorf("revoking old token: %w", err)
 		}
-		active, err := grantCovers(ctx, q, user, app.ID, scopes)
-		if err != nil {
-			return err
-		}
-		if !active {
+		if !active || !covers(grant.Scopes, scopes) {
 			failure = errBadRefresh
 			return nil
 		}
@@ -272,6 +281,20 @@ func (s *Service) refresh(ctx context.Context, app db.OAuthAppByIDRow, req Token
 		return TokenResponse{}, failure
 	}
 	return out, nil
+}
+
+// lockGrant reads user's grant to the app, locking it against revocation
+// until the transaction ends. active is false when there is no grant or it
+// was revoked.
+func lockGrant(ctx context.Context, q *db.Queries, user, appID uuid.UUID) (db.OauthGrant, bool, error) {
+	g, err := q.OAuthGrantForShare(ctx, db.OAuthGrantForShareParams{UserID: user, AppID: appID})
+	if store.IsNotFound(err) {
+		return db.OauthGrant{}, false, nil
+	}
+	if err != nil {
+		return db.OauthGrant{}, false, fmt.Errorf("locking grant: %w", err)
+	}
+	return g, g.RevokedAt == nil, nil
 }
 
 // clientCredentials issues the app a token for its own API calls (RFC 6749

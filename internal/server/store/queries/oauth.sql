@@ -125,6 +125,11 @@ RETURNING *;
 -- name: OAuthGrantForUpdate :one
 SELECT * FROM oauth_grants WHERE user_id = $1 AND app_id = $2 FOR UPDATE;
 
+-- name: OAuthGrantForShare :one
+-- Locks the grant against revocation (whose UPDATE waits on it) while a
+-- token is issued from it, without blocking other readers or refreshes.
+SELECT * FROM oauth_grants WHERE user_id = $1 AND app_id = $2 FOR SHARE;
+
 -- name: OAuthGrantActive :one
 SELECT * FROM oauth_grants WHERE user_id = $1 AND app_id = $2 AND revoked_at IS NULL;
 
@@ -198,6 +203,11 @@ JOIN oauth_apps a ON a.id = t.app_id AND a.deleted_at IS NULL
 LEFT JOIN users u ON u.id = t.user_id
 WHERE t.access_hash = sqlc.arg(access_hash) AND t.revoked_at IS NULL
   AND t.expires_at > sqlc.arg(now)::timestamptz;
+
+-- name: OAuthTokenOwnerByRefresh :one
+-- The app and user of a refresh token, read without a lock so the grant can
+-- be locked before the token.
+SELECT app_id, user_id FROM oauth_tokens WHERE refresh_hash = $1;
 
 -- name: OAuthTokenByRefreshForUpdate :one
 SELECT * FROM oauth_tokens WHERE refresh_hash = $1 FOR UPDATE;

@@ -657,6 +657,31 @@ func (q *Queries) OAuthGrantActive(ctx context.Context, arg OAuthGrantActivePara
 	return i, err
 }
 
+const oAuthGrantForShare = `-- name: OAuthGrantForShare :one
+SELECT user_id, app_id, scopes, created_at, updated_at, revoked_at FROM oauth_grants WHERE user_id = $1 AND app_id = $2 FOR SHARE
+`
+
+type OAuthGrantForShareParams struct {
+	UserID uuid.UUID
+	AppID  uuid.UUID
+}
+
+// Locks the grant against revocation (whose UPDATE waits on it) while a
+// token is issued from it, without blocking other readers or refreshes.
+func (q *Queries) OAuthGrantForShare(ctx context.Context, arg OAuthGrantForShareParams) (OauthGrant, error) {
+	row := q.db.QueryRow(ctx, oAuthGrantForShare, arg.UserID, arg.AppID)
+	var i OauthGrant
+	err := row.Scan(
+		&i.UserID,
+		&i.AppID,
+		&i.Scopes,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.RevokedAt,
+	)
+	return i, err
+}
+
 const oAuthGrantForUpdate = `-- name: OAuthGrantForUpdate :one
 SELECT user_id, app_id, scopes, created_at, updated_at, revoked_at FROM oauth_grants WHERE user_id = $1 AND app_id = $2 FOR UPDATE
 `
@@ -1008,6 +1033,24 @@ func (q *Queries) OAuthTokenInsert(ctx context.Context, arg OAuthTokenInsertPara
 	var id uuid.UUID
 	err := row.Scan(&id)
 	return id, err
+}
+
+const oAuthTokenOwnerByRefresh = `-- name: OAuthTokenOwnerByRefresh :one
+SELECT app_id, user_id FROM oauth_tokens WHERE refresh_hash = $1
+`
+
+type OAuthTokenOwnerByRefreshRow struct {
+	AppID  uuid.UUID
+	UserID pgtype.UUID
+}
+
+// The app and user of a refresh token, read without a lock so the grant can
+// be locked before the token.
+func (q *Queries) OAuthTokenOwnerByRefresh(ctx context.Context, refreshHash []byte) (OAuthTokenOwnerByRefreshRow, error) {
+	row := q.db.QueryRow(ctx, oAuthTokenOwnerByRefresh, refreshHash)
+	var i OAuthTokenOwnerByRefreshRow
+	err := row.Scan(&i.AppID, &i.UserID)
+	return i, err
 }
 
 const oAuthTokenRevoke = `-- name: OAuthTokenRevoke :exec

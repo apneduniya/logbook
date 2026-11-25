@@ -173,6 +173,9 @@ type Querier interface {
 	OAuthDeleteExpiredCodes(ctx context.Context, expiresAt time.Time) (int64, error)
 	OAuthDeleteExpiredRequests(ctx context.Context, expiresAt time.Time) (int64, error)
 	OAuthGrantActive(ctx context.Context, arg OAuthGrantActiveParams) (OauthGrant, error)
+	// Locks the grant against revocation (whose UPDATE waits on it) while a
+	// token is issued from it, without blocking other readers or refreshes.
+	OAuthGrantForShare(ctx context.Context, arg OAuthGrantForShareParams) (OauthGrant, error)
 	OAuthGrantForUpdate(ctx context.Context, arg OAuthGrantForUpdateParams) (OauthGrant, error)
 	OAuthGrantRevoke(ctx context.Context, arg OAuthGrantRevokeParams) (OauthGrant, error)
 	OAuthGrantUpsert(ctx context.Context, arg OAuthGrantUpsertParams) error
@@ -191,6 +194,9 @@ type Querier interface {
 	OAuthTokenByAccess(ctx context.Context, arg OAuthTokenByAccessParams) (OAuthTokenByAccessRow, error)
 	OAuthTokenByRefreshForUpdate(ctx context.Context, refreshHash []byte) (OauthToken, error)
 	OAuthTokenInsert(ctx context.Context, arg OAuthTokenInsertParams) (uuid.UUID, error)
+	// The app and user of a refresh token, read without a lock so the grant can
+	// be locked before the token.
+	OAuthTokenOwnerByRefresh(ctx context.Context, refreshHash []byte) (OAuthTokenOwnerByRefreshRow, error)
 	OAuthTokenRevoke(ctx context.Context, arg OAuthTokenRevokeParams) error
 	// Revokes the app's token whose access or refresh token hashes to hash.
 	// No row: unknown, another app's, or already revoked.

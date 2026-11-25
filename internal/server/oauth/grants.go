@@ -45,8 +45,9 @@ func (s *Service) Grants(ctx context.Context, user uuid.UUID) ([]Grant, error) {
 func (s *Service) RevokeGrant(ctx context.Context, user, appID uuid.UUID) error {
 	return s.st.InTx(ctx, func(q *db.Queries) error {
 		now := s.now()
-		// Grant first, then codes (which waits for an exchange in flight),
-		// then tokens, so a token issued by that exchange is revoked too.
+		// Grant first (which waits for a refresh in flight: it holds the
+		// grant FOR SHARE), then codes (which waits for an exchange in
+		// flight), then tokens, so a token issued by either is revoked too.
 		if _, err := q.OAuthGrantRevoke(ctx, db.OAuthGrantRevokeParams{RevokedAt: now, UserID: user, AppID: appID}); err != nil {
 			if store.IsNotFound(err) {
 				return ErrNotFound

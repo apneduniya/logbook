@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/apneduniya/logbook/internal/server/auth"
 	"github.com/apneduniya/logbook/internal/server/httpapi"
 	"github.com/apneduniya/logbook/internal/server/oauth"
@@ -264,5 +266,100 @@ func TestCleanup(t *testing.T) {
 	}
 	if rec := e.probe("/probe/profile", live.AccessToken); rec.Code != http.StatusOK {
 		t.Fatalf("live token after cleanup = %d", rec.Code)
+	}
+}
+
+// TestRevokeGrantDuringRefresh pins the lock order between a refresh and a
+// user revoking the grant. A trigger holds the refresh just before it
+// inserts the new pair, after it has checked the grant; the revoke then
+// starts and blocks on the refresh. Before the refresh locked the grant, the
+// revoke's token UPDATE took its snapshot here, never saw the new pair, and
+// left a working access token behind a revoked grant.
+func TestRevokeGrantDuringRefresh(t *testing.T) {
+	e := newEnv(t)
+	owner, alice := e.user("owner"), e.user("alice")
+	app := e.createApp(owner, "stardance")
+	appID, err := uuid.Parse(app.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok := e.mustExchange(app, e.codeFor(alice, authParams(app, "profile read")), "")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	const gate = 727021
+	hold, err := e.st.Pool.Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer hold.Release()
+	if _, err := hold.Exec(ctx, "SELECT pg_advisory_lock($1)", gate); err != nil {
+		t.Fatal(err)
+	}
+	released := false
+	release := func() {
+		if !released {
+			released = true
+			if _, err := hold.Exec(context.Background(), "SELECT pg_advisory_unlock($1)", gate); err != nil {
+				t.Errorf("unlocking: %v", err)
+			}
+		}
+	}
+	defer release()
+	if _, err := e.st.Pool.Exec(ctx, `
+		CREATE FUNCTION test_gate() RETURNS trigger LANGUAGE plpgsql AS $$
+		BEGIN PERFORM pg_advisory_xact_lock(727021); RETURN NEW; END $$;
+		CREATE TRIGGER test_gate BEFORE INSERT ON oauth_tokens FOR EACH ROW EXECUTE FUNCTION test_gate();`); err != nil {
+		t.Fatal(err)
+	}
+
+	// waiting counts this database's backends blocked on a lock.
+	waiting := func(n int) {
+		t.Helper()
+		for ctx.Err() == nil {
+			var got int
+			if err := e.st.Pool.QueryRow(ctx, `SELECT count(*)::int FROM pg_stat_activity
+				WHERE datname = current_database() AND wait_event_type = 'Lock'`).Scan(&got); err != nil {
+				t.Fatalf("counting blocked backends: %v", err)
+			}
+			if got >= n {
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		t.Fatalf("timed out waiting for %d blocked backends", n)
+	}
+
+	refreshed := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		form := url.Values{"grant_type": {"refresh_token"}, "refresh_token": {tok.RefreshToken}}
+		r := httptest.NewRequestWithContext(ctx, http.MethodPost, "/oauth/token", strings.NewReader(form.Encode()))
+		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		r.SetBasicAuth(url.QueryEscape(app.ClientID), url.QueryEscape(app.ClientSecret))
+		rec := httptest.NewRecorder()
+		e.mux.ServeHTTP(rec, r)
+		refreshed <- rec
+	}()
+	waiting(1) // the refresh, at the gate
+
+	revoked := make(chan error, 1)
+	go func() { revoked <- e.svc.RevokeGrant(ctx, alice, appID) }()
+	waiting(2) // the revoke, behind the refresh
+	release()
+
+	rec := <-refreshed
+	if err := <-revoked; err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+	if rec.Code == http.StatusOK {
+		next := decode[tokenJSON](t, rec)
+		if got := e.probe("/probe/profile", next.AccessToken); got.Code != http.StatusUnauthorized {
+			t.Fatalf("access token from a refresh racing the revoke = %d, want 401", got.Code)
+		}
+	} else {
+		expectOAuthError(t, rec, http.StatusBadRequest, "invalid_grant")
+	}
+	if n := e.count(`SELECT count(*)::int FROM oauth_tokens WHERE revoked_at IS NULL`); n != 0 {
+		t.Fatalf("%d tokens still live after the grant was revoked", n)
 	}
 }
