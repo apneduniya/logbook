@@ -130,7 +130,7 @@ An identifier that names nobody, or can't be a username: `404 {"error": "User no
 
 Compatibility exceptions, documented and covered by tests: Slack ids and HCA ids aren't accepted in V1 (HCA doesn't give us the Slack id), so Crossroads, which looks users up by Slack id, needs a small patch. `my` is reserved and can't be a username (sign-up skips it; the database refuses it).
 
-**Hidden projects** are invisible to programs on every call, even with the user's own token: left out of lists, totals, `filter_by_project` results, spans and heartbeats.
+**Hidden projects** are invisible to programs on every call, even with the user's own token: left out of lists, totals, `filter_by_project` results, spans and heartbeats. Heartbeats sent without a project are reported as `Unknown`; hiding `Unknown` hides them everywhere too, heartbeats and spans included.
 
 **Time.** "Raw" is time at the keyboard from the heartbeat rollup (`user_minutes`, label `you`, the Hackatime-equivalent figure); "counted" is capped credited time from `credited_project_minutes` (ADR 0014). A user who never ran the agent has `credited_seconds: 0`. Range bounds: minutes starting in `[start, end)`; heartbeats (spans, counts, `my/heartbeats` rows) with `start <= time <= end`.
 

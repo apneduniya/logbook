@@ -7,6 +7,11 @@
 -- capped credited time from credited_project_minutes (ADR 0014). Hidden
 -- projects are excluded by name through exclude_projects, which callers fill
 -- for reads that aren't authorised by the user.
+--
+-- Heartbeats store a missing project as '', which the rollup and every
+-- response call "Unknown" (package rollup). Queries on heartbeats compare
+-- project names after that same mapping, so hiding "Unknown" hides those
+-- heartbeats too.
 
 -- name: ProgramUserByPublicID :one
 SELECT id, public_id, username::text AS username, display_name, email, profile_public
@@ -95,7 +100,7 @@ WHERE h.user_id = sqlc.arg(user_id)
   AND h.time <= sqlc.arg(to_time)
   AND h.project <> ''
   AND (sqlc.narg(projects)::text[] IS NULL OR h.project = ANY (sqlc.narg(projects)::text[]))
-  AND NOT (h.project = ANY (sqlc.arg(exclude_projects)::text[]))
+  AND NOT ((CASE WHEN h.project = '' THEN 'Unknown' ELSE h.project END) = ANY (sqlc.arg(exclude_projects)::text[]))
 GROUP BY h.project;
 
 -- name: ProgramHeartbeatRuns :many
@@ -109,7 +114,7 @@ WITH h AS (
       AND hb.time >= sqlc.arg(from_time)
       AND hb.time <= sqlc.arg(to_time)
       AND (sqlc.narg(projects)::text[] IS NULL OR hb.project = ANY (sqlc.narg(projects)::text[]))
-      AND NOT (hb.project = ANY (sqlc.arg(exclude_projects)::text[]))
+      AND NOT ((CASE WHEN hb.project = '' THEN 'Unknown' ELSE hb.project END) = ANY (sqlc.arg(exclude_projects)::text[]))
 ),
 marked AS (
     SELECT h.t, h.id,
@@ -139,6 +144,6 @@ FROM heartbeats
 WHERE user_id = sqlc.arg(user_id)
   AND time >= sqlc.arg(from_time)
   AND time <= sqlc.arg(to_time)
-  AND NOT (project = ANY (sqlc.arg(exclude_projects)::text[]))
+  AND NOT ((CASE WHEN project = '' THEN 'Unknown' ELSE project END) = ANY (sqlc.arg(exclude_projects)::text[]))
 ORDER BY time, id
 LIMIT sqlc.arg(max_rows);

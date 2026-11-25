@@ -259,6 +259,11 @@ type Querier interface {
 	// capped credited time from credited_project_minutes (ADR 0014). Hidden
 	// projects are excluded by name through exclude_projects, which callers fill
 	// for reads that aren't authorised by the user.
+	//
+	// Heartbeats store a missing project as '', which the rollup and every
+	// response call "Unknown" (package rollup). Queries on heartbeats compare
+	// project names after that same mapping, so hiding "Unknown" hides those
+	// heartbeats too.
 	ProgramUserByPublicID(ctx context.Context, publicID int64) (ProgramUserByPublicIDRow, error)
 	ProgramUserByUsername(ctx context.Context, username string) (ProgramUserByUsernameRow, error)
 	// All-time capped credited seconds per project (ADR 0014), and the last

@@ -105,7 +105,7 @@ WHERE h.user_id = $1
   AND h.time <= $3
   AND h.project <> ''
   AND ($4::text[] IS NULL OR h.project = ANY ($4::text[]))
-  AND NOT (h.project = ANY ($5::text[]))
+  AND NOT ((CASE WHEN h.project = '' THEN 'Unknown' ELSE h.project END) = ANY ($5::text[]))
 GROUP BY h.project
 `
 
@@ -165,7 +165,7 @@ WITH h AS (
       AND hb.time >= $2
       AND hb.time <= $3
       AND ($4::text[] IS NULL OR hb.project = ANY ($4::text[]))
-      AND NOT (hb.project = ANY ($5::text[]))
+      AND NOT ((CASE WHEN hb.project = '' THEN 'Unknown' ELSE hb.project END) = ANY ($5::text[]))
 ),
 marked AS (
     SELECT h.t, h.id,
@@ -238,7 +238,7 @@ FROM heartbeats
 WHERE user_id = $1
   AND time >= $2
   AND time <= $3
-  AND NOT (project = ANY ($4::text[]))
+  AND NOT ((CASE WHEN project = '' THEN 'Unknown' ELSE project END) = ANY ($4::text[]))
 ORDER BY time, id
 LIMIT $5
 `
@@ -545,6 +545,11 @@ type ProgramUserByPublicIDRow struct {
 // capped credited time from credited_project_minutes (ADR 0014). Hidden
 // projects are excluded by name through exclude_projects, which callers fill
 // for reads that aren't authorised by the user.
+//
+// Heartbeats store a missing project as ”, which the rollup and every
+// response call "Unknown" (package rollup). Queries on heartbeats compare
+// project names after that same mapping, so hiding "Unknown" hides those
+// heartbeats too.
 func (q *Queries) ProgramUserByPublicID(ctx context.Context, publicID int64) (ProgramUserByPublicIDRow, error) {
 	row := q.db.QueryRow(ctx, programUserByPublicID, publicID)
 	var i ProgramUserByPublicIDRow
