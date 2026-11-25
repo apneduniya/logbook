@@ -178,6 +178,7 @@
 						</div>
 						<ConfirmButton
 							label="Revoke"
+							name="Revoke the key {k.name}"
 							ask="Revoke {k.name}? Its computer stops sending time."
 							confirm="Revoke"
 							run={() => act(() => app.api.revokeApiKey(k.id))}
@@ -209,6 +210,7 @@
 						{#if !d.revoked_at}
 							<ConfirmButton
 								label="Disconnect"
+								name="Disconnect {d.name}"
 								ask="Disconnect {d.name}? Its counted time stays."
 								confirm="Disconnect"
 								run={() => act(() => app.api.revokeDevice(d.id))}
@@ -253,14 +255,14 @@
 							<div class="min-w-0">
 								<div class="truncate">{g.app_name}</div>
 								<div class="lbl">
-									by {g.owner_username} · reads your {scopeWords(g.scopes)} · since {day(
-										g.created_at
-									)}
+									by {g.owner_username} · reads your {scopeWords(g.scopes)} ·
+									<span class="whitespace-nowrap">since {day(g.created_at)}</span>
 								</div>
 							</div>
 						</div>
 						<ConfirmButton
 							label="Revoke"
+							name="Revoke {g.app_name}"
 							ask="Revoke {g.app_name}’s access? It stops working at once."
 							confirm="Revoke"
 							run={() => act(() => app.api.revokeGrant(g.app_id))}
