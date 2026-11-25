@@ -31,3 +31,20 @@ func TestReadParamsQueryWins(t *testing.T) {
 		})
 	}
 }
+
+// include_ai is cast as ActiveModel::Type::Boolean casts it, whose false
+// values are case-sensitive: "False" and "Off" are true.
+func TestBoolParamIsRailsBoolean(t *testing.T) {
+	t.Parallel()
+	for v, want := range map[string]bool{
+		"": false, "0": false, "f": false, "F": false, "false": false, "FALSE": false, "off": false, "OFF": false,
+		"False": true, "Off": true, "fALSE": true, "oFF": true, "1": true, "true": true, "no": true, " ": true, "0 ": true,
+	} {
+		if got := (params{"include_ai": v}).boolParam("include_ai"); got != want {
+			t.Errorf("include_ai=%q = %v, want %v", v, got, want)
+		}
+	}
+	if (params{}).boolParam("include_ai") {
+		t.Error("a missing include_ai is true")
+	}
+}

@@ -142,14 +142,16 @@ func (p params) intParam(name string, def, lo, hi int64) int64 {
 }
 
 // boolParam is ActiveModel::Type::Boolean's cast: false for a missing or
-// empty value and for 0, f, false and off (any case), true otherwise.
+// empty value and for its FALSE_VALUES, which are case-sensitive ("0",
+// "f", "F", "false", "FALSE", "off", "OFF"); true otherwise, "False" and
+// "Off" included.
 func (p params) boolParam(name string) bool {
 	v, ok := p[name]
 	if !ok || v == "" {
 		return false
 	}
-	switch strings.ToLower(v) {
-	case "0", "f", "false", "off":
+	switch v {
+	case "0", "f", "F", "false", "FALSE", "off", "OFF":
 		return false
 	}
 	return true
