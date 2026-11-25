@@ -111,7 +111,13 @@
 				<dt class="lbl">Redirect URIs</dt>
 				<dd>
 					<ul class="uris">
-						{#each a.redirect_uris as u (u)}<li class="mono">{u}</li>{/each}
+						{#each a.redirect_uris as u (u)}
+							{@const parts = u.split('/')}
+							<!-- Breaks only after a slash, so a path never splits mid-word. -->
+							<li class="mono">
+								{#each parts as part, i (i)}{part}{#if i < parts.length - 1}/<wbr />{/if}{/each}
+							</li>
+						{/each}
 					</ul>
 				</dd>
 				<dt class="lbl">Program</dt>
@@ -247,6 +253,9 @@
 		display: grid;
 		gap: 4px;
 		font-size: var(--text-sm);
+	}
+	.uris li {
+		overflow-wrap: break-word;
 	}
 
 	@media (max-width: 900px) {

@@ -82,6 +82,7 @@
 				{#if owner && m.role === 'reviewer'}
 					<ConfirmButton
 						label="Remove"
+						name="Remove {m.username}"
 						ask="Remove {m.username}? They lose this inbox at once."
 						confirm="Remove"
 						run={async () => {

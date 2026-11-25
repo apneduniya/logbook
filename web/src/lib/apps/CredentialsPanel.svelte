@@ -65,8 +65,8 @@
 	</div>
 
 	<p class="hint mt-5">
-		A program that signs people in with Hackatime switches by using these, with
-		<code class="mono">{appState.api.origin}</code> in place of Hackatime’s address.
+		If your program already signs people in with Hackatime, use these and replace Hackatime’s
+		address with <code class="mono">{appState.api.origin}</code>.
 	</p>
 </Panel>
 

@@ -4,7 +4,9 @@
   submitter column. A Segmented filter picks what to list ("To review" is
   ready with no decision yet); each row opens its review page, and "Copy
   link" copies the review link for the program's own tracker. It loads by
-  itself, so changing the filter doesn't reload the page.
+  itself, so changing the filter doesn't reload the page; while it loads the
+  old rows stay at full strength and the tools row says "Loading…". On
+  phones the six filters wrap onto two rows.
 
   Props: appId, slug (for the empty state's command).
 -->
@@ -110,6 +112,9 @@
 				onchange={(v: InboxFilter) => (filter = v)}
 			/>
 		</div>
+		{#if loading && rows !== null && rows.length > 0}
+			<span class="lbl" role="status">Loading…</span>
+		{/if}
 	</div>
 
 	{#if error}
@@ -135,13 +140,20 @@
 			</p>
 		</div>
 	{:else}
-		<div class="list" class:busy={loading} aria-busy={loading}>
+		<div class="list" aria-busy={loading}>
 			<SubmissionListHead submitter actions />
 			{#each rows as s (s.id)}
 				<SubmissionRow submission={s} href={href(s)} submitter>
 					{#snippet actions()}
 						{#if s.review_url}
-							<CopyField bare value={s.review_url} label="review link" button="Copy link" />
+							<CopyField
+								bare
+								value={s.review_url}
+								label={s.user
+									? `Review link for ${s.project} by ${s.user.username}`
+									: `Review link for ${s.project}`}
+								button="Copy link"
+							/>
 						{/if}
 					{/snippet}
 				</SubmissionRow>
@@ -160,23 +172,28 @@
 
 <style>
 	.tools {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 12px 20px;
+		min-width: 0;
 		padding: 12px 14px;
 		border-bottom: 1px solid var(--color-rule);
 	}
-	/* Six choices don't fit a phone; the row scrolls instead of the page. */
 	.seg {
 		max-width: 100%;
-		overflow-x: auto;
-		scrollbar-width: thin;
 	}
 	.seg :global(button) {
 		white-space: nowrap;
 	}
-	.list {
-		transition: opacity 150ms ease-out;
-	}
-	.list.busy {
-		opacity: 0.55;
+	/* Six choices don't fit a phone's row: they wrap three and three, and the
+	   control's border wraps with them. */
+	@media (max-width: 640px) {
+		.seg :global(.seg) {
+			display: grid;
+			grid-template-columns: repeat(3, auto);
+			justify-content: start;
+		}
 	}
 	.list > :global(:last-child) {
 		border-bottom: 0;
