@@ -133,7 +133,7 @@ if [ ! -f "$datadir/config.json" ]; then
 	# The visible install failed. Record why, then install again out of
 	# sight so the remaining shots can still be taken.
 	log "install failed; diagnostics follow"
-	log show --last 3m --style compact --predicate 'eventMessage CONTAINS "dev.boogles.logbook"' 2>/dev/null | tail -40 || true
+	/usr/bin/log show --last 3m --style compact --predicate 'eventMessage CONTAINS "dev.boogles.logbook"' 2>/dev/null | tail -40 || true
 	tail -20 "$datadir/agent.log" 2>/dev/null || true
 	log "retrying install out of sight"
 	set +e
@@ -160,7 +160,19 @@ EOF
 		echo "shim" >"$out/macos-install-workaround.txt"
 		sleep 35 # launchd throttles the restart
 	fi
-	launchctl print "gui/$(id -u)/dev.boogles.logbook" 2>&1 | grep -E 'state|pid|last exit' || true
+	svc="gui/$(id -u)/dev.boogles.logbook"
+	launchctl print "$svc" 2>&1 | grep -E 'state|pid|last exit|runs' || true
+	# How long does kickstart -k take on a job that has run a while, and
+	# on one that has just started (as during install)?
+	for when in "after running 35 s" "right after a restart"; do
+		start=$(date +%s)
+		perl -e 'alarm 90; exec @ARGV' /bin/launchctl kickstart -k "$svc"
+		log "kickstart -k $when: exit $?, took $(($(date +%s) - start)) s"
+	done
+	/usr/bin/log show --last 4m --style compact --predicate 'subsystem == "com.apple.xpc.launchd"' 2>/dev/null |
+		grep -i -E 'boogles|logbook' | tail -40 || true
+	sleep 35
+	launchctl print "$svc" 2>&1 | grep -E 'state|pid|last exit|runs' || true
 fi
 
 sleep 5 # let the daemon finish its first cycle

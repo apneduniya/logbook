@@ -208,7 +208,7 @@ function Invoke-ConsoleShot([string]$name, [string]$command, [int]$timeoutSec = 
 Import-Module Microsoft.PowerShell.Utility, Microsoft.PowerShell.Management
 Remove-Item Env:PSModulePath -ErrorAction SilentlyContinue
 
-$installer = 'irmhttps://raw.githubusercontent.com/apneduniya/logbook/main/scripts/install.ps1 | iex'
+$installer = 'irm https://raw.githubusercontent.com/apneduniya/logbook/main/scripts/install.ps1 | iex'
 $exe = '& "$env:LOCALAPPDATA\Programs\Logbook\logbook.exe"'
 
 Invoke-ConsoleShot 'install' $installer
