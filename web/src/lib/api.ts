@@ -4,15 +4,29 @@
 
 import type {
 	ApiKey,
+	App,
+	AppCreate,
+	AppMember,
+	AppPatch,
+	AppWithSecret,
+	ConsentRequest,
+	Decision,
+	DecisionInput,
 	Device,
+	Grant,
 	HackatimeLink,
+	InboxQuery,
 	NewApiKey,
 	Profile,
 	ProfilePatch,
 	Project,
 	ProjectPatch,
 	PublicProfile,
+	PublicProgram,
+	Review,
 	Session,
+	SubmissionDetail,
+	SubmissionSummary,
 	Summary,
 	Today
 } from './types.ts';
@@ -73,7 +87,17 @@ export class Api {
 		return u.href;
 	}
 
-	async #call<T>(method: Method, path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
+	/**
+	 * @param keepSession on a 401, don't end the app's session: the caller
+	 *   handles it in place (the review page keeps the reviewer's reason).
+	 */
+	async #call<T>(
+		method: Method,
+		path: string,
+		body?: unknown,
+		signal?: AbortSignal,
+		keepSession = false
+	): Promise<T> {
 		const headers: Record<string, string> = { Accept: 'application/json' };
 		if (method !== 'GET') headers['X-CSRF-Token'] = this.#csrf;
 		if (body !== undefined) headers['Content-Type'] = 'application/json';
@@ -109,7 +133,7 @@ export class Api {
 		);
 		// A 401 means the session ended, except on the check that asks whether
 		// there is one (GET /api/v1/session answers 401 when signed out).
-		if (res.status === 401 && !(method === 'GET' && path === '/api/v1/session')) {
+		if (res.status === 401 && !keepSession && !(method === 'GET' && path === '/api/v1/session')) {
 			this.#onUnauthorized();
 		}
 		throw err;
@@ -241,6 +265,184 @@ export class Api {
 
 	unlinkHackatime(): Promise<void> {
 		return this.#call('DELETE', '/api/v1/hackatime/link');
+	}
+
+	// Review links (docs/api/submissions.md). The token is the credential:
+	// it goes in the path only, never in a log line or a title.
+
+	/**
+	 * The review packet. While the re-check runs (202) it has `submission`
+	 * only, with status "verifying". 404 unknown token, 410 withdrawn.
+	 */
+	review(token: string, signal?: AbortSignal): Promise<Review> {
+		return this.#call('GET', `/api/v1/review/${encodeURIComponent(token)}`, undefined, signal);
+	}
+
+	/**
+	 * Records a program member's decision. A 401 doesn't end the app's
+	 * session here, so the page can keep what the reviewer typed.
+	 */
+	async decide(token: string, input: DecisionInput): Promise<Decision> {
+		const r = await this.#call<{ decision: Decision }>(
+			'POST',
+			`/api/v1/review/${encodeURIComponent(token)}/decision`,
+			input,
+			undefined,
+			true
+		);
+		return r.decision;
+	}
+
+	// The submitter's own submissions
+
+	async mySubmissions(signal?: AbortSignal): Promise<SubmissionSummary[]> {
+		const r = await this.#call<{ submissions: SubmissionSummary[] }>(
+			'GET',
+			'/api/v1/me/submissions',
+			undefined,
+			signal
+		);
+		return r.submissions;
+	}
+
+	/** @param keepSession see #call: a 401 is the caller's to handle. */
+	mySubmission(id: string, signal?: AbortSignal, keepSession = false): Promise<SubmissionDetail> {
+		return this.#call(
+			'GET',
+			`/api/v1/me/submissions/${encodeURIComponent(id)}`,
+			undefined,
+			signal,
+			keepSession
+		);
+	}
+
+	/** Withdraws before a decision (409 once decided). Withdrawing again is a no-op. */
+	withdrawSubmission(id: string): Promise<void> {
+		return this.#call('DELETE', `/api/v1/me/submissions/${encodeURIComponent(id)}`);
+	}
+
+	// Apps, which are also programs (docs/api/programs.md)
+
+	/**
+	 * Live apps the user owns or reviews for, newest first.
+	 * @param keepSession see #call: a 401 is the caller's to handle.
+	 */
+	async apps(signal?: AbortSignal, keepSession = false): Promise<App[]> {
+		const r = await this.#call<{ apps: App[] }>(
+			'GET',
+			'/api/v1/me/apps',
+			undefined,
+			signal,
+			keepSession
+		);
+		return r.apps;
+	}
+
+	app(id: string, signal?: AbortSignal): Promise<App> {
+		return this.#call('GET', `/api/v1/me/apps/${encodeURIComponent(id)}`, undefined, signal);
+	}
+
+	/** Registers an app. The answer carries `client_secret` once, for a confidential app. */
+	createApp(input: AppCreate): Promise<AppWithSecret> {
+		return this.#call('POST', '/api/v1/me/apps', input);
+	}
+
+	/** Owner only. */
+	updateApp(id: string, patch: AppPatch): Promise<App> {
+		return this.#call('PATCH', `/api/v1/me/apps/${encodeURIComponent(id)}`, patch);
+	}
+
+	/** Owner only. Revokes every token, code, pending request and grant of the app. */
+	deleteApp(id: string): Promise<void> {
+		return this.#call('DELETE', `/api/v1/me/apps/${encodeURIComponent(id)}`);
+	}
+
+	/** Owner only. The new `client_secret` is in the answer, once; the old one stops working. */
+	rotateAppSecret(id: string): Promise<AppWithSecret> {
+		return this.#call('POST', `/api/v1/me/apps/${encodeURIComponent(id)}/secret`);
+	}
+
+	/** Owner first, then reviewers. */
+	async appMembers(id: string, signal?: AbortSignal): Promise<AppMember[]> {
+		const r = await this.#call<{ members: AppMember[] }>(
+			'GET',
+			`/api/v1/me/apps/${encodeURIComponent(id)}/members`,
+			undefined,
+			signal
+		);
+		return r.members;
+	}
+
+	/** Owner only. Adds a reviewer by username (case-insensitive). */
+	addAppMember(id: string, username: string): Promise<AppMember> {
+		return this.#call('POST', `/api/v1/me/apps/${encodeURIComponent(id)}/members`, { username });
+	}
+
+	/** Owner only. The owner can't be removed. */
+	removeAppMember(id: string, username: string): Promise<void> {
+		return this.#call(
+			'DELETE',
+			`/api/v1/me/apps/${encodeURIComponent(id)}/members/${encodeURIComponent(username)}`
+		);
+	}
+
+	/** The program's inbox, newest first. Members only. */
+	async appSubmissions(
+		id: string,
+		q: InboxQuery = {},
+		signal?: AbortSignal
+	): Promise<SubmissionSummary[]> {
+		const p = new URLSearchParams();
+		if (q.status) p.set('status', q.status);
+		if (q.decision) p.set('decision', q.decision);
+		if (q.limit !== undefined) p.set('limit', String(q.limit));
+		if (q.offset !== undefined) p.set('offset', String(q.offset));
+		const qs = p.toString();
+		const r = await this.#call<{ submissions: SubmissionSummary[] }>(
+			'GET',
+			`/api/v1/me/apps/${encodeURIComponent(id)}/submissions${qs ? `?${qs}` : ''}`,
+			undefined,
+			signal
+		);
+		return r.submissions;
+	}
+
+	/** Live public programs by name, for the submit picker. No sign-in needed. */
+	async programs(signal?: AbortSignal): Promise<PublicProgram[]> {
+		const r = await this.#call<{ programs: PublicProgram[] }>(
+			'GET',
+			'/api/v1/programs',
+			undefined,
+			signal
+		);
+		return r.programs;
+	}
+
+	// OAuth consent and grants
+
+	/** A pending consent request (404 when unknown, expired, decided or someone else's). */
+	consentRequest(id: string, signal?: AbortSignal): Promise<ConsentRequest> {
+		return this.#call('GET', `/api/v1/oauth/requests/${encodeURIComponent(id)}`, undefined, signal);
+	}
+
+	/** Allows or denies; resolves to where the browser goes next. Single use. */
+	async decideConsent(id: string, approve: boolean): Promise<string> {
+		const r = await this.#call<{ redirect: string }>(
+			'POST',
+			`/api/v1/oauth/requests/${encodeURIComponent(id)}`,
+			{ approve }
+		);
+		return r.redirect;
+	}
+
+	/** Apps the user has given access, newest first. */
+	async grants(signal?: AbortSignal): Promise<Grant[]> {
+		const r = await this.#call<{ grants: Grant[] }>('GET', '/api/v1/me/grants', undefined, signal);
+		return r.grants;
+	}
+
+	revokeGrant(appId: string): Promise<void> {
+		return this.#call('DELETE', `/api/v1/me/grants/${encodeURIComponent(appId)}`);
 	}
 
 	// Live (Server-Sent Events)
