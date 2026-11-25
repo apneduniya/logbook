@@ -138,11 +138,3 @@ func submitHTTPClient() *http.Client {
 	}
 	return c
 }
-
-// isTerminal reports whether f is an interactive terminal (a character
-// device). /dev/null is one too; reading it gives end of input, which
-// counts as no.
-func isTerminal(f *os.File) bool {
-	st, err := f.Stat()
-	return err == nil && st.Mode()&os.ModeCharDevice != 0
-}
