@@ -21,7 +21,8 @@
 	} from '#lib/mine.ts';
 	import { SvelteSet } from 'svelte/reactivity';
 	import { poll } from '#lib/poll.ts';
-	import { reviewPath } from '#lib/submissions.ts';
+	import { dateRange } from '#lib/format.ts';
+	import { reviewPath, statusWord } from '#lib/submissions.ts';
 	import type { SubmissionSummary } from '#lib/types.ts';
 	import ConfirmButton from '#lib/components/ConfirmButton.svelte';
 	import CopyField from '#lib/components/CopyField.svelte';
@@ -67,6 +68,11 @@
 		return path ? resolve('/r/[token]', { token: path.slice('/r/'.length) }) : undefined;
 	}
 
+	/** "terra-bot, 1–20 Nov 2026, undecided": tells alike rows apart for a screen reader. */
+	function rowName(s: SubmissionSummary): string {
+		return `${s.project}, ${dateRange(s.from, s.to)}, ${statusWord(s).toLowerCase()}`;
+	}
+
 	async function withdraw(s: SubmissionSummary) {
 		await app.api.withdrawSubmission(s.id);
 		await invalidate(ME);
@@ -107,18 +113,23 @@
 		{#each shown as s (s.id)}
 			<SubmissionRow submission={s} href={href(s)}>
 				{#snippet actions()}
-					{#if canCopyLink(s) && s.review_url && !asking.has(s.id)}
+					{#if asking.has(s.id)}
+						<!-- Copy link steps aside while Withdraw asks. -->
+					{:else if canCopyLink(s) && s.review_url}
 						<CopyField
 							bare
 							value={s.review_url}
-							label="Review link for {s.project}"
+							label="Review link for {rowName(s)}"
 							button="Copy link"
 						/>
+					{:else if canWithdraw(s)}
+						<span aria-hidden="true"></span>
 					{/if}
 					{#if canWithdraw(s)}
 						<ConfirmButton
 							label="Withdraw"
-							ask="Withdraw it? The link stops working."
+							name="Withdraw {rowName(s)}"
+							ask="Withdraw {s.project}, {dateRange(s.from, s.to)}? The link stops working."
 							confirm="Withdraw"
 							align="start"
 							run={() => withdraw(s)}
@@ -154,8 +165,18 @@
 		flex-wrap: wrap;
 		gap: 12px 20px;
 		align-items: center;
+		min-width: 0;
 		padding: 12px 14px;
 		border-bottom: 1px solid var(--color-rule);
+	}
+	/* Two-digit counts don't fit a phone; the control scrolls, not the page. */
+	.tools :global(.seg) {
+		max-width: 100%;
+		overflow-x: auto;
+		scrollbar-width: thin;
+	}
+	.tools :global(.seg button) {
+		white-space: nowrap;
 	}
 	.foot {
 		padding: 12px 14px;

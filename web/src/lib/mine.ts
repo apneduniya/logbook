@@ -4,20 +4,23 @@
 
 import type { SubmissionSummary } from './types.ts';
 
-/** The filter segments, as in docs/web.md: All · Verifying · Ready · Decided. */
+/**
+ * The filter segments, as in docs/web.md: All · Verifying · Undecided ·
+ * Decided. Undecided (value `ready`) uses the row's own word for that state.
+ */
 export type SubmissionFilter = 'all' | 'verifying' | 'ready' | 'decided';
 
 export const FILTERS: { value: SubmissionFilter; label: string }[] = [
 	{ value: 'all', label: 'All' },
 	{ value: 'verifying', label: 'Verifying' },
-	{ value: 'ready', label: 'Ready' },
+	{ value: 'ready', label: 'Undecided' },
 	{ value: 'decided', label: 'Decided' }
 ];
 
 type Row = Pick<SubmissionSummary, 'status' | 'decision' | 'review_url'>;
 
 /**
- * Whether a submission belongs under a filter. "Ready" is re-checked and
+ * Whether a submission belongs under a filter. "Undecided" is re-checked and
  * waiting for a decision; "Decided" has one. Failed and withdrawn
  * submissions show under All only.
  */

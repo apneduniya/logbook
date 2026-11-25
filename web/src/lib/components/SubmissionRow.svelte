@@ -2,7 +2,8 @@
   One submission as a run-list row (GitHub Actions' run list in the mkdir
   row style): an ink status glyph, the project over a mono dateline, counted
   hours with the evidence under them, the decision as a small stamp, then
-  actions. With `href` the whole row opens it (a stretched link; actions
+  actions on a two-column grid (Copy link, Withdraw): a row without a link
+  passes a spacer first, so Withdraw stays in its column. With `href` the whole row opens it (a stretched link; actions
   stay clickable above it). A failed row says why under it when the API
   gives the reason (the submitter's own list only). Pair with
   SubmissionListHead, passing the same `submitter` and `actions`.
@@ -178,17 +179,19 @@
 	.acts {
 		position: relative;
 		z-index: 1;
-		display: flex;
-		justify-content: flex-start;
+		display: grid;
+		grid-template-columns: repeat(2, max-content);
+		justify-content: start;
 		align-items: center;
 		gap: 8px;
-		flex-wrap: wrap;
+	}
+	/* An asking Withdraw takes both columns, so its question keeps its width. */
+	.acts > :global(:only-child) {
+		grid-column: 1 / -1;
 	}
 	.why {
 		grid-column: 2 / -1;
 		min-width: 0;
-		color: var(--color-ink);
-		/* The server's reason can hold 64-character hashes. */
 		overflow-wrap: anywhere;
 	}
 	@media (max-width: 640px) {
