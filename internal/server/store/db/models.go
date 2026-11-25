@@ -11,6 +11,17 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+type AdminKey struct {
+	ID         uuid.UUID
+	UserID     uuid.UUID
+	Name       string
+	Prefix     string
+	KeyHash    []byte
+	CreatedAt  time.Time
+	LastUsedAt *time.Time
+	RevokedAt  *time.Time
+}
+
 type ApiKey struct {
 	ID         uuid.UUID
 	UserID     uuid.UUID
@@ -115,10 +126,11 @@ type HackatimeLink struct {
 }
 
 type HackatimeTrustHistory struct {
-	ID        int64
-	UserID    uuid.UUID
-	Level     string
-	CheckedAt time.Time
+	ID             int64
+	UserID         uuid.UUID
+	Level          string
+	CheckedAt      time.Time
+	FirstCheckedAt time.Time
 }
 
 type Heartbeat struct {

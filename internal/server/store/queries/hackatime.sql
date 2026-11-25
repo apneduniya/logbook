@@ -152,7 +152,7 @@ DELETE FROM hackatime_imports WHERE user_id = $1;
 -- name: RecordHackatimeTrust :exec
 -- Adds a level read for the user to hackatime_trust_history: when the newest
 -- row has the same level, its checked_at moves forward; otherwise (a change,
--- or the first read) a new row starts.
+-- or the first read) a new row starts, first read now.
 WITH latest AS (
     SELECT id, level FROM hackatime_trust_history
     WHERE user_id = sqlc.arg(user_id)
@@ -165,8 +165,8 @@ moved AS (
     WHERE h.id = latest.id AND latest.level = sqlc.arg(level)::text
     RETURNING h.id
 )
-INSERT INTO hackatime_trust_history (user_id, level, checked_at)
-SELECT sqlc.arg(user_id), sqlc.arg(level)::text, sqlc.arg(checked_at)
+INSERT INTO hackatime_trust_history (user_id, level, checked_at, first_checked_at)
+SELECT sqlc.arg(user_id), sqlc.arg(level)::text, sqlc.arg(checked_at), sqlc.arg(checked_at)
 WHERE NOT EXISTS (SELECT 1 FROM moved);
 
 -- name: ListHackatimeTrustHistory :many
