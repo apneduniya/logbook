@@ -1,0 +1,124 @@
+name: docs-shots
+# Screenshots of installing and using the agent on real Windows and macOS,
+# for the docs site (site/src/assets/shots/<os>-*.png). Each job starts a
+# throwaway Logbook server on the runner, signs in with dev sign-in, then
+# runs the real one-line installer against it, which downloads the latest
+# published release from GitHub.
+#
+# Runs on pushes to docs/shots-os and by hand. To refresh the shots on each
+# release, add this trigger:
+#
+#   release:
+#     types: [published]
+#
+# It stays off for now: a release event runs on the default branch, and
+# these shots should first be reviewed on a branch before main grows a job
+# that changes the desktop of a runner on every release.
+on:
+  push:
+    branches: [docs/shots-os]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: docs-shots-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  shots:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows
+            runner: windows-2025
+          - os: macos
+            runner: macos-15
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    env:
+      LOGBOOK_SERVER: http://127.0.0.1:8080
+      SHOTS_DIR: ${{ github.workspace }}/shots-out
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Build the server
+        shell: bash
+        env:
+          CGO_ENABLED: "0"
+        run: go build -trimpath -o "$RUNNER_TEMP/server/" ./cmd/logbook-server
+
+      - name: Start PostgreSQL (Windows)
+        if: matrix.os == 'windows'
+        shell: pwsh
+        run: |
+          # The image ships PostgreSQL as a disabled service (user postgres,
+          # password root, PGBIN set).
+          $svc = Get-Service -Name postgresql*
+          $svc | Set-Service -StartupType Manual
+          $svc | Start-Service
+          & "$env:PGBIN\pg_isready.exe" -h 127.0.0.1 -t 60
+          & "$env:PGBIN\psql.exe" -h 127.0.0.1 -U postgres -c "CREATE DATABASE logbook"
+          "DATABASE_URL=postgres://postgres:root@127.0.0.1:5432/logbook?sslmode=disable" >> $env:GITHUB_ENV
+
+      - name: Start PostgreSQL (macOS)
+        if: matrix.os == 'macos'
+        shell: bash
+        run: |
+          brew install postgresql@17
+          pg="$(brew --prefix postgresql@17)/bin"
+          "$pg/initdb" -D "$RUNNER_TEMP/pgdata" -U postgres --auth=trust >/dev/null
+          "$pg/pg_ctl" -D "$RUNNER_TEMP/pgdata" -l "$RUNNER_TEMP/postgres.log" -o "-h 127.0.0.1 -p 5432" -w start
+          "$pg/createdb" -h 127.0.0.1 -U postgres logbook
+          echo "DATABASE_URL=postgres://postgres@127.0.0.1:5432/logbook?sslmode=disable" >> "$GITHUB_ENV"
+
+      - name: Start the server (Windows)
+        if: matrix.os == 'windows'
+        shell: pwsh
+        run: |
+          $env:LOGBOOK_ENCRYPTION_KEY = [Convert]::ToBase64String((1..32 | ForEach-Object { Get-Random -Maximum 256 }) -as [byte[]])
+          $env:LOGBOOK_ADDR = '127.0.0.1:8080'
+          $env:LOGBOOK_BASE_URL = 'http://127.0.0.1:8080'
+          $env:LOGBOOK_DEV_INSECURE_COOKIE = 'true'
+          $env:LOGBOOK_DEV_LOGIN = 'true'
+          Start-Process -FilePath "$env:RUNNER_TEMP\server\logbook-server.exe" -WindowStyle Hidden `
+            -RedirectStandardOutput "$env:RUNNER_TEMP\server.log" -RedirectStandardError "$env:RUNNER_TEMP\server.err.log"
+
+      - name: Start the server (macOS)
+        if: matrix.os == 'macos'
+        shell: bash
+        run: |
+          export LOGBOOK_ENCRYPTION_KEY=$(openssl rand -base64 32)
+          export LOGBOOK_ADDR=127.0.0.1:8080 LOGBOOK_BASE_URL=http://127.0.0.1:8080
+          export LOGBOOK_DEV_INSECURE_COOKIE=true LOGBOOK_DEV_LOGIN=true
+          nohup "$RUNNER_TEMP/server/logbook-server" >"$RUNNER_TEMP/server.log" 2>&1 &
+
+      - name: Create user orpheus and an API key
+        shell: bash
+        run: bash .github/docs-shots/bootstrap.sh "$LOGBOOK_SERVER"
+
+      - name: Screenshots (Windows)
+        if: matrix.os == 'windows'
+        shell: pwsh
+        run: ./.github/docs-shots/windows.ps1 -OutDir $env:SHOTS_DIR
+
+      - name: Screenshots (macOS)
+        if: matrix.os == 'macos'
+        shell: bash
+        run: bash .github/docs-shots/macos.sh "$SHOTS_DIR"
+
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: shots-${{ matrix.os }}
+          path: shots-out/
+          if-no-files-found: warn
+
+      - name: Server log
+        if: always()
+        shell: bash
+        run: tail -n 40 "$RUNNER_TEMP"/server*.log || true
