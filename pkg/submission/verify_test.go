@@ -202,9 +202,20 @@ func TestVerifyRejectsTamperedEvidence(t *testing.T) {
 			d.Records[0].Signature[5] ^= 1
 			return d
 		}},
-		{name: "the first record left out", chain: true, dev: func() Device {
+		{name: "a middle record left out", chain: true, dev: func() Device {
+			// A third day on top of the fixture's two, then the second
+			// left out: the third doesn't follow the first.
 			d := f.dev
-			d.Records = d.Records[1:]
+			third := evidence.Day{DeviceID: devA, Day: "2026-11-21", PrevChainHash: d.Records[1].ChainHash,
+				ContentHash: strings.Repeat("ab", 32), RulesVersion: d.Records[1].RulesVersion,
+				SeqFrom: d.Records[1].SeqTo, SeqTo: d.Records[1].SeqTo + 1, Buckets: 1}
+			chain, sig, err := evidence.Sign(f.priv, third)
+			if err != nil {
+				t.Fatal(err)
+			}
+			d.Records = []EvidenceRecord{d.Records[0], {Day: third.Day, PrevChainHash: third.PrevChainHash,
+				ContentHash: third.ContentHash, ChainHash: chain, Signature: sig, RulesVersion: third.RulesVersion,
+				SeqFrom: third.SeqFrom, SeqTo: third.SeqTo, Buckets: 1}}
 			return d
 		}},
 		{name: "a record signed by another key", chain: true, dev: func() Device {
@@ -307,6 +318,19 @@ func TestVerifyUnbacked(t *testing.T) {
 			dev: func() Device {
 				d := f.dev
 				d.Records = d.Records[:1]
+				return d
+			},
+			which: func(Minute) bool { return true },
+		},
+		{
+			// Without the first record, the chain starts at block B,
+			// which links to an earlier record and starts above 0: rows
+			// of block A that the runs read are in no record given.
+			name: "the chain's first record left out", want: ReasonChainStart,
+			part: func() Part { return f.part(t, partOpts{skipDays: []string{"2026-11-19"}}) },
+			dev: func() Device {
+				d := f.dev
+				d.Records = d.Records[1:]
 				return d
 			},
 			which: func(Minute) bool { return true },

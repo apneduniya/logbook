@@ -35,6 +35,7 @@ const (
 	ReasonNotSealed  = "its block isn't sealed"
 	ReasonNoRepo     = "the repo bucket of its block isn't opened"
 	ReasonIncomplete = "its window isn't proven complete"
+	ReasonChainStart = "the device's evidence chain doesn't reach back to its start"
 )
 
 // ErrBadChain is wrapped when a device's signed records don't verify or
@@ -94,18 +95,18 @@ func Unbacked(rows []Minute, reason string) []RowResult {
 // ADR 0019 points 5 to 8):
 //
 //  1. The device's records verify with its key and form one chain: each
-//     links to the previous by chain hash and starts at its seq_to; the
-//     first is the device's first ever (no previous chain hash) or starts
-//     at sequence 0. Every block of the part names a record, and its proof
-//     verifies against it (root, leaf keys, sequence bounds, every opened
-//     row in its right bucket, sequences increasing).
+//     links to the previous by chain hash and starts at its seq_to. Every
+//     block of the part names a record, and its proof verifies against it
+//     (root, leaf keys, sequence bounds, every opened row in its right
+//     bucket, sequences increasing).
 //  2. Every minute the part lists names a frozen row of the device with
 //     the same key.
 //  3. A frozen row is unbacked unless it has a key (T, H), the part lists
-//     it, a record holds H, the part opens that block's repo bucket, and
-//     every block whose signed time span overlaps the run's window [T -
-//     120 min, T) and whose seq_from is below H proves completeness of the
-//     window.
+//     it, a record holds H, the chain's first record is the device's first
+//     ever (no previous chain hash) or starts at sequence 0, the part
+//     opens the repo bucket of H's block, and every block whose signed
+//     time span overlaps the run's window [T - 120 min, T) and whose
+//     seq_from is below H proves completeness of the window.
 //  4. Each backed row is replayed with pkg/replay at its key and rules
 //     version, over the opened minute rows with seq <= H and the repo rows
 //     of H's block reduced to the highest seq per path; rows sharing a key
@@ -225,13 +226,6 @@ func checkChain(dev Device) ([]EvidenceRecord, error) {
 			return nil, fmt.Errorf("%w: %s: %w", ErrBadChain, r.Day, err)
 		}
 		if i == 0 {
-			// The device's first record has no previous chain hash (a
-			// takeover may start above 0, ADR 0019 point 4); one after a
-			// day sealed before ADR 0019 starts again at 0. Any other
-			// first record means earlier records are missing.
-			if r.PrevChainHash != "" && r.SeqFrom != 0 {
-				return nil, fmt.Errorf("%w: %s is not the start of the chain", ErrBadChain, r.Day)
-			}
 			continue
 		}
 		prev := recs[i-1]
@@ -346,6 +340,17 @@ func (e *partEvidence) backs(k replay.Key) string {
 	hb, ok := e.holding(k.H)
 	if !ok {
 		return ReasonNotSealed
+	}
+	// Rows below the first record's seq_from are in no record. That is
+	// sound only for the device's first record, which a takeover may
+	// start above 0 (ADR 0019 point 4: the new device's windows start
+	// after its registration); one after a day sealed before ADR 0019
+	// starts again at 0. A first record that links to an earlier one and
+	// starts above 0 (it follows a day stored without block fields, or
+	// earlier records weren't given) leaves rows the run may have read
+	// unproven.
+	if first := e.chain[0]; first.PrevChainHash != "" && first.SeqFrom > 0 {
+		return ReasonChainStart
 	}
 	v, ok := e.blocks[hb.Day]
 	if !ok || !slices.ContainsFunc(v.Opened, func(b evidence.VerifiedBucket) bool { return b.Key == evidence.RepoKey }) {
