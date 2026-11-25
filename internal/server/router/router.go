@@ -18,6 +18,7 @@ import (
 	"github.com/apneduniya/logbook/internal/server/programapi"
 	"github.com/apneduniya/logbook/internal/server/projects"
 	"github.com/apneduniya/logbook/internal/server/stats"
+	"github.com/apneduniya/logbook/internal/server/submissions"
 )
 
 // Services are the built services whose routes the API serves. Every field
@@ -37,6 +38,8 @@ type Services struct {
 	Ledger     *ledger.Service
 	Hackatime  *hackatime.Service
 	ProgramAPI *programapi.Service
+	// Submissions serves submissions, review links and decisions (ADR 0020).
+	Submissions *submissions.Service
 }
 
 // Options configures the handler.
@@ -105,6 +108,13 @@ func Mux(s Services, opts Options) *http.ServeMux {
 	credited.NewHandler(s.Credited, requireAPIKey).Register(mux)
 	ledger.NewHandler(s.Ledger, requireAPIKey).Register(mux)
 
+	// Submissions, the review link and decisions, and each program's inbox
+	// (ADR 0020).
+	submissions.NewHandler(s.Submissions, submissions.HandlerOptions{
+		RequireSession: requireSession, RequireAPIKey: requireAPIKey,
+		RequireSubmissionsScope: s.OAuth.RequireScope(oauth.ScopeSubmissions), ClientKey: clientKey,
+	}).Register(mux)
+
 	// Hackatime link, history import and trust refresh.
 	hackatime.NewHandler(s.Hackatime, requireSession, opts.Hackatime).Register(mux)
 	return mux
@@ -112,14 +122,17 @@ func Mux(s Services, opts Options) *http.ServeMux {
 
 // corsSkip lists the /api/ paths browsers never call, which get no CORS
 // headers (ADR 0011): wakatime-cli and agent endpoints (API keys) and the
-// program API, which program backends call with OAuth tokens or API keys.
-// The web UI's own routes under /api/v1/users/{username}/ (profile, live)
-// keep CORS.
+// program API, which program backends call with OAuth tokens or API keys,
+// a program's submission calls included. The web UI's own routes under
+// /api/v1/users/{username}/ (profile, live), the review link and the
+// user's own submissions keep CORS.
 var corsSkip = []string{
 	"/api/hackatime/",
 	"/api/v1/users/current/heartbeats",
 	"/api/v1/users/current/statusbar/",
 	"/api/v1/devices",
+	"/api/v1/submissions",
+	"/api/v1/me/submissions/plan",
 	"/api/v1/authenticated/",
 	"/api/v1/my/",
 	"/api/v1/users/{id}/stats",
