@@ -4,20 +4,26 @@ The approved direction is **B3, mono HUD**, on the Doop canvas _Logbook web UI_.
 
 ## References (why this direction)
 
-| Reference                                        | What we took                                                             |
-| ------------------------------------------------ | ------------------------------------------------------------------------ |
-| parkerhendo, "the correct aesthetic of software" | Dense data in a strict hairline grid, read like a terminal or HUD        |
-| mkdir.directory                                  | Ranked lists as big rows on hairlines, counts on the right               |
-| Maritime, Detent UI                              | Generous framing, near-black dark mode (never navy)                      |
-| Departure Mono (Helena Zhang)                    | One pixel voice for figures and panel heads                              |
-| Hackatime's dashboard (what teens know)          | Today, streak, week, projects and languages are the questions people ask |
+| Reference                                        | What we took                                                              |
+| ------------------------------------------------ | ------------------------------------------------------------------------- |
+| parkerhendo, "the correct aesthetic of software" | Dense data in a strict hairline grid, read like a terminal or HUD         |
+| mkdir.directory                                  | Ranked lists as big rows on hairlines, counts on the right                |
+| Maritime, Detent UI                              | Generous framing, near-black dark mode (never navy)                       |
+| Departure Mono (Helena Zhang)                    | One pixel voice for figures and panel heads                               |
+| Hackatime's dashboard (what teens know)          | Today, streak, week, projects and languages are the questions people ask  |
+| Invoice layouts                                  | The review page as one document: meta block, totals, itemised lines       |
+| Sentry's issue page                              | Figures at the head, the body on the left, a rail of actions on the right |
+| GitHub Actions run summary and run list          | A fact strip of figures; list rows with a status glyph, not a pill        |
+| GitHub's Verified badge                          | The evidence line's small bordered `VERIFIED` tag                         |
+| Harvest and Toggl Track approvals                | One total with its split; the decision as "APPROVED by …" plus a comment  |
+| Vercel's deployment summary                      | One row per day with its numbers right-aligned                            |
 
 ## Tokens
 
 The tokens live in `src/routes/layout.css` and are copied from the canvas.
 
 - **Ground and ink:** ledger paper `#F1EFE8` and iron-gall ink `#17160F` in light; `#0E0E0D` and `#ECEAE2` in dark. The theme follows the system setting.
-- **The one accent:** ultramarine, `#2740D6` in light and `#7387FF` in dark. It marks **live state only**: "tracking now", the live project's edge, and today's cell. It is never decoration, links or buttons.
+- **The one accent:** ultramarine, `#2740D6` in light and `#7387FF` in dark. It marks **live state only**: "tracking now", the live project's edge, today's cell, and a submission's verifying spinner. It is never decoration, links, buttons or a verdict: decisions are carried by ink inversion (`DecisionStamp`).
 - **Rules:** `--color-rule` hairlines. There are no shadows and no radii on panels.
 - **Agent alone:** a hatched fill (`--hatch`). Idle is `--color-fill`.
 
@@ -45,8 +51,10 @@ Don't make the whole UI pixel or mono; hierarchy comes from the contrast between
 - **Links:** muted at rest and ink on hover. Arrows (→) only on links that go somewhere else.
 - **Buttons:**
   - Secondary: bordered, filling with ink on hover.
-  - Primary (sign in only): solid ink.
+  - Primary: solid ink, in two places only: "Sign in with Hack Club" and Allow on the OAuth consent page. Deny beside Allow stays secondary.
   - Destructive actions ask once inline (`ConfirmButton`) instead of opening a modal. The trigger is a bordered button, not muted text, because it acts. Its error shows by its own row, never in a page-level notice.
+  - Deciding actions that need a reason (reject, adjust) use `ReasonConfirm`: the same inline ask, with a reason field (and hours for adjust) checked on submit. A failure keeps what was typed.
+  - Copy buttons (`CopyField`) are small solid-ink pixel caps inside the value's box. A review link is copied, never printed in full; a one-time secret is masked until "Show".
 - **Form fields** have an `ink-3` border at rest. A hairline-only field is invisible (1.3:1).
 - **Errors on fields** show after the field is left or a save is tried, not from the first keystroke.
 - **Disabled:** don't disable a submit button to signal invalid input; let it explain on submit. Buttons disable only while busy.
@@ -57,6 +65,14 @@ Don't make the whole UI pixel or mono; hierarchy comes from the contrast between
 - A chart whose numbers appear only on hover also carries a visually hidden table, so screen readers get the numbers.
 - Copy never promises an interaction the device lacks: hover hints are hidden on touch screens.
 - On phones the year grid scrolls with fixed columns, and its window is sized to whole columns so the edge never cuts a dot in half.
+- **Minute strips** (`MinuteStrip`) use the review packet's alphabet: counted is ink, agent alone hatched, cut and idle fill, unbacked outlined, and a mismatch is ink with a notch (a shorter bar). Up to two hours draw a cell per minute; a day draws runs. Commits are ticks above the strip whose detail line shows under it on hover, focus or tap. Every strip has a hidden table of its runs.
+
+## Review page
+
+- An audited timesheet read like an invoice: the SUBMISSION meta block, three figures with counted the biggest, a one-sentence evidence line with its tag, then itemised panels.
+- On desktop it uses the 8/4 grid, with a rail of TRUST, JUSTIFICATION and DECISION. On phones it is one column, and for program members the decision moves up under the figures.
+- Times are UTC and say so. Hours are programs' one-decimal hours (`12.4 h`). Line amounts and day totals use the usual `4h 00m`.
+- Warnings (a banned or switched Hackatime account) are sans sentences with a 2 px ink rule on the left. They are never coloured.
 
 ## Words
 

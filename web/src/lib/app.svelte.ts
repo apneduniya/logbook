@@ -277,4 +277,7 @@ export const ME = 'logbook:me';
 /** Public profile loads depend on this; their own live stream invalidates it. */
 export const PROFILE = 'logbook:profile';
 
+/** The review page's load depends on this; it polls while verifying and reloads after a stale decision. */
+export const REVIEW = 'logbook:review';
+
 export const app = new AppState(LOGBOOK_API_URL);

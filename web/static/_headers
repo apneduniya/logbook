@@ -8,5 +8,12 @@
   Permissions-Policy: camera=(), microphone=(), geolocation=(), interest-cohort=()
   Strict-Transport-Security: max-age=31536000; includeSubDomains
 
+# Review links carry their credential in the path (docs/web.md, "Review page"):
+# never indexed, never sent on as a Referer. Pages joins a repeated header with
+# a comma, and browsers use the last policy listed, so no-referrer wins.
+/r/*
+  X-Robots-Tag: noindex, nofollow
+  Referrer-Policy: no-referrer
+
 /_app/immutable/*
   Cache-Control: public, max-age=31536000, immutable
