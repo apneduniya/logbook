@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -24,6 +25,7 @@ import (
 	"github.com/apneduniya/logbook/internal/agent/crediting"
 	"github.com/apneduniya/logbook/internal/agent/serverapi"
 	"github.com/apneduniya/logbook/internal/agent/submit"
+	"github.com/apneduniya/logbook/internal/server/admin"
 	"github.com/apneduniya/logbook/internal/server/httpapi/httpapitest"
 	"github.com/apneduniya/logbook/internal/server/jobs"
 	"github.com/apneduniya/logbook/internal/server/ledger"
@@ -62,6 +64,11 @@ type subServer struct {
 	mux     *http.ServeMux
 	client  *serverapi.Client
 	target  serverapi.Target
+	// admin is the admin API (ADR 0022) on the same store and checker;
+	// adminKeyFor returns a key of the admin "auditor", made on first use.
+	admin       *http.ServeMux
+	adminKey    string
+	adminKeyFor func() string
 }
 
 // serverNow is the submission server's clock: the morning after the last
@@ -71,7 +78,7 @@ var serverNow = time.Date(2026, 11, 23, 6, 0, 0, 0, time.UTC)
 func newSubServer(t *testing.T, r *rig) *subServer {
 	t.Helper()
 	clock := func() time.Time { return serverNow }
-	s := &subServer{t: t, r: r, mux: http.NewServeMux()}
+	s := &subServer{t: t, r: r, mux: http.NewServeMux(), admin: http.NewServeMux()}
 	s.oauth = oauth.NewService(r.st, oauth.Options{WebURL: reviewWeb, Now: clock})
 	slots := submissions.NewDecodeSlots(0)
 	s.checker = submissions.NewChecker(r.st, ledger.NewService(r.st, ledger.WithClock(clock)),
@@ -113,6 +120,22 @@ func newSubServer(t *testing.T, r *rig) *subServer {
 		RequireSubmissionsScope: s.oauth.RequireScope(oauth.ScopeSubmissions),
 		ClientKey:               func(*http.Request) string { return "client" },
 	}).Register(s.mux)
+	keys := admin.NewKeys(r.st, clock)
+	admin.NewHandler(admin.NewService(r.st, s.checker, clock), keys, admin.HandlerOptions{}).Register(s.admin)
+	s.adminKeyFor = func() string {
+		if s.adminKey == "" {
+			seedtest.User(t, r.st, "auditor", "UTC", false)
+			if _, err := keys.Grant(context.Background(), "auditor"); err != nil {
+				t.Fatal(err)
+			}
+			k, err := keys.CreateKey(context.Background(), "auditor", "e2e")
+			if err != nil {
+				t.Fatal(err)
+			}
+			s.adminKey = k.Key
+		}
+		return s.adminKey
+	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		req.Header.Set(httpapitest.UserHeader, r.user.String())
 		s.mux.ServeHTTP(w, req)
@@ -507,9 +530,11 @@ func TestSubmitReviewAndVerify(t *testing.T) {
 		t.Fatalf("a part after the decision: %v", err)
 	}
 
-	// logbook verify on the bundle built from the server's stored data
-	// reproduces the packet's counts offline.
-	wantVerifyReproduces(t, s, id, p2)
+	// logbook verify on the bundle the admin API exports from the
+	// server's stored data reproduces the packet's counts offline, and
+	// the admin API shows the submission and decodes its revealed rows.
+	bundle := wantVerifyReproduces(t, s, id, p2)
+	wantAdminSubmission(t, s, id, bundle, 1)
 
 	t.Run("edited line fails", func(t *testing.T) {
 		up := cloneUpload(t, honest)
@@ -563,6 +588,19 @@ func TestSubmitReviewAndVerify(t *testing.T) {
 			t.Fatalf("packet = %+v", r.Packet)
 		}
 		wantVerifyReproduces(t, s, res.ID, r.Packet)
+
+		// Once withdrawn, the raw rows are gone: the export and the
+		// evidence are 410, the detail stays.
+		s.expect(http.MethodDelete, "/api/v1/me/submissions/"+res.ID, a.user, nil, http.StatusNoContent, nil)
+		for _, path := range []string{"/bundle", "/evidence"} {
+			if rec := s.adminGet("/api/admin/v1/submissions/" + res.ID + path); rec.Code != http.StatusGone {
+				t.Fatalf("%s after withdrawal = %d %s", path, rec.Code, rec.Body)
+			}
+		}
+		if rec := s.adminGet("/api/admin/v1/submissions/" + res.ID); rec.Code != http.StatusOK ||
+			!strings.Contains(rec.Body.String(), `"raw_deleted":true`) {
+			t.Fatalf("detail after withdrawal = %d %s", rec.Code, rec.Body)
+		}
 	})
 }
 
@@ -671,26 +709,30 @@ func wantPacket(t *testing.T, s *subServer, id string, p *submission.Packet, des
 	}
 }
 
-// wantVerifyReproduces exports the submission's bundle the way the admin
-// export will (submissions.Checker.Bundle, gzip-compressed) and checks
-// that `logbook verify`'s check of the file passes with the packet's
-// counts.
-func wantVerifyReproduces(t *testing.T, s *subServer, id string, p *submission.Packet) {
+// adminGet calls the admin API with the auditor's admin key.
+func (s *subServer) adminGet(target string) *httptest.ResponseRecorder {
+	s.t.Helper()
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, target, nil)
+	req.Header.Set("Authorization", "Bearer "+s.adminKeyFor())
+	rec := httptest.NewRecorder()
+	s.admin.ServeHTTP(rec, req)
+	return rec
+}
+
+// wantVerifyReproduces downloads the submission's bundle from the admin
+// API (GET /api/admin/v1/submissions/{id}/bundle, streamed from what the
+// server stored) and checks that `logbook verify`'s check of the file
+// passes with the packet's counts, and that the stream is the bundle the
+// checker builds in memory. It returns the bundle.
+func wantVerifyReproduces(t *testing.T, s *subServer, id string, p *submission.Packet) submission.Bundle {
 	t.Helper()
-	bundle, err := s.checker.Bundle(context.Background(), uuid.MustParse(id))
-	if err != nil {
-		t.Fatal(err)
-	}
-	raw, err := json.Marshal(bundle)
-	if err != nil {
-		t.Fatal(err)
-	}
-	gz, err := serverapi.Gzip(raw)
-	if err != nil {
-		t.Fatal(err)
+	rec := s.adminGet("/api/admin/v1/submissions/" + id + "/bundle")
+	if rec.Code != http.StatusOK || rec.Header().Get("Content-Type") != "application/gzip" ||
+		!strings.Contains(rec.Header().Get("Content-Disposition"), "submission-"+id+".json.gz") {
+		t.Fatalf("bundle = %d %v", rec.Code, rec.Header())
 	}
 	path := filepath.Join(t.TempDir(), "bundle.json.gz")
-	if err := os.WriteFile(path, gz, 0o600); err != nil {
+	if err := os.WriteFile(path, rec.Body.Bytes(), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	f, err := os.Open(path) //nolint:gosec // the test's own temp file
@@ -709,6 +751,100 @@ func wantVerifyReproduces(t *testing.T, s *subServer, id string, p *submission.P
 	}
 	if !rep.OK() || rep.Minutes != p.Minutes || rep.CountedSeconds != p.CountedSeconds {
 		t.Fatalf("logbook verify: %+v %d s; packet %+v %d s\n%s", rep.Minutes, rep.CountedSeconds, p.Minutes, p.CountedSeconds, text.String())
+	}
+	whole, err := s.checker.Bundle(context.Background(), uuid.MustParse(id))
+	if err != nil {
+		t.Fatal(err)
+	}
+	streamed, err := json.Marshal(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	built, err := json.Marshal(whole)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(streamed, built) {
+		t.Fatal("the streamed bundle differs from the one built in memory")
+	}
+	return b
+}
+
+// wantAdminSubmission checks what the admin API shows of a submission:
+// the detail with every frozen row, part and decision, and each part's
+// revealed rows decoded, all of them, page by page.
+func wantAdminSubmission(t *testing.T, s *subServer, id string, b submission.Bundle, decisions int) {
+	t.Helper()
+	var detail struct {
+		Submission struct {
+			Status string `json:"status"`
+		} `json:"submission"`
+		Packet    *submission.Packet `json:"packet"`
+		Decisions []json.RawMessage  `json:"decisions"`
+		Parts     []json.RawMessage  `json:"parts"`
+		Minutes   []struct {
+			Result *string `json:"result"`
+		} `json:"minutes"`
+	}
+	rec := s.adminGet("/api/admin/v1/submissions/" + id)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("detail = %d %s", rec.Code, rec.Body)
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &detail); err != nil {
+		t.Fatal(err)
+	}
+	if detail.Submission.Status != "ready" || detail.Packet == nil || len(detail.Decisions) != decisions ||
+		len(detail.Parts) != len(b.Parts) || len(detail.Minutes) != len(b.Minutes) {
+		t.Fatalf("detail: status %s, %d decisions, %d parts, %d minutes", detail.Submission.Status,
+			len(detail.Decisions), len(detail.Parts), len(detail.Minutes))
+	}
+	for _, m := range detail.Minutes {
+		if m.Result == nil {
+			t.Fatal("a frozen row has no result")
+		}
+	}
+	for _, part := range b.Parts {
+		lines := 0
+		for _, blk := range part.Blocks {
+			for _, o := range blk.Opened {
+				lines += len(o.Lines)
+			}
+		}
+		var seen []string
+		for offset := 0; ; offset += 500 {
+			var page struct {
+				Rows []struct {
+					Day   string          `json:"day"`
+					Seq   int64           `json:"seq"`
+					Type  string          `json:"type"`
+					Value json.RawMessage `json:"value"`
+				} `json:"rows"`
+				Total   int  `json:"total"`
+				HasMore bool `json:"has_more"`
+			}
+			rec := s.adminGet(fmt.Sprintf("/api/admin/v1/submissions/%s/evidence?part=%s&limit=500&offset=%d", id, part.DeviceID, offset))
+			if rec.Code != http.StatusOK {
+				t.Fatalf("evidence = %d %s", rec.Code, rec.Body)
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &page); err != nil {
+				t.Fatal(err)
+			}
+			if page.Total != lines {
+				t.Fatalf("evidence total = %d, the part opens %d lines", page.Total, lines)
+			}
+			for _, r := range page.Rows {
+				if r.Day == "" || r.Seq <= 0 || r.Type == "" || len(r.Value) == 0 {
+					t.Fatalf("evidence row %+v", r)
+				}
+				seen = append(seen, r.Type)
+			}
+			if !page.HasMore {
+				break
+			}
+		}
+		if len(seen) != lines || !slices.Contains(seen, "heartbeat") {
+			t.Fatalf("read %d evidence rows, want %d with heartbeats among them", len(seen), lines)
+		}
 	}
 }
 

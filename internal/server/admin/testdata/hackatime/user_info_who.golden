@@ -1,0 +1,7 @@
+# Hackatime user_utilities.rb find_user_by_id, no id
+# GET /api/admin/v1/user/info
+status: 422
+
+{
+  "error": "who?"
+}

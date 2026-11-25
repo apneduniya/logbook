@@ -1,0 +1,8 @@
+# Hackatime user_utilities.rb get_user_by_email, no email
+# POST /api/admin/v1/user/get_user_by_email
+# body: {}
+status: 422
+
+{
+  "error": "bro dont have a email"
+}

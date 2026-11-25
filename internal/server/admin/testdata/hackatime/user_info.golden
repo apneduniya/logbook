@@ -1,0 +1,48 @@
+# Hackatime user_utilities.rb user_info
+# GET /api/admin/v1/user/info?id=100000002
+status: 200
+
+{
+  "user": {
+    "id": 100000002,
+    "username": "orpheus",
+    "display_name": "Name orpheus",
+    "slack_uid": null,
+    "slack_username": null,
+    "github_username": "orpheus-gh",
+    "timezone": "America/New_York",
+    "country_code": null,
+    "admin_level": "default",
+    "trust_level": "yellow",
+    "suspected": true,
+    "banned": false,
+    "created_at": "<volatile>",
+    "updated_at": "<volatile>",
+    "last_heartbeat_at": 1781089200,
+    "email_addresses": [
+      "orpheus@example.com"
+    ],
+    "api_keys_count": 1,
+    "stats": {
+      "total_heartbeats": 43,
+      "total_coding_time": 2610,
+      "languages_used": 3,
+      "projects_worked_on": 3,
+      "days_active": 1
+    },
+    "logbook": {
+      "username": "orpheus",
+      "hackatime_id": 4242,
+      "trust_verified": true,
+      "hackatime_trust_level": "yellow",
+      "trust_checked_at": "<volatile>",
+      "role": "user",
+      "profile_public": true,
+      "devices": {
+        "active": 1,
+        "revoked": 0
+      },
+      "last_credited_minute": "2026-06-10T11:04:00Z"
+    }
+  }
+}

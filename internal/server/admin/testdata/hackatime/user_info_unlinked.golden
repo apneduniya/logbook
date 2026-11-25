@@ -1,0 +1,48 @@
+# Hackatime user_utilities.rb user_info, a user without Hackatime or activity
+# GET /api/admin/v1/user/info?user_id=100000003
+status: 200
+
+{
+  "user": {
+    "id": 100000003,
+    "username": "pat",
+    "display_name": "Name pat",
+    "slack_uid": null,
+    "slack_username": null,
+    "github_username": null,
+    "timezone": "UTC",
+    "country_code": null,
+    "admin_level": "default",
+    "trust_level": "blue",
+    "suspected": false,
+    "banned": false,
+    "created_at": "<volatile>",
+    "updated_at": "<volatile>",
+    "last_heartbeat_at": null,
+    "email_addresses": [
+      "pat@example.com"
+    ],
+    "api_keys_count": 0,
+    "stats": {
+      "total_heartbeats": 0,
+      "total_coding_time": 0,
+      "languages_used": 0,
+      "projects_worked_on": 0,
+      "days_active": 0
+    },
+    "logbook": {
+      "username": "pat",
+      "hackatime_id": null,
+      "trust_verified": false,
+      "hackatime_trust_level": null,
+      "trust_checked_at": null,
+      "role": "user",
+      "profile_public": false,
+      "devices": {
+        "active": 0,
+        "revoked": 0
+      },
+      "last_credited_minute": null
+    }
+  }
+}

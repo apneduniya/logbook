@@ -1,0 +1,59 @@
+# Hackatime user_utilities.rb trust_logs
+# GET /api/admin/v1/user/trust_logs?id=100000002
+status: 200
+
+{
+  "trust_logs": [
+    {
+      "id": 3,
+      "previous_trust_level": "green",
+      "new_trust_level": "yellow",
+      "changed_by": null,
+      "reason": null,
+      "notes": null,
+      "created_at": "<volatile>",
+      "edited_at": null,
+      "edited_by": null,
+      "original_reason": null,
+      "original_notes": null,
+      "logbook": {
+        "first_checked_at": "2026-06-15T08:00:00Z",
+        "last_checked_at": "2026-06-16T08:00:00Z"
+      }
+    },
+    {
+      "id": 2,
+      "previous_trust_level": "blue",
+      "new_trust_level": "green",
+      "changed_by": null,
+      "reason": null,
+      "notes": null,
+      "created_at": "<volatile>",
+      "edited_at": null,
+      "edited_by": null,
+      "original_reason": null,
+      "original_notes": null,
+      "logbook": {
+        "first_checked_at": "2026-05-20T08:00:00Z",
+        "last_checked_at": "2026-05-20T08:00:00Z"
+      }
+    },
+    {
+      "id": 1,
+      "previous_trust_level": null,
+      "new_trust_level": "blue",
+      "changed_by": null,
+      "reason": null,
+      "notes": null,
+      "created_at": "<volatile>",
+      "edited_at": null,
+      "edited_by": null,
+      "original_reason": null,
+      "original_notes": null,
+      "logbook": {
+        "first_checked_at": "2026-05-01T08:00:00Z",
+        "last_checked_at": "2026-05-02T08:00:00Z"
+      }
+    }
+  ]
+}

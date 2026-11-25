@@ -1,0 +1,7 @@
+# Hackatime routes.rb user/stats: not provided
+# GET /api/admin/v1/user/stats?id=100000002
+status: 404
+
+{
+  "error": "not found"
+}

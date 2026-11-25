@@ -21,7 +21,7 @@ laptop                                     server (Go + Postgres)
 
 | Path | Responsibility |
 |---|---|
-| `cmd/logbook-server` | Builds config, database, services and jobs, and serves `router.New`. No logic |
+| `cmd/logbook-server` | Builds config, database, services and jobs, and serves `router.New`; `logbook-server admin …` hands its arguments to `admin.Command`. No logic |
 | `cmd/logbook` | Agent daemon and CLI (`logbook login`, `status`, `submit`, ...) |
 | `pkg/wire` | Wire types shared by server and agent (heartbeats, minute batches, evidence) |
 | `pkg/struggle` | Pure rules engine: events in, labelled minutes and cuts out |
@@ -40,11 +40,12 @@ laptop                                     server (Go + Postgres)
 | `internal/server/credited` | Credited-minute uploads from the agent |
 | `internal/server/ledger` | Signed daily evidence chain per device: checks uploads (signature, chain and seq continuity) and reads stored records for the submission re-check |
 | `internal/server/live` | SSE fan-out |
-| `internal/server/submissions` | Submission plans and uploads (gzip, trust gate, one-snapshot freeze), the re-check job (`pkg/submission` against the ledger's records) and raw-row retention, the verification bundle built from what it stored (`Checker.Bundle`, for the admin export), review links and decisions, the submitter's list and withdrawal, and each program's inbox for its members and its client-credentials token (ADR 0020) |
+| `internal/server/submissions` | Submission plans and uploads (gzip, trust gate, one-snapshot freeze), the re-check job (`pkg/submission` against the ledger's records) and raw-row retention, the verification bundle streamed from what it stored (`Checker.WriteBundle`, for the admin export, one stored part at a time without decoding) and a part's revealed rows decoded within the decode slots (`Checker.PartRows`), review links and decisions, the submitter's list and withdrawal, and each program's inbox for its members and its client-credentials token (ADR 0020) |
 | `internal/server/oauth` | OAuth 2 provider: apps (programs) and their members (owner, reviewers), consent requests, codes, tokens, grants, and the bearer middleware (`RequireScope`, `OptionalScope`) the program API uses (ADR 0021) |
-| `internal/server/admin` | Read-only admin API for Fraud Squad, admin keys (ADR 0022) |
+| `internal/server/admin` | Read-only admin API for Fraud Squad (ADR 0022): admin keys (`lba_`, SHA-256 only) and the role, managed by the server's command line (`Command`); the Bearer middleware (admin keys only, a limit per key, an `admin.read` audit row before every answer); the Hackatime-compatible user calls and Logbook's devices, minutes, submissions, evidence and bundle calls. Reads only through `Reads` (`store/queries/admin.sql`, all SELECTs) and the submissions package's read methods |
+| `internal/server/admin/rubydate` | Ruby's `Date.parse` (the date gem's parser, ported and checked against Ruby), so the Hackatime-compatible admin calls read `start_date` and `end_date` as Hackatime does. Pure, no I/O |
 | `internal/server/httpapi` | HTTP handlers and middleware; thin, calls services |
-| `internal/server/router` | The server's whole route set on one mux, the global middleware and the CORS skip list; adapts OAuth tokens and API keys to the program API's `Authenticator`. End-to-end tests of the program flow run against it |
+| `internal/server/router` | The server's whole route set on one mux, the global middleware and the CORS skip list; adapts OAuth tokens and API keys to the program API's `Authenticator`. End-to-end tests of the program flow, and of the admin API refusing every other credential, run against it |
 | `internal/server/jobs` | River workers |
 | `internal/agent/...` | Agent: proxy, sensors, harness plugins, git, local store (an append-only event log, ADR 0017), crediting, uploader, tray |
 | `internal/agent/submit` | `logbook submit` (ADR 0020): fetches the plan, lists the minutes this device's part can back (proofs from `crediting.BuildProofs`), prints what the part reveals (other projects' rows by name, repo folders, unbacked minutes and why, other devices' minutes), asks before uploading, then uploads it gzip-compressed or writes `--preview` |

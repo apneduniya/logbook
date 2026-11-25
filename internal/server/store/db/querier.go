@@ -13,6 +13,103 @@ import (
 )
 
 type Querier interface {
+	// An audit row for a server command-line action (no actor).
+	AdminAuditCommand(ctx context.Context, arg AdminAuditCommandParams) error
+	// user/audit_log: entries the user acted in, or about the user, their
+	// devices or their submissions, newest first, one page. subject_id is the
+	// user's id as text.
+	AdminAuditLog(ctx context.Context, arg AdminAuditLogParams) ([]AdminAuditLogRow, error)
+	// One admin.read audit row per subject of an admin API request: the users
+	// it read (subject_type 'user'), or the key itself when it read no user
+	// (subject_type 'admin_key').
+	AdminAuditReads(ctx context.Context, arg AdminAuditReadsParams) error
+	// user/minutes: the user's credited rows (every device, label and project)
+	// with a minute in [from_time, to_time] (null bounds are open), one page, by
+	// (minute, device, project). A null project is no filter.
+	AdminCreditedMinutes(ctx context.Context, arg AdminCreditedMinutesParams) ([]AdminCreditedMinutesRow, error)
+	// Every device of the user, revoked ones included, oldest first.
+	AdminDevices(ctx context.Context, userID uuid.UUID) ([]AdminDevicesRow, error)
+	// Refused conflicting evidence uploads (the ledger's evidence_conflict
+	// audit entries) of the given devices, oldest first.
+	AdminEvidenceConflicts(ctx context.Context, deviceIds []string) ([]AdminEvidenceConflictsRow, error)
+	// Every stored evidence day of the user's devices, by device and day, and
+	// whether it has the block fields (ADR 0019).
+	AdminEvidenceDays(ctx context.Context, userID uuid.UUID) ([]AdminEvidenceDaysRow, error)
+	// user/info's stats over the user's heartbeats with a time from 2000 to
+	// 2100, as Hackatime counts them; last_heartbeat_at is -1 without any.
+	AdminHeartbeatStats(ctx context.Context, userID uuid.UUID) (AdminHeartbeatStatsRow, error)
+	// A key with its owner's role, revoked or not: authentication checks the
+	// hash, the revocation and the role.
+	AdminKeyByPrefix(ctx context.Context, prefix string) (AdminKeyByPrefixRow, error)
+	// Stores a new key. No row when the prefix is taken; the caller makes
+	// another key.
+	AdminKeyInsert(ctx context.Context, arg AdminKeyInsertParams) (uuid.UUID, error)
+	// Revokes one live key by its prefix. No row when no live key has it.
+	AdminKeyRevoke(ctx context.Context, arg AdminKeyRevokeParams) (AdminKeyRevokeRow, error)
+	// Records a key's use, at most once a minute.
+	AdminKeyTouch(ctx context.Context, arg AdminKeyTouchParams) error
+	// Every key, revoked ones included, oldest first.
+	AdminKeysList(ctx context.Context) ([]AdminKeysListRow, error)
+	// Revokes every live key of a user.
+	AdminKeysRevokeOfUser(ctx context.Context, arg AdminKeysRevokeOfUserParams) (int64, error)
+	// Hackatime's fuzzy_ranked_search over public id, username, display name,
+	// the GitHub username Hackatime reported and email: candidates contain the
+	// term (case-insensitive) or have it as their public id; each field scores
+	// 100 for an exact match, 50 for a prefix and 10 for a substring, and the
+	// public id 1000; best first, then by username, at most 10. The pattern
+	// arguments are LIKE-escaped by the caller.
+	AdminSearchUsers(ctx context.Context, arg AdminSearchUsersParams) ([]AdminSearchUsersRow, error)
+	AdminSetRole(ctx context.Context, arg AdminSetRoleParams) error
+	// Every decision on the given submissions, newest first per submission,
+	// with the reviewer (null once their account is gone).
+	AdminSubmissionDecisions(ctx context.Context, ids []uuid.UUID) ([]AdminSubmissionDecisionsRow, error)
+	// A submission's frozen rows with the re-check's result, by device and minute.
+	AdminSubmissionMinutes(ctx context.Context, submissionID uuid.UUID) ([]AdminSubmissionMinutesRow, error)
+	// The public id and username of a submission's user.
+	AdminSubmissionOwner(ctx context.Context, id uuid.UUID) (AdminSubmissionOwnerRow, error)
+	// A submission's parts without their data: device, size, upload and
+	// deletion times.
+	AdminSubmissionParts(ctx context.Context, submissionID uuid.UUID) ([]AdminSubmissionPartsRow, error)
+	// Submissions of one user (newest first), or one submission by id, with
+	// their program's slug and name and how many parts they have.
+	AdminSubmissions(ctx context.Context, arg AdminSubmissionsParams) ([]AdminSubmissionsRow, error)
+	// The user's newest trust readings, newest first, one more than shown so
+	// the oldest shown has a previous level.
+	AdminTrustHistory(ctx context.Context, userID uuid.UUID) ([]AdminTrustHistoryRow, error)
+	// The user with exactly this email; the oldest account when several share it.
+	AdminUserByEmail(ctx context.Context, email string) (AdminUserByEmailRow, error)
+	// The user's live API keys and devices, and their latest minute with credit.
+	AdminUserCounts(ctx context.Context, userID uuid.UUID) (AdminUserCountsRow, error)
+	// Queries for internal/server/admin that write (ADR 0022): the admin role
+	// and admin keys, which only the server's command line changes, and the
+	// two writes an admin API request makes: its audit rows and its key's
+	// last_used_at. Every read the admin API serves is in admin.sql.
+	// Locks a user by username until the transaction ends, so a role change
+	// and a key creation for that user never interleave.
+	AdminUserForUpdate(ctx context.Context, username string) (AdminUserForUpdateRow, error)
+	// How many heartbeats user/heartbeats' filters match.
+	AdminUserHeartbeatCount(ctx context.Context, arg AdminUserHeartbeatCountParams) (int64, error)
+	// user/heartbeats: the user's heartbeats with Hackatime's filters, by
+	// (time, id), one page. A null filter is no filter.
+	AdminUserHeartbeats(ctx context.Context, arg AdminUserHeartbeatsParams) ([]AdminUserHeartbeatsRow, error)
+	// user/projects: per named project of the user's heartbeats in [from_time,
+	// to_time] (null bounds are open): heartbeats, first and last, languages,
+	// Hackatime's duration within the project, the project's settings, and
+	// its counted (capped credited) seconds over the same span. Most
+	// heartbeats first.
+	AdminUserProjects(ctx context.Context, arg AdminUserProjectsParams) ([]AdminUserProjectsRow, error)
+	// Reads for the admin API (internal/server/admin, ADR 0022). Every query
+	// here is a SELECT: the admin API never changes user data, and a test
+	// checks that this file holds nothing else. Its two writes (audit rows and
+	// a key's last use) are in admin_keys.sql.
+	//
+	// Heartbeats store a missing field as '', which the Hackatime-shaped calls
+	// read as Hackatime's null. Durations follow Hackatime's duration_seconds:
+	// each heartbeat (ordered by time, id) is credited its gap to the previous
+	// one, at most 120 seconds, the first 0, and the float sum is cast to
+	// integer.
+	// Users by public id, with their Hackatime link (unmasked), by public id.
+	AdminUsers(ctx context.Context, publicIds []int64) ([]AdminUsersRow, error)
 	// Saves backfill progress, like AdvanceHackatimeRecent. Once next_date
 	// reaches recent_from the two segments join, and all three cursors move to
 	// recent_next.
@@ -321,7 +418,7 @@ type Querier interface {
 	PublicPrograms(ctx context.Context) ([]PublicProgramsRow, error)
 	// Adds a level read for the user to hackatime_trust_history: when the newest
 	// row has the same level, its checked_at moves forward; otherwise (a change,
-	// or the first read) a new row starts.
+	// or the first read) a new row starts, first read now.
 	RecordHackatimeTrust(ctx context.Context, arg RecordHackatimeTrustParams) error
 	// Makes the 'you' rows inside the given windows equal to the supplied set in
 	// one round trip: upserts the fresh rows and deletes every other 'you' row in

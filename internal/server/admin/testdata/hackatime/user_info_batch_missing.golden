@@ -1,0 +1,7 @@
+# Hackatime user_utilities.rb user_info_batch, no ids
+# GET /api/admin/v1/user/info_batch?ids=
+status: 422
+
+{
+  "error": "ids parameter required"
+}

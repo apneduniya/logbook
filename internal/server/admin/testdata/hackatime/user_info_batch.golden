@@ -1,0 +1,46 @@
+# Hackatime user_utilities.rb user_info_batch
+# GET /api/admin/v1/user/info_batch?ids=100000002,%20100000003,100000002,abc,999
+status: 200
+
+{
+  "users": [
+    {
+      "id": 100000002,
+      "username": "orpheus",
+      "slack_uid": null,
+      "slack_username": null,
+      "github_username": "orpheus-gh",
+      "timezone": "America/New_York",
+      "country_code": null,
+      "trust_level": "yellow",
+      "slack_avatar_url": null,
+      "github_avatar_url": null,
+      "display_name": "Name orpheus",
+      "avatar_url": null,
+      "logbook": {
+        "username": "orpheus",
+        "hackatime_id": 4242,
+        "trust_verified": true
+      }
+    },
+    {
+      "id": 100000003,
+      "username": "pat",
+      "slack_uid": null,
+      "slack_username": null,
+      "github_username": null,
+      "timezone": "UTC",
+      "country_code": null,
+      "trust_level": "blue",
+      "slack_avatar_url": null,
+      "github_avatar_url": null,
+      "display_name": "Name pat",
+      "avatar_url": null,
+      "logbook": {
+        "username": "pat",
+        "hackatime_id": null,
+        "trust_verified": false
+      }
+    }
+  ]
+}

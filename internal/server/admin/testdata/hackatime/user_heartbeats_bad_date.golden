@@ -1,0 +1,7 @@
+# Hackatime user_utilities.rb apply_time_range, an unparsable date
+# GET /api/admin/v1/user/heartbeats?id=100000002&start_date=yesterday
+status: 422
+
+{
+  "error": "invalid start_date"
+}

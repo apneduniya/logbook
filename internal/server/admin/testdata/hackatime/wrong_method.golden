@@ -1,0 +1,7 @@
+# Hackatime routes.rb: user/info is GET only
+# POST /api/admin/v1/user/info?id=100000002
+status: 404
+
+{
+  "error": "not found"
+}

@@ -366,8 +366,8 @@ moved AS (
     WHERE h.id = latest.id AND latest.level = $2::text
     RETURNING h.id
 )
-INSERT INTO hackatime_trust_history (user_id, level, checked_at)
-SELECT $1, $2::text, $3
+INSERT INTO hackatime_trust_history (user_id, level, checked_at, first_checked_at)
+SELECT $1, $2::text, $3, $3
 WHERE NOT EXISTS (SELECT 1 FROM moved)
 `
 
@@ -379,7 +379,7 @@ type RecordHackatimeTrustParams struct {
 
 // Adds a level read for the user to hackatime_trust_history: when the newest
 // row has the same level, its checked_at moves forward; otherwise (a change,
-// or the first read) a new row starts.
+// or the first read) a new row starts, first read now.
 func (q *Queries) RecordHackatimeTrust(ctx context.Context, arg RecordHackatimeTrustParams) error {
 	_, err := q.db.Exec(ctx, recordHackatimeTrust, arg.UserID, arg.Level, arg.CheckedAt)
 	return err

@@ -1,0 +1,29 @@
+# Hackatime user_utilities.rb search_users_fuzzy (UserFuzzySearch.fuzzy_ranked_search)
+# POST /api/admin/v1/user/search_fuzzy
+# body: {"query": " orph "}
+status: 200
+
+{
+  "users": [
+    {
+      "id": 100000002,
+      "username": "orpheus",
+      "slack_username": null,
+      "github_username": "orpheus-gh",
+      "slack_avatar_url": null,
+      "github_avatar_url": null,
+      "email": "orpheus@example.com",
+      "rank_score": 160
+    },
+    {
+      "id": 100000004,
+      "username": "otto",
+      "slack_username": null,
+      "github_username": null,
+      "slack_avatar_url": null,
+      "github_avatar_url": null,
+      "email": "otto@example.com",
+      "rank_score": 10
+    }
+  ]
+}
