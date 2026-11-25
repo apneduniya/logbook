@@ -135,26 +135,6 @@ func (k *Keys) Authenticate(ctx context.Context, key string) (Admin, error) {
 	return Admin{UserID: row.UserID, PublicID: row.PublicID, Username: row.Username, KeyID: row.ID, KeyPrefix: row.Prefix}, nil
 }
 
-// AuditRead writes the admin.read rows of one request: one per subject
-// user, or one about the key when the request read no user.
-func (k *Keys) AuditRead(ctx context.Context, a Admin, subjects []uuid.UUID, data map[string]any) error {
-	b, err := json.Marshal(data)
-	if err != nil {
-		return fmt.Errorf("encoding audit data: %w", err)
-	}
-	arg := db.AdminAuditReadsParams{ActorUserID: a.UserID, SubjectType: "user", Data: b}
-	for _, s := range subjects {
-		arg.SubjectIds = append(arg.SubjectIds, s.String())
-	}
-	if len(arg.SubjectIds) == 0 {
-		arg.SubjectType, arg.SubjectIds = "admin_key", []string{a.KeyID.String()}
-	}
-	if err := k.st.AdminAuditReads(ctx, arg); err != nil {
-		return fmt.Errorf("writing audit log: %w", err)
-	}
-	return nil
-}
-
 // auditCommand writes the audit row of a command-line action.
 func auditCommand(ctx context.Context, q *db.Queries, action, subjectType, subjectID string, data map[string]any) error {
 	if data == nil {

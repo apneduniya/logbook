@@ -32,7 +32,7 @@ const msgUnauthorized = "HTTP Token: Access denied."
 // implements it.
 type Auditor interface {
 	Authenticate(ctx context.Context, key string) (Admin, error)
-	AuditRead(ctx context.Context, a Admin, subjects []uuid.UUID, data map[string]any) error
+	AuditRead(ctx context.Context, a Admin, subjects []uuid.UUID, rec ReadRecord) error
 }
 
 // HandlerOptions configures a Handler.
@@ -119,13 +119,7 @@ type call struct {
 // when they fail first.
 func (c *call) audit(ctx context.Context, subjects ...uuid.UUID) error {
 	c.audited = true
-	data := map[string]any{
-		"method": c.r.Method, "path": c.r.URL.Path, "key": c.admin.KeyPrefix, "params": map[string]string(c.p),
-	}
-	if c.status != 0 {
-		data["status"] = c.status
-	}
-	return c.auth.AuditRead(ctx, c.admin, subjects, data)
+	return c.auth.AuditRead(ctx, c.admin, subjects, ReadRecord{Method: c.r.Method, Path: c.r.URL.Path, Params: c.p, Status: c.status})
 }
 
 // route authenticates an admin key (Bearer), limits it, reads the

@@ -2,6 +2,8 @@ package admin_test
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"reflect"
@@ -14,6 +16,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/apneduniya/logbook/internal/server/admin"
+	"github.com/apneduniya/logbook/internal/server/store/seedtest"
 )
 
 // Every request with a live key writes admin.read rows naming the admin,
@@ -249,4 +252,72 @@ func collect(rows stringRows) ([]string, error) {
 		out = append(out, s)
 	}
 	return out, rows.Err()
+}
+
+// A request's parameters are recorded once and capped: a batch read writes
+// one small row per user plus one row about the key holding the
+// parameters, and a padded parameter is cut, so the audit log grows with
+// the users read, not with the square of the batch or the padding.
+func TestAuditRowsAreBounded(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	var ids []string
+	for i := range 12 {
+		u := seedtest.User(t, f.st, fmt.Sprintf("batch%02d", i), "UTC", true)
+		ids = append(ids, strconv.FormatInt(seedtest.PublicID(t, f.st, u), 10))
+	}
+	ids[0] = strings.Repeat("0", 100_000) + ids[0] // still that user's id (to_i)
+	before := len(audit(t, f.st, "admin.read"))
+	f.expect(t, call{target: "/api/admin/v1/user/info_batch?ids=" + strings.Join(ids, ",")}, http.StatusOK)
+	rows := audit(t, f.st, "admin.read")[before:]
+	if len(rows) != 13 {
+		t.Fatalf("%d rows, want 12 users and the key", len(rows))
+	}
+	request := rows[0].Data["request"]
+	size, withParams := 0, 0
+	for _, r := range rows {
+		b, err := json.Marshal(r.Data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		size += len(b)
+		if r.Data["request"] != request || request == nil {
+			t.Fatalf("row %+v isn't tied to the request %v", r, request)
+		}
+		p, ok := r.Data["params"].(map[string]any)
+		if !ok {
+			continue
+		}
+		withParams++
+		if r.SubjectType != "admin_key" || r.Data["users"] != float64(12) || r.Data["params_truncated"] != true ||
+			len(p["ids"].(string)) > 1024 {
+			t.Fatalf("parameters row %+v", r)
+		}
+	}
+	if withParams != 1 || size > 12*300+6_000 {
+		t.Fatalf("%d rows hold the parameters, %d bytes in all", withParams, size)
+	}
+
+	// One user's read with a padded parameter, or many parameters.
+	id := strconv.FormatInt(f.orpheusID, 10)
+	var many strings.Builder
+	for i := range 500 {
+		fmt.Fprintf(&many, "&k%03d=%s", i, strings.Repeat("v", 40))
+	}
+	for _, target := range []string{
+		"/api/admin/v1/user/info?id=" + id + "&junk=" + strings.Repeat("j", 100_000),
+		"/api/admin/v1/user/info?id=" + id + many.String(),
+	} {
+		before := len(audit(t, f.st, "admin.read"))
+		f.expect(t, call{target: target}, http.StatusOK)
+		rows := audit(t, f.st, "admin.read")[before:]
+		b, err := json.Marshal(rows[0].Data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if p, _ := rows[0].Data["params"].(map[string]any); len(rows) != 1 || p["id"] != id || len(b) > 4096+512 ||
+			rows[0].Data["params_truncated"] != true {
+			t.Fatalf("%d rows, %d bytes: %s", len(rows), len(b), b[:min(len(b), 300)])
+		}
+	}
 }
