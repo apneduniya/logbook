@@ -634,6 +634,18 @@ func (q *Queries) OAuthDeleteExpiredRequests(ctx context.Context, expiresAt time
 	return result.RowsAffected(), nil
 }
 
+const oAuthFamilyLock = `-- name: OAuthFamilyLock :exec
+SELECT pg_advisory_xact_lock(1002, hashtext($1::uuid::text))
+`
+
+// Serialises issuing a token into a family with revoking the family, until
+// the transaction ends: a revocation that waited here then sees every token
+// the issuer added. 1002 namespaces the lock (ingest uses 1001).
+func (q *Queries) OAuthFamilyLock(ctx context.Context, familyID uuid.UUID) error {
+	_, err := q.db.Exec(ctx, oAuthFamilyLock, familyID)
+	return err
+}
+
 const oAuthGrantActive = `-- name: OAuthGrantActive :one
 SELECT user_id, app_id, scopes, created_at, updated_at, revoked_at FROM oauth_grants WHERE user_id = $1 AND app_id = $2 AND revoked_at IS NULL
 `
@@ -1036,20 +1048,21 @@ func (q *Queries) OAuthTokenInsert(ctx context.Context, arg OAuthTokenInsertPara
 }
 
 const oAuthTokenOwnerByRefresh = `-- name: OAuthTokenOwnerByRefresh :one
-SELECT app_id, user_id FROM oauth_tokens WHERE refresh_hash = $1
+SELECT app_id, user_id, family_id FROM oauth_tokens WHERE refresh_hash = $1
 `
 
 type OAuthTokenOwnerByRefreshRow struct {
-	AppID  uuid.UUID
-	UserID pgtype.UUID
+	AppID    uuid.UUID
+	UserID   pgtype.UUID
+	FamilyID uuid.UUID
 }
 
-// The app and user of a refresh token, read without a lock so the grant can
-// be locked before the token.
+// The app, user and family of a refresh token, read without a lock so the
+// grant and the family can be locked before the token.
 func (q *Queries) OAuthTokenOwnerByRefresh(ctx context.Context, refreshHash []byte) (OAuthTokenOwnerByRefreshRow, error) {
 	row := q.db.QueryRow(ctx, oAuthTokenOwnerByRefresh, refreshHash)
 	var i OAuthTokenOwnerByRefreshRow
-	err := row.Scan(&i.AppID, &i.UserID)
+	err := row.Scan(&i.AppID, &i.UserID, &i.FamilyID)
 	return i, err
 }
 

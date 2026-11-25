@@ -205,9 +205,15 @@ WHERE t.access_hash = sqlc.arg(access_hash) AND t.revoked_at IS NULL
   AND t.expires_at > sqlc.arg(now)::timestamptz;
 
 -- name: OAuthTokenOwnerByRefresh :one
--- The app and user of a refresh token, read without a lock so the grant can
--- be locked before the token.
-SELECT app_id, user_id FROM oauth_tokens WHERE refresh_hash = $1;
+-- The app, user and family of a refresh token, read without a lock so the
+-- grant and the family can be locked before the token.
+SELECT app_id, user_id, family_id FROM oauth_tokens WHERE refresh_hash = $1;
+
+-- name: OAuthFamilyLock :exec
+-- Serialises issuing a token into a family with revoking the family, until
+-- the transaction ends: a revocation that waited here then sees every token
+-- the issuer added. 1002 namespaces the lock (ingest uses 1001).
+SELECT pg_advisory_xact_lock(1002, hashtext(sqlc.arg(family_id)::uuid::text));
 
 -- name: OAuthTokenByRefreshForUpdate :one
 SELECT * FROM oauth_tokens WHERE refresh_hash = $1 FOR UPDATE;

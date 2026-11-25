@@ -172,6 +172,10 @@ type Querier interface {
 	OAuthDeleteDeadTokens(ctx context.Context, before time.Time) (int64, error)
 	OAuthDeleteExpiredCodes(ctx context.Context, expiresAt time.Time) (int64, error)
 	OAuthDeleteExpiredRequests(ctx context.Context, expiresAt time.Time) (int64, error)
+	// Serialises issuing a token into a family with revoking the family, until
+	// the transaction ends: a revocation that waited here then sees every token
+	// the issuer added. 1002 namespaces the lock (ingest uses 1001).
+	OAuthFamilyLock(ctx context.Context, familyID uuid.UUID) error
 	OAuthGrantActive(ctx context.Context, arg OAuthGrantActiveParams) (OauthGrant, error)
 	// Locks the grant against revocation (whose UPDATE waits on it) while a
 	// token is issued from it, without blocking other readers or refreshes.
@@ -194,8 +198,8 @@ type Querier interface {
 	OAuthTokenByAccess(ctx context.Context, arg OAuthTokenByAccessParams) (OAuthTokenByAccessRow, error)
 	OAuthTokenByRefreshForUpdate(ctx context.Context, refreshHash []byte) (OauthToken, error)
 	OAuthTokenInsert(ctx context.Context, arg OAuthTokenInsertParams) (uuid.UUID, error)
-	// The app and user of a refresh token, read without a lock so the grant can
-	// be locked before the token.
+	// The app, user and family of a refresh token, read without a lock so the
+	// grant and the family can be locked before the token.
 	OAuthTokenOwnerByRefresh(ctx context.Context, refreshHash []byte) (OAuthTokenOwnerByRefreshRow, error)
 	OAuthTokenRevoke(ctx context.Context, arg OAuthTokenRevokeParams) error
 	// Revokes the app's token whose access or refresh token hashes to hash.

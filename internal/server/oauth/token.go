@@ -149,6 +149,9 @@ func (s *Service) exchangeCode(ctx context.Context, app db.OAuthAppByIDRow, req 
 		if err != nil {
 			return fmt.Errorf("reading code: %w", err)
 		}
+		if err := q.OAuthFamilyLock(ctx, c.FamilyID); err != nil {
+			return fmt.Errorf("locking token family: %w", err)
+		}
 		if c.UsedAt != nil {
 			failure = errBadCode
 			return s.revokeFamily(ctx, q, c.FamilyID, c.UserID, app.ID, "code_reuse")
@@ -219,6 +222,13 @@ func grantCovers(ctx context.Context, q *db.Queries, user, appID uuid.UUID, scop
 // RevokeGrant and app deletion take them. A revocation in flight therefore
 // either commits first, and the refresh sees the grant revoked, or waits for
 // the refresh to commit, and its token UPDATE then sees the new pair.
+//
+// Between the two, the token's family is locked (OAuthFamilyLock), which
+// every issuance into a family and every family revocation takes. Refreshes
+// share the grant lock, so without it a replay of an old refresh token could
+// revoke the family with a snapshot taken before a concurrent refresh added
+// its new pair, and that pair would survive. The family lock is always taken
+// before any token row, so it can't deadlock with the row locks.
 func (s *Service) refresh(ctx context.Context, app db.OAuthAppByIDRow, req TokenRequest) (TokenResponse, error) {
 	if req.RefreshToken == "" {
 		return TokenResponse{}, tokenErr("invalid_request", "refresh_token is required")
@@ -241,6 +251,9 @@ func (s *Service) refresh(ctx context.Context, app db.OAuthAppByIDRow, req Token
 		grant, active, err := lockGrant(ctx, q, user, app.ID)
 		if err != nil {
 			return err
+		}
+		if err := q.OAuthFamilyLock(ctx, owner.FamilyID); err != nil {
+			return fmt.Errorf("locking token family: %w", err)
 		}
 		now := s.now()
 		t, err := q.OAuthTokenByRefreshForUpdate(ctx, hash(req.RefreshToken))
@@ -346,7 +359,9 @@ func (s *Service) issueTokens(ctx context.Context, q *db.Queries, appID, user uu
 
 // revokeFamily revokes every token from one authorization code after a
 // replay, and audits it as oauth.revoke when that revoked anything (a code
-// burned by a revoked grant has nothing left to revoke).
+// burned by a revoked grant has nothing left to revoke). The caller holds
+// the family lock (OAuthFamilyLock), so no token joins the family after
+// this UPDATE's snapshot.
 func (s *Service) revokeFamily(ctx context.Context, q *db.Queries, family, user, appID uuid.UUID, reason string) error {
 	n, err := q.OAuthTokensRevokeFamily(ctx, db.OAuthTokensRevokeFamilyParams{RevokedAt: s.now(), FamilyID: family})
 	if err != nil {
