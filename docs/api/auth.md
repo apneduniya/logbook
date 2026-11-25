@@ -29,7 +29,7 @@ For paths under `/api/` the API answers CORS for exactly the web origin:
 - Preflight (`OPTIONS` with `Access-Control-Request-Method`): `204` with `Access-Control-Allow-Origin: <web origin>`, `Access-Control-Allow-Credentials: true`, `Access-Control-Allow-Methods: GET, POST, PATCH, DELETE`, `Access-Control-Allow-Headers: Content-Type, X-CSRF-Token` and `Access-Control-Max-Age: 600`. Any other origin, method or header gets `403`.
 - Actual requests from the web origin get `Access-Control-Allow-Origin`, `Access-Control-Allow-Credentials: true` and `Access-Control-Expose-Headers: Retry-After, X-Request-Id`. Requests from other origins are served without CORS headers, so the browser hides the response from the page.
 - Every `/api/` response carries `Vary: Origin`.
-- There is no CORS on `/auth/*`, `/oauth/*` (the OAuth provider's authorize, token and revoke endpoints; programs call the last two from their servers), `/healthz`, heartbeat ingest (`/api/v1/users/current/heartbeats*`, `/api/v1/users/current/statusbar/*`, `/api/hackatime/*`) or the agent's device endpoints (`/api/v1/devices*`). Browsers never call them cross-origin.
+- There is no CORS on `/auth/*`, `/oauth/*` (the OAuth provider's authorize, token and revoke endpoints; programs call the last two from their servers), `/healthz`, heartbeat ingest (`/api/v1/users/current/heartbeats*`, `/api/v1/users/current/statusbar/*`, `/api/hackatime/*`) the agent's device endpoints (`/api/v1/devices*`) or the program API (`/api/v1/authenticated/*`, `/api/v1/my/*`, and `/api/v1/users/{id}/stats`, `trust_factor`, `heartbeats/*`, `projects*`, `project/*`; [programs.md](programs.md#the-program-api)). Browsers never call them cross-origin. The list lives in `internal/server/router` (`corsSkip`); an entry like `/api/v1/users/{id}/stats` matches whole path segments, so `/api/v1/users/{username}/profile` and `/live` keep CORS.
 - CSRF protection is unchanged: state-changing session requests still need `X-CSRF-Token`, which a page on another origin can't send without passing CORS.
 
 ## Browser sign-in (HCA)
@@ -197,8 +197,8 @@ Three kinds of credential reach the API, and each is accepted only by its own mi
 |---|---|---|
 | `logbook_session` cookie (+ `X-CSRF-Token` on writes) | `RequireSession`, `OptionalSession` (web UI routes, `/api/v1/me/*`, consent) | API-key and OAuth routes |
 | API key (UUID) | `RequireAPIKey` (ingest, agent) | session routes, OAuth routes (`RequireScope`) |
-| OAuth access token (`lbo_…`, programs.md) | `oauth.RequireScope` / `OptionalScope` (program API) | session routes, API-key routes |
+| OAuth access token (`lbo_…`, programs.md) | the program API (`authenticated/*`, `users/{id}/*`, `my/heartbeats`, through `router.ProgramCredentials`); `oauth.RequireScope` / `OptionalScope` (Logbook's own bearer routes) | session routes, API-key routes |
 
-`httpapi.CurrentUser.Via` is `session`, `api_key` or `oauth` accordingly. An OAuth token never matches the API-key format, and session middleware reads only the cookie, so a token sent to the wrong kind of route is `401`. Tests in `internal/server/oauth` (`TestCredentialsDontCross`) pin this with the real middleware.
+`httpapi.CurrentUser.Via` is `session`, `api_key` or `oauth` accordingly. An OAuth token never matches the API-key format, and session middleware reads only the cookie, so a token sent to the wrong kind of route is `401`. Tests in `internal/server/oauth` (`TestCredentialsDontCross`) pin this with the real middleware, and `internal/server/router` (`TestCredentialsWorkOnlyWhereDocumented`) on the real routes.
 
 The program API also takes a user API key where Hackatime takes its own: `users/{id}/*` (`Bearer` only) and `my/heartbeats` (`Bearer` or `Basic base64(key)`). It looks keys up through `auth.Service.APIKeyOwner` and applies its own rate limit (see [programs.md](programs.md#the-program-api)); `authenticated/*` never accepts an API key.

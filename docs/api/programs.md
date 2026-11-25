@@ -99,11 +99,18 @@ Session; `DELETE` needs CSRF. Browser endpoints with the usual `/api/` CORS.
 
 ### Bearer tokens
 
-Program API calls send `Authorization: Bearer lbo_…` (the only form accepted, as Doorkeeper's `from_bearer_authorization`). A missing or invalid token (unknown, expired, revoked, or of a deleted app) is `401` with `WWW-Authenticate: Bearer realm="logbook", error="invalid_token"`; a token without the endpoint's scope is `403` with `error="insufficient_scope"`. Both carry a JSON `{"error": "…"}` body. Sessions, user API keys, refresh tokens and client secrets are never accepted, and OAuth tokens are never accepted by session or API-key endpoints. A client-credentials token only ever passes `submissions`.
+An access token is sent as `Authorization: Bearer lbo_…` (the only form accepted, as Doorkeeper's `from_bearer_authorization`; never in the query string). Refresh tokens and client secrets are never accepted as one, and OAuth tokens are never accepted by session or API-key endpoints (the web UI's `/api/v1/me/*`, ingest, the agent's routes): those answer `401`.
+
+- **The program API** (below) answers in Hackatime's shapes: on `authenticated/*` a missing or invalid token (unknown, expired, revoked, of a revoked grant, or of a deleted app) is `401` and a token without the call's scope `403`, both with an empty body and Doorkeeper's `WWW-Authenticate: Bearer realm="Doorkeeper", error="invalid_token"` (or `"insufficient_scope"`); on `users/{id}/*` a token that doesn't verify or lacks `read` is ignored. A client-credentials token has no user, so the program API treats it as invalid: `401` on `authenticated/*` and `my/heartbeats`, anonymous on `users/{id}/*`.
+- **Logbook's own bearer endpoints** (the program's submission calls, a later step) use `oauth.RequireScope`: `401` with `WWW-Authenticate: Bearer realm="logbook", error="invalid_token"`, or `403` with `error="insufficient_scope"`, each with a JSON `{"error": "…"}` body. A client-credentials token only ever passes `submissions`.
+
+The server (`internal/server/router`) hands the program API an adapter over `oauth.Service.AuthenticateBearer` and `auth.Service.APIKeyOwner`; `internal/server/router/e2e_test.go` runs the whole flow (register, consent, exchange, read, revoke, client credentials) on the real handler.
 
 ## The program API
 
-Bearer token from OAuth, or none where marked public. Package `internal/server/programapi`; the server injects an `Authenticator` that resolves OAuth access tokens (package `oauth`) and user API keys (package `auth`).
+Bearer token from OAuth, or none where marked public. Package `internal/server/programapi`; the server (`internal/server/router`) injects an `Authenticator` that resolves OAuth access tokens a user granted (package `oauth`; client-credentials tokens resolve to nothing) and user API keys (package `auth`).
+
+**No CORS.** Programs call this API from their servers, and Hackatime's open CORS is not carried over: `authenticated/*`, `my/*` and the `users/{id}/` calls below (`stats`, `trust_factor`, `heartbeats/*`, `projects*`, `project/*`) answer no CORS, preflights included, so a browser page on any origin, ours included, can't read them. The web UI's own `users/{username}/profile` and `/live` keep CORS for the web origin (auth.md).
 
 **Credentials, per call, as on Hackatime:**
 - `authenticated/*` (Doorkeeper): only `Authorization: Bearer <access token>`. No token, an unknown, expired or revoked one, or an API key: `401` with an empty body and `WWW-Authenticate: Bearer realm="Doorkeeper", error="invalid_token", …`. A token without the call's scope: `403`, empty body, `error="insufficient_scope"`. A token in the query string isn't read.
