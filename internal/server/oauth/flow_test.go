@@ -492,3 +492,34 @@ func TestConsentRequestBelongsToOneUser(t *testing.T) {
 		t.Fatalf("missing approve = %d", rec.Code)
 	}
 }
+
+// TestConsentAfterRedirectURIRemoved: once the owner deregisters the
+// redirect URI a pending request names, neither the consent page nor the
+// decision (approve or deny) sends the browser there.
+func TestConsentAfterRedirectURIRemoved(t *testing.T) {
+	e := newEnv(t)
+	owner, alice := e.user("owner"), e.user("alice")
+	app := e.createApp(owner, "stardance")
+	approveID := consentID(t, e.authorize(alice, authParams(app, "profile")))
+	denyID := consentID(t, e.authorize(alice, authParams(app, "profile read")))
+
+	if rec := e.do(http.MethodPatch, "/api/v1/me/apps/"+app.ID, owner,
+		mustJSON(map[string]any{"redirect_uris": []string{devCallback}})); rec.Code != http.StatusOK {
+		t.Fatalf("patch = %d %s", rec.Code, rec.Body)
+	}
+	if rec := e.do(http.MethodGet, "/api/v1/oauth/requests/"+approveID, alice, ""); rec.Code != http.StatusNotFound {
+		t.Errorf("consent request = %d %s, want 404", rec.Code, rec.Body)
+	}
+	for id, approve := range map[string]bool{approveID: true, denyID: false} {
+		rec := e.do(http.MethodPost, "/api/v1/oauth/requests/"+id, alice, mustJSON(map[string]bool{"approve": approve}))
+		if rec.Code != http.StatusNotFound || strings.Contains(rec.Body.String(), "program.test") {
+			t.Errorf("decide approve=%v = %d %s, want 404", approve, rec.Code, rec.Body)
+		}
+	}
+	if n := e.count(`SELECT count(*)::int FROM oauth_codes`); n != 0 {
+		t.Errorf("%d codes issued for a deregistered redirect URI", n)
+	}
+	if n := e.count(`SELECT count(*)::int FROM oauth_grants`); n != 0 {
+		t.Errorf("%d grants recorded for a deregistered redirect URI", n)
+	}
+}

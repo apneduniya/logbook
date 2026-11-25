@@ -219,7 +219,8 @@ func requestHash(id string) ([]byte, bool) {
 
 // ConsentRequest returns a pending request for user, binding it to user if
 // nobody has opened it yet. Unknown, expired and other users' requests are
-// all ErrNotFound.
+// all ErrNotFound, as is one whose app was deleted or no longer registers
+// its redirect URI.
 func (s *Service) ConsentRequest(ctx context.Context, user uuid.UUID, id string) (ConsentRequest, error) {
 	h, ok := requestHash(id)
 	if !ok {
@@ -233,8 +234,8 @@ func (s *Service) ConsentRequest(ctx context.Context, user uuid.UUID, id string)
 		return ConsentRequest{}, fmt.Errorf("reading consent request: %w", err)
 	}
 	app, err := s.st.OAuthAppByID(ctx, r.AppID)
-	if store.IsNotFound(err) {
-		return ConsentRequest{}, ErrNotFound
+	if store.IsNotFound(err) || (err == nil && !slices.Contains(app.RedirectUris, r.RedirectUri)) {
+		return ConsentRequest{}, ErrNotFound // app deleted or redirect URI deregistered since
 	}
 	if err != nil {
 		return ConsentRequest{}, fmt.Errorf("reading app: %w", err)
@@ -262,7 +263,8 @@ func (s *Service) ConsentRequest(ctx context.Context, user uuid.UUID, id string)
 
 // Decide approves or denies a pending request for user and returns the
 // redirect URI to send the browser to: with a code, or with
-// error=access_denied. A request can be decided once. Approval records the
+// error=access_denied. A request can be decided once. ErrNotFound when the
+// app was deleted or no longer registers the request's redirect URI. Approval records the
 // grant (scopes add to any the user granted the app before) and is audited
 // oauth.grant.
 func (s *Service) Decide(ctx context.Context, user uuid.UUID, id string, approve bool) (string, error) {
@@ -279,10 +281,13 @@ func (s *Service) Decide(ctx context.Context, user uuid.UUID, id string, approve
 		if err != nil {
 			return fmt.Errorf("consuming consent request: %w", err)
 		}
-		if _, err := q.OAuthAppByID(ctx, r.AppID); err != nil {
-			if store.IsNotFound(err) {
-				return ErrNotFound
-			}
+		// The app must still exist and still register the redirect URI:
+		// the browser is never sent to a URI we can't verify.
+		app, err := q.OAuthAppByID(ctx, r.AppID)
+		if store.IsNotFound(err) || (err == nil && !slices.Contains(app.RedirectUris, r.RedirectUri)) {
+			return ErrNotFound
+		}
+		if err != nil {
 			return fmt.Errorf("reading app: %w", err)
 		}
 		if !approve {
