@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/apneduniya/logbook/internal/server/store"
 	"github.com/apneduniya/logbook/internal/server/store/seedtest"
 	"github.com/apneduniya/logbook/internal/server/store/storetest"
 	"github.com/apneduniya/logbook/pkg/submission"
@@ -32,7 +33,6 @@ func TestCapMatchesTheView(t *testing.T) {
 		t.Fatal(err)
 	}
 	st := storetest.New(t)
-	ctx := context.Background()
 	for i, tt := range cases {
 		t.Run(tt.Name, func(t *testing.T) {
 			user := seedtest.User(t, st, fmt.Sprintf("cap%d", i), "UTC", true)
@@ -48,22 +48,8 @@ func TestCapMatchesTheView(t *testing.T) {
 				seedtest.CreditedSpan(t, st, user, devices[in.DeviceID], in.Minute, 1,
 					seedtest.Credited{Project: in.Project, Label: label, Seconds: int16(in.Credited)}) //nolint:gosec // 0..60
 			}
-			rows, err := st.Pool.Query(ctx,
-				`SELECT minute, project, seconds FROM credited_project_minutes WHERE user_id = $1 ORDER BY minute, project`, user)
+			view, err := capView(context.Background(), st, user)
 			if err != nil {
-				t.Fatal(err)
-			}
-			defer rows.Close()
-			var view []submission.CappedProject
-			for rows.Next() {
-				var c submission.CappedProject
-				if err := rows.Scan(&c.Minute, &c.Project, &c.Seconds); err != nil {
-					t.Fatal(err)
-				}
-				c.Minute = c.Minute.UTC()
-				view = append(view, c)
-			}
-			if err := rows.Err(); err != nil {
 				t.Fatal(err)
 			}
 			got := submission.Cap(tt.Inputs)
@@ -72,4 +58,24 @@ func TestCapMatchesTheView(t *testing.T) {
 			}
 		})
 	}
+}
+
+// capView reads the user's rows of credited_project_minutes.
+func capView(ctx context.Context, st *store.Store, user uuid.UUID) ([]submission.CappedProject, error) {
+	rows, err := st.Pool.Query(ctx,
+		`SELECT minute, project, seconds FROM credited_project_minutes WHERE user_id = $1 ORDER BY minute, project`, user)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var view []submission.CappedProject
+	for rows.Next() {
+		var c submission.CappedProject
+		if err := rows.Scan(&c.Minute, &c.Project, &c.Seconds); err != nil {
+			return nil, err
+		}
+		c.Minute = c.Minute.UTC()
+		view = append(view, c)
+	}
+	return view, rows.Err()
 }
