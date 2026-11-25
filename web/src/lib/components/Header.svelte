@@ -1,7 +1,10 @@
 <!--
   The signed-in header: wordmark, section tabs (active one an inverted block),
-  the agent's state, and the account menu. On phones the tabs wrap to their
-  own row and the account button shows only the identicon.
+  the agent's state, and the account menu. The tabs are the work (Today,
+  Projects, then Submissions, which are made from projects), then the
+  person's own Profile and Settings. On phones the tabs wrap to their own
+  row, the Profile tab steps aside unless it is the open page (the account
+  menu has it), and the account button shows only the identicon.
 -->
 <script lang="ts">
 	import { resolve } from '$app/paths';
@@ -24,9 +27,16 @@
 			match: (p: string) => p.startsWith('/projects')
 		},
 		{
+			href: resolve('/submissions'),
+			label: 'Submissions',
+			match: (p: string) => p.startsWith('/submissions')
+		},
+		{
 			href: resolve('/u/[username]', { username: encodeURIComponent(user.username) }),
 			label: 'Profile',
-			match: (p: string) => p === `/u/${user.username}`
+			match: (p: string) => p === `/u/${user.username}`,
+			// Five tabs don't fit a phone's row; the account menu links the profile.
+			wide: true
 		},
 		{
 			href: resolve('/settings'),
@@ -67,7 +77,13 @@
 	<a class="mark px" href={resolve('/')} aria-label="Logbook, today">LOGBOOK</a>
 	<nav class="tabs px" aria-label="Sections">
 		{#each tabs as t (t.href)}
-			<a class="tab" href={t.href} aria-current={t.match(page.url.pathname) ? 'page' : undefined}>
+			{@const current = t.match(page.url.pathname)}
+			<a
+				class="tab"
+				class:wide={'wide' in t && !current}
+				href={t.href}
+				aria-current={current ? 'page' : undefined}
+			>
 				{t.label}
 			</a>
 		{/each}
@@ -220,8 +236,10 @@
 			overflow-x: auto;
 		}
 		.tab {
-			padding-top: 10px;
-			padding-bottom: 10px;
+			padding: 10px 8px;
+		}
+		.tab.wide {
+			display: none;
 		}
 		.who,
 		.acct svg:last-child {
