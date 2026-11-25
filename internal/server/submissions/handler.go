@@ -44,12 +44,18 @@ type HandlerOptions struct {
 	RequireSubmissionsScope httpapi.Middleware
 	// ClientKey keys the review link's per-client limit.
 	ClientKey func(*http.Request) string
+	// UploadSlots is how many upload bodies are decoded at once (default
+	// 2), and UploadWait how long a body waits for a slot (default a
+	// minute) before it is refused with 503.
+	UploadSlots int
+	UploadWait  time.Duration
 }
 
 // Handler serves the submission routes.
 type Handler struct {
-	svc  *Service
-	opts HandlerOptions
+	svc     *Service
+	opts    HandlerOptions
+	uploads *uploadGate
 
 	uploadLimit, planLimit, reviewLimit, decisionLimit, programLimit httpapi.Middleware
 }
@@ -60,7 +66,7 @@ func NewHandler(svc *Service, opts HandlerOptions) *Handler {
 		return httpapi.NewRateLimiter(float64(burst)/per.Seconds(), burst, limiterMaxKeys, limiterIdleTTL)
 	}
 	return &Handler{
-		svc: svc, opts: opts,
+		svc: svc, opts: opts, uploads: newUploadGate(opts.UploadSlots, opts.UploadWait),
 		uploadLimit:   limiter(uploadBurst, time.Hour).Middleware(httpapi.UserKey),
 		planLimit:     limiter(planBurst, time.Minute).Middleware(httpapi.UserKey),
 		reviewLimit:   limiter(reviewBurst, time.Minute).Middleware(opts.ClientKey),
@@ -152,13 +158,17 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	var up submission.Upload
-	if err := decodeGzipJSON(w, r, h.svc.maxGzip, h.svc.maxJSON, &up); err != nil {
-		return err
-	}
-	out, err := h.svc.Create(r.Context(), user, up)
-	if err != nil {
+	var out Accepted
+	err = h.upload(w, r, user, func(body []byte) error {
+		var up submission.Upload
+		if err := decodeGzipJSON(body, h.svc.maxJSON, &up); err != nil {
+			return err
+		}
+		out, err = h.svc.Create(r.Context(), user, up)
 		return mapError(err)
+	})
+	if err != nil {
+		return err
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	httpapi.WriteJSON(w, http.StatusAccepted, out)
@@ -174,16 +184,41 @@ func (h *Handler) addPart(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	var part submission.Part
-	if err := decodeGzipJSON(w, r, h.svc.maxGzip, h.svc.maxJSON, &part); err != nil {
-		return err
-	}
-	out, err := h.svc.AddPart(r.Context(), user, id, part)
-	if err != nil {
+	var out Accepted
+	err = h.upload(w, r, user, func(body []byte) error {
+		var part submission.Part
+		if err := decodeGzipJSON(body, h.svc.maxJSON, &part); err != nil {
+			return err
+		}
+		out, err = h.svc.AddPart(r.Context(), user, id, part)
 		return mapError(err)
+	})
+	if err != nil {
+		return err
 	}
 	httpapi.WriteJSON(w, http.StatusAccepted, out)
 	return nil
+}
+
+// upload runs fn on an upload's compressed body within the gate: one
+// upload per user at a time, the body read in full, then fn (decoding and
+// storing it) once a decode slot is free.
+func (h *Handler) upload(w http.ResponseWriter, r *http.Request, user uuid.UUID, fn func(body []byte) error) error {
+	leave, err := h.uploads.enter(w, user)
+	if err != nil {
+		return err
+	}
+	defer leave()
+	body, err := readGzipBody(w, r, h.svc.maxGzip)
+	if err != nil {
+		return err
+	}
+	release, err := h.uploads.slot(r.Context(), w)
+	if err != nil {
+		return err
+	}
+	defer release()
+	return fn(body)
 }
 
 func (h *Handler) mine(w http.ResponseWriter, r *http.Request) error {
