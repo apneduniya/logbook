@@ -154,6 +154,8 @@ Per-writer segment files were rejected: they would also avoid the rename conflic
 | `logbook login --key <key>\|- [--server <url>]` | Reads the key (from stdin with `-`, keeping it out of shell history), checks it with `GET /api/v1/users/current/statusbar/today`, and only then saves it, creating the config with `config.Default()` if needed. Other config fields are kept. Never prints the key. If `.wakatime.cfg` points at the agent but still holds a different key, says to run `logbook install` (the local API would answer editors 401 until then). |
 | `logbook status [--json]` | Asks the daemon; if it's down, reads the database directly. |
 | `logbook doctor [--json]` | Checks config, key validity (server), clock skew against the server's `Date` header (warns above 2 min), whether the daemon answers, whether `~/.wakatime.cfg` (or `$WAKATIME_HOME/.wakatime.cfg`) has `api_url` pointing at the agent (`http://127.0.0.1:<port>/api/v1` or `/api/hackatime/v1`, after stripping a trailing slash and legacy endpoint suffixes the way wakatime-cli does) and the same `api_key`, queue health (re-login needed, dropped rows, items older than 1 h) and the spool size. Prints a fix for every problem and exits 1 if any check fails. |
+| `logbook submit <project> --from D1 --to D2 [...]` | Builds this device's evidence part for a project's minutes, shows what it reveals, and uploads it after confirmation. See [submit.md](submit.md). |
+| `logbook verify <bundle>` | Checks a submission's verification bundle offline with `pkg/` code only; exits 1 if any check fails. See [submit.md](submit.md#logbook-verify). |
 
 ## OS-specific notes
 

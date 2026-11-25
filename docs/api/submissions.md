@@ -91,6 +91,12 @@ Auth: API key. `Content-Encoding: gzip` required; at most 32 MiB compressed and 
 
 Auth: API key. Same body as `part` above, from another device of the same user. Re-runs the check for the whole submission. `409` once a decision exists or when that device already has a part.
 
+The agent (`logbook submit … --add <id>`) accepts `200`, `201`, `202` or `204`, with the body of `POST /api/v1/submissions` or none, and sends the same `Content-Encoding: gzip` and size limits.
+
+## The agent's side
+
+[docs/agent/submit.md](../agent/submit.md) settles what `logbook submit` and `logbook verify` do with these endpoints: the agent lists in its part only minutes whose rows share one key whose window holds the minute and that `crediting.BuildProofs` backs (so a part it builds never fails the submission), prints which other projects' rows and repo folders the part reveals before asking, refuses a range ending today, and maps `401`/`403`/`400`/`404`/`409`/`413`/`429` to plain messages. It never retries an upload by itself.
+
 ## `GET /api/v1/me/submissions`
 
 Auth: session. The user's submissions, newest first: `id`, `project`, `from`, `to`, `program` (`{slug, name}` or `null`), `status`, `counted_seconds`, `raw_seconds`, `minutes` (`{verified, mismatch, unbacked}`), `decision`, `review_url`, `created_at`.
