@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"runtime/debug"
+	"strings"
 	"time"
 )
 
@@ -45,16 +46,31 @@ func (s *statusRecorder) WriteHeader(code int) {
 func (s *statusRecorder) Unwrap() http.ResponseWriter { return s.ResponseWriter }
 
 // Logger logs one line per request. It never logs query strings, bodies or
-// headers, which may carry API keys.
+// headers, which may carry API keys, nor a path whose route pattern has a
+// {token} segment (a review link's token is its credential): such a path is
+// logged as its pattern.
 func Logger(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(rec, r)
 		slog.InfoContext(r.Context(), "http",
-			"method", r.Method, "path", r.URL.Path, "status", rec.status,
+			"method", r.Method, "path", loggedPath(r), "status", rec.status,
 			"dur_ms", time.Since(start).Milliseconds(), "req_id", RequestIDFrom(r.Context()))
 	})
+}
+
+// loggedPath is the request's path, or the path of its route pattern when
+// the pattern names a {token}. ServeMux sets r.Pattern on the request it
+// routes, which is the one Logger passed on.
+func loggedPath(r *http.Request) string {
+	if strings.Contains(r.Pattern, "{token}") {
+		if _, path, ok := strings.Cut(r.Pattern, " "); ok {
+			return path
+		}
+		return r.Pattern
+	}
+	return r.URL.Path
 }
 
 // Recover turns panics into 500 responses and logs the stack.
