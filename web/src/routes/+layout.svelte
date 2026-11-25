@@ -1,5 +1,6 @@
 <script lang="ts">
 	import './layout.css';
+	import { page } from '$app/state';
 	import { app } from '#lib/app.svelte.ts';
 	import { ago } from '#lib/format.ts';
 	import Header from '#lib/components/Header.svelte';
@@ -12,6 +13,8 @@
 	$effect(() => app.startLive());
 
 	const lastSeen = $derived(app.agentLastSeen);
+	// The consent page shows only the wordmark, so the choice is all there is.
+	const bare = $derived(page.route.id === '/oauth/authorize');
 </script>
 
 <svelte:head>
@@ -25,7 +28,9 @@
 <a class="skip" href="#main">Skip to content</a>
 
 <div class="wrap">
-	{#if app.session}
+	{#if bare}
+		<PublicHeader bare />
+	{:else if app.session}
 		<Header>
 			{#snippet status()}
 				{#if app.live}

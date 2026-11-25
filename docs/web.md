@@ -37,8 +37,10 @@ The browser app at `https://logbook.boogles.dev`. Code: `web/`. Design: the B3 "
 | `/settings` | user | Profile (display name, time zone, public or private); API keys; devices; Hackatime link; apps with access; admin keys (admins only); sign out | session, profile, api_keys, devices, hackatime, grants, admin_keys |
 | `/submissions` | user | Their submissions: project, dates, program, status, counted hours, evidence counts, decision; copy the review link; withdraw before a decision. On a project page, "Submit these hours" shows the one command to run (`logbook submit …`) with the dates filled in | `GET /api/v1/me/submissions`, `DELETE` |
 | `/r/[token]` | anyone with the link | The review page (ADR 0020, "Review page" below): headline counts against time at the keyboard and the one-third rule; the evidence line; what the hours are made of; cuts and flags with reasons; one strip per day with commits; AI sessions; what didn't verify; trust; the justification text with a copy button; the decision. Program members also get approve / adjust / reject. `noindex` | `GET /api/v1/review/{token}`, `POST …/decision`, `GET /api/v1/me/apps` (signed in) |
-| `/apps`, `/apps/[id]` | user | Programs: register an app (client id, secret shown once, redirect URIs, public or not), rotate the secret, add reviewers; the program's submission inbox for members | `/api/v1/me/apps…` |
-| `/oauth/authorize` | user | Consent: the app, its owner, what each scope lets it read; Allow / Deny | `GET`/`POST /api/v1/oauth/requests/{id}` |
+| `/apps` | user | The apps they own or review for, each with how many submissions wait for review; "Register an app". Linked from the account menu | `GET /api/v1/me/apps`, `GET …/{id}/submissions?status=ready&decision=none` per app |
+| `/apps/new` | user | Register an app: name, slug, homepage, redirect URIs (1–5), takes submissions or not, confidential or public client | `POST /api/v1/me/apps` |
+| `/apps/[id]` | members | The app as a record ("Apps" below): facts, credentials (client id, the secret shown once after register or rotate), the inbox, reviewers; owners also edit, rotate, add and remove reviewers, and delete | `GET`/`PATCH`/`DELETE /api/v1/me/apps/{id}`, `POST …/secret`, `…/members`, `…/submissions` |
+| `/oauth/authorize` | user | Consent ("Consent" below): the app, its owner, what each scope lets it read, where you go back to; Allow / Deny. `noindex` | `GET`/`POST /api/v1/oauth/requests/{id}` |
 
 **Leaving out what the API can't back.** The B3 mock had a "longest run", a programs panel and the dates of the best streak.
 - The API has no endpoint for the first or the last, so those are dropped.
@@ -62,6 +64,31 @@ The browser app at `https://logbook.boogles.dev`. Code: `web/`. Design: the B3 "
 - **Phones:** one column. For members the decision moves up under the hours.
 - **The token is never printed.** It isn't in the title or any link the page renders. The justification is copied in full but shown with its link masked (`/r/AbCd••••`). The page sets `<meta name="robots" content="noindex">` and `<meta name="referrer" content="no-referrer">`, and `static/_headers` sends `X-Robots-Tag: noindex` and `Referrer-Policy: no-referrer` for `/r/*`. Commit links go to GitHub only, checked again in the browser.
 - **Sign-in from a review link** passes `/r/<token>` as `next` to `/auth/login`. That is first-party (the API stores it with the login state and logs paths without query strings), and it's the only way back to the link after signing in.
+
+## Apps
+
+An app is also a program (docs/api/programs.md). `/apps/[id]` is a record page, after Linear's app page: what the app is, apart from how it authenticates.
+
+- **Layout:** the title line (the slug's identicon, the name, who made it and your role), then FACTS (slug, homepage, redirect URIs, whether it takes submissions, client type) beside CREDENTIALS on the 8/4 grid, the INBOX across the page, and REVIEWERS with the owner's DELETE APP under it. On phones it is one column; reviewers get the inbox first, because it is what they come for.
+- **Owner-only actions are hidden** for reviewers, not disabled: Edit, Rotate secret, adding and removing reviewers, Delete app. The API refuses them anyway (`403`).
+- **The form** (register and edit) uses the Settings `.row` layout. The slug follows the name until it is typed by hand, and its hint shows the `logbook submit … --program <slug>` it makes. Redirect URIs are 1–5 fields with "Add another"; blank fields are dropped. Fields are checked on submit and once left, with the API's rules (`#lib/apps.ts`, unit-tested): `https://`, or `http://` only on `localhost` and `127.0.0.1`, no user info, fragment or spaces. The server's answers get plain sentences (a taken slug goes under the slug field). Slug and client type can't change after register, so the edit form leaves them out.
+- **The client secret** is shown once, masked until "Show" (`CopyField`), right after register or rotate, with "Copy it now. Logbook keeps only a hash, so it can't be shown again." The register page hands it to the app's page in memory (`#lib/secret.ts`): the first read takes it, so a reload or a later visit shows only "Set <date> UTC". Rotate, Remove and Delete ask once inline (`ConfirmButton`).
+- **The inbox** lists `SubmissionRow`s with the submitter column. A `Segmented` filter picks To review (ready with no decision yet; the default), Verifying, Approved, Adjusted, Rejected or All, 100 at a time with "Show 100 more". Each row opens its review page; "Copy link" copies the review link for the program's tracker, which is never printed. It loads by itself, so a filter change doesn't reload the page, and it has loading, empty (per filter) and error states.
+- **Navigation:** the header's account menu has "Apps". It isn't a tab, because most people never make one.
+- Loads depend on `logbook:apps` (`APPS` in `#lib/apps.ts`), not `ME`, so live minute events don't reset a form being typed.
+
+## Consent
+
+`/oauth/authorize` is where the API's `GET /oauth/authorize` sends the browser. The page has only the wordmark in its header (`PublicHeader bare`), signed in or not, so the choice is the only thing on it.
+
+- **The sheet** (about 520 px, centred): the app's identicon → yours, "**Stardance** by fiona-hackworth wants to:", one row per scope with the server's own description, "Either way, you go back to `stardance.example`" (both answers redirect there), then **Allow** (solid ink, the second primary) and Deny (secondary, the same height). Under it: who you're signed in as, "Logbook doesn't review apps, so only allow apps you trust", and where to remove access (Settings → Apps with access, `/settings#apps`). The panel's meta is when the request expires, in your time zone.
+- **States:**
+  - `?error=invalid_client` or `invalid_redirect_uri`: "This app's link is broken. Tell the program." and why, with no buttons and no redirect.
+  - No `?request=`: a sentence, no buttons.
+  - Signed out: "Sign in with Hack Club", which comes straight back to this address (the request id travels in `next`, first-party).
+  - `already_granted`: approved without asking; the page says so while it leaves.
+  - `404` (unknown, expired, answered, someone else's), on load or on answering: "This request has ended", with no buttons.
+- **Leaving:** Allow and Deny post `{approve}`, then set `window.location` to the returned `redirect`, but only after checking it is `http(s)` with the request's own redirect URI's origin and path (`safeRedirect`). Anything else shows a sentence and goes nowhere.
 
 ## Shared components
 
@@ -99,5 +126,6 @@ When `credited_*` is `null` (no device ever registered), the UI never shows coun
   - `Referrer-Policy: strict-origin-when-cross-origin`, `X-Content-Type-Options: nosniff`, `Permissions-Policy` off for camera, microphone and geolocation.
 - **API keys:** a new key is shown once, held only in component state, and gone on navigation. It is never written to storage or the URL. The install command shows the key masked until "Show" is pressed, and "Copy" copies the full command.
 - **Redirects:** the `next` path sent to `/auth/login` is the current path only. The API validates it again.
-- **Review tokens and secrets:** a review link is copied, never printed in full (lists copy it; the review page masks it inside the justification). A client secret is shown only once, masked until "Show", right after create or rotate.
+- **Review tokens and secrets:** a review link is copied, never printed in full (lists copy it; the review page masks it inside the justification). A client secret is shown only once, masked until "Show", right after create or rotate. It goes from the register page to the app's page in memory only (`#lib/secret.ts`), never in storage, history state or the URL.
+- **Consent:** the browser is sent only to an `http(s)` redirect with the request's own redirect URI's origin and path. `static/_headers` sends `X-Robots-Tag: noindex` for `/oauth/*`.
 - **Third parties:** no analytics, no third-party scripts or fonts.

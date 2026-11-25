@@ -15,5 +15,9 @@
   X-Robots-Tag: noindex, nofollow
   Referrer-Policy: no-referrer
 
+# The consent page carries a pending request's id in its query: never indexed.
+/oauth/*
+  X-Robots-Tag: noindex, nofollow
+
 /_app/immutable/*
   Cache-Control: public, max-age=31536000, immutable

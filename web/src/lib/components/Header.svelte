@@ -96,6 +96,7 @@
 				Public profile
 			</a>
 			<a href={resolve('/settings')} onclick={() => menu?.hidePopover()}>Settings</a>
+			<a href={resolve('/apps')} onclick={() => menu?.hidePopover()}>Apps</a>
 			<button type="button" onclick={signOut} disabled={signingOut}>
 				{signingOut ? 'Signing out…' : 'Sign out'}
 			</button>
