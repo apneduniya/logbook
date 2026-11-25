@@ -52,7 +52,7 @@ Don't make the whole UI pixel or mono; hierarchy comes from the contrast between
 - **Edges:** every element starts on its panel's left edge. Nothing bleeds past a column, including hover tints, which stay inside the element.
   - Rows in an unpadded list start 14 px in, on the head's line; padded bodies are 16 px in.
   - The root font size is 13 px, so Tailwind's spacing steps are 3.25 px (`px-4` is 13 px). Write a panel edge's padding in pixels (`px-[14px]`), never as a spacing step.
-- **Phones (under 900 px):** panels stack. Under 720 px the tabs wrap to their own row (Today, Projects, Submissions, Apps, Settings), and Profile steps aside unless it is open (the account menu has it), so the row fits a 375 px screen. Under 480 px project rows drop the keyboard column.
+- **Phones (under 900 px):** panels stack. Under 720 px the tabs wrap to their own row (Today, Projects, Submissions, Apps, Settings, at 6 px padding with no gap), and Profile steps aside unless it is open, when Apps steps aside instead (the account menu has both), so the row fits a 375 px screen. Under 480 px project rows drop the keyboard column.
 
 ## Interaction
 

@@ -5,7 +5,8 @@
   people register and review programs' apps), then the person's own Profile
   and Settings. The account menu links Apps too. On phones the tabs wrap to their own
   row, the Profile tab steps aside unless it is the open page (the account
-  menu has it), and the account button shows only the identicon.
+  menu has it; on that page Apps steps aside instead), and the account
+  button shows only the identicon.
 -->
 <script lang="ts">
 	import { resolve } from '$app/paths';
@@ -35,7 +36,9 @@
 		{
 			href: resolve('/apps'),
 			label: 'Apps',
-			match: (p: string) => p.startsWith('/apps')
+			match: (p: string) => p.startsWith('/apps'),
+			// On phones the open Profile tab takes its place (the menu has Apps).
+			aside: (p: string) => p === `/u/${user.username}`
 		},
 		{
 			href: resolve('/u/[username]', { username: encodeURIComponent(user.username) }),
@@ -86,7 +89,7 @@
 			{@const current = t.match(page.url.pathname)}
 			<a
 				class="tab"
-				class:wide={'wide' in t && !current}
+				class:wide={('wide' in t && !current) || !!('aside' in t && t.aside?.(page.url.pathname))}
 				href={t.href}
 				aria-current={current ? 'page' : undefined}
 			>
@@ -242,8 +245,13 @@
 			grid-column: 1 / -1;
 			overflow-x: auto;
 		}
+		/* Five tabs fit a 375 px row: tight padding, no gap, a little less tracking. */
+		.tabs {
+			gap: 0;
+			letter-spacing: 0.06em;
+		}
 		.tab {
-			padding: 10px 8px;
+			padding: 10px 6px;
 		}
 		.tab.wide {
 			display: none;
