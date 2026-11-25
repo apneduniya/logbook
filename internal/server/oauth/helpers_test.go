@@ -357,7 +357,7 @@ func (e *env) gateTokenInserts(ctx context.Context) *gate {
 	g.release = func() {
 		if !g.released {
 			g.released = true
-			if _, err := hold.Exec(context.Background(), "SELECT pg_advisory_unlock($1)", lock); err != nil {
+			if _, err := hold.Exec(context.WithoutCancel(ctx), "SELECT pg_advisory_unlock($1)", lock); err != nil {
 				e.t.Errorf("unlocking: %v", err)
 			}
 		}

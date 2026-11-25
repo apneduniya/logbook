@@ -72,13 +72,14 @@ func open(ctx context.Context, t testing.TB, base, name string) *store.Store {
 	}
 	t.Cleanup(func() {
 		st.Close()
-		c, err := pgx.Connect(context.Background(), base)
+		ctx := context.WithoutCancel(ctx)
+		c, err := pgx.Connect(ctx, base)
 		if err != nil {
 			t.Logf("dropping %s: %v", name, err)
 			return
 		}
-		defer func() { _ = c.Close(context.Background()) }()
-		if _, err := c.Exec(context.Background(), fmt.Sprintf("DROP DATABASE IF EXISTS %s WITH (FORCE)", name)); err != nil {
+		defer func() { _ = c.Close(ctx) }()
+		if _, err := c.Exec(ctx, fmt.Sprintf("DROP DATABASE IF EXISTS %s WITH (FORCE)", name)); err != nil {
 			t.Logf("dropping %s: %v", name, err)
 		}
 	})
