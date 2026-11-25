@@ -105,7 +105,7 @@ WHERE h.user_id = $1
   AND h.time <= $3
   AND h.project <> ''
   AND ($4::text[] IS NULL OR h.project = ANY ($4::text[]))
-  AND NOT (h.project = ANY ($5::text[]))
+  AND NOT ((CASE WHEN h.project = '' THEN 'Unknown' ELSE h.project END) = ANY ($5::text[]))
 GROUP BY h.project
 `
 
@@ -165,7 +165,7 @@ WITH h AS (
       AND hb.time >= $2
       AND hb.time <= $3
       AND ($4::text[] IS NULL OR hb.project = ANY ($4::text[]))
-      AND NOT (hb.project = ANY ($5::text[]))
+      AND NOT ((CASE WHEN hb.project = '' THEN 'Unknown' ELSE hb.project END) = ANY ($5::text[]))
 ),
 marked AS (
     SELECT h.t, h.id,
@@ -238,7 +238,7 @@ FROM heartbeats
 WHERE user_id = $1
   AND time >= $2
   AND time <= $3
-  AND NOT (project = ANY ($4::text[]))
+  AND NOT ((CASE WHEN project = '' THEN 'Unknown' ELSE project END) = ANY ($4::text[]))
 ORDER BY time, id
 LIMIT $5
 `
@@ -382,6 +382,119 @@ func (q *Queries) ProgramProjectSettings(ctx context.Context, userID uuid.UUID) 
 	return items, nil
 }
 
+const programRawTimeline = `-- name: ProgramRawTimeline :many
+WITH filtered AS NOT MATERIALIZED (
+    SELECT h.time, h.id, (CASE WHEN h.project = '' THEN 'Unknown' ELSE h.project END)::text AS project, h.language
+    FROM heartbeats h
+    WHERE h.user_id = $1
+      AND ($2::text[] IS NULL
+           OR (CASE WHEN h.project = '' THEN 'Unknown' ELSE h.project END) = ANY ($2::text[]))
+      AND ($3::text[] IS NULL OR h.category = ANY ($3::text[]))
+      AND NOT (lower(h.category) = ANY ($4::text[]))
+      AND NOT ((CASE WHEN h.project = '' THEN 'Unknown' ELSE h.project END) = ANY ($5::text[]))
+),
+timeline AS (
+    SELECT filtered.time, filtered.id, filtered.project, filtered.language
+    FROM filtered
+    WHERE filtered.time >= $6::timestamptz
+      AND (filtered.time < $7::timestamptz OR ($8::boolean AND filtered.time = $7::timestamptz))
+    UNION ALL
+    SELECT filtered.time, filtered.id, filtered.project, filtered.language
+    FROM filtered
+    WHERE $8::boolean
+      AND filtered.time = (SELECT max(b.time) FROM filtered b WHERE b.time < $6::timestamptz)
+),
+gaps AS (
+    SELECT t.time, t.project, t.language,
+           extract(epoch FROM t.time)::float8 - lag(extract(epoch FROM t.time)::float8) OVER (ORDER BY t.time, t.id) AS gap
+    FROM timeline t
+),
+credited AS (
+    SELECT g.time, g.project, g.language,
+           CASE WHEN g.gap IS NULL THEN 0 ELSE least(g.gap, 120) END AS seconds
+    FROM gaps g
+)
+SELECT c.project, c.language,
+       coalesce(sum(c.seconds) FILTER (WHERE c.time < $7::timestamptz), 0)::bigint AS seconds,
+       false AS is_total
+FROM credited c
+WHERE c.time >= $6::timestamptz
+GROUP BY c.project, c.language
+UNION ALL
+SELECT ''::text, ''::text, coalesce(sum(c.seconds), 0)::bigint, true
+FROM credited c
+WHERE c.time >= $6::timestamptz
+`
+
+type ProgramRawTimelineParams struct {
+	UserID            uuid.UUID
+	Projects          []string
+	Categories        []string
+	ExcludeCategories []string
+	ExcludeProjects   []string
+	FromTime          time.Time
+	ToTime            time.Time
+	Boundary          bool
+}
+
+type ProgramRawTimelineRow struct {
+	Project  string
+	Language string
+	Seconds  int64
+	IsTotal  bool
+}
+
+// Raw seconds per (project, language) as Hackatime computes them for a
+// filtered request: the user's heartbeats are filtered first, then each is
+// credited LEAST(its gap to the previous filtered heartbeat, 120 s), the
+// first 0. Heartbeats count in [from_time, to_time). A NULL projects or
+// categories array means no filter; exclude_categories is compared
+// case-insensitively.
+//
+// With boundary (Hackatime's test_param, duration_seconds_boundary_aware)
+// the filtered heartbeats at the latest time before from_time also take
+// part, so the first heartbeat in range is credited its gap from them, and
+// heartbeats at to_time count too; that applies to the total only.
+//
+// The rows are one per (project, language) with is_total false, then one
+// row with is_total true carrying the total, rounded once as Hackatime
+// rounds it (float8 to integer).
+// LEAST ignores NULLs, so the first heartbeat's NULL gap is made 0
+// explicitly, as Hackatime's with_capped_duration does.
+func (q *Queries) ProgramRawTimeline(ctx context.Context, arg ProgramRawTimelineParams) ([]ProgramRawTimelineRow, error) {
+	rows, err := q.db.Query(ctx, programRawTimeline,
+		arg.UserID,
+		arg.Projects,
+		arg.Categories,
+		arg.ExcludeCategories,
+		arg.ExcludeProjects,
+		arg.FromTime,
+		arg.ToTime,
+		arg.Boundary,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ProgramRawTimelineRow{}
+	for rows.Next() {
+		var i ProgramRawTimelineRow
+		if err := rows.Scan(
+			&i.Project,
+			&i.Language,
+			&i.Seconds,
+			&i.IsTotal,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const programRawTotals = `-- name: ProgramRawTotals :many
 SELECT m.project, m.language,
        sum(m.seconds)::bigint AS seconds,
@@ -455,19 +568,22 @@ func (q *Queries) ProgramRawTotals(ctx context.Context, arg ProgramRawTotalsPara
 }
 
 const programRawUniqueCoding = `-- name: ProgramRawUniqueCoding :one
-SELECT coalesce(sum(t.seconds), 0)::bigint AS seconds
-FROM (
-    SELECT least(sum(m.seconds), 60) AS seconds
-    FROM user_minutes m
-    WHERE m.user_id = $1
-      AND m.label = 'you'
-      AND m.category = 'coding'
-      AND m.minute >= $2
-      AND m.minute < $3
-      AND m.project = ANY ($4::text[])
-      AND NOT (m.project = ANY ($5::text[]))
-    GROUP BY m.minute
-) t
+WITH hb AS (
+    SELECT extract(epoch FROM h.time)::float8 AS t, h.id
+    FROM heartbeats h
+    WHERE h.user_id = $1
+      AND h.category = 'coding'
+      AND h.time >= $2
+      AND h.time <= $3
+      AND (CASE WHEN h.project = '' THEN 'Unknown' ELSE h.project END) = ANY ($4::text[])
+      AND NOT ((CASE WHEN h.project = '' THEN 'Unknown' ELSE h.project END) = ANY ($5::text[]))
+),
+gaps AS (
+    SELECT hb.t - lag(hb.t) OVER (ORDER BY hb.t, hb.id) AS gap
+    FROM hb
+)
+SELECT trunc(coalesce(sum(gaps.gap) FILTER (WHERE gaps.gap > 0 AND gaps.gap <= 120), 0))::bigint AS seconds
+FROM gaps
 `
 
 type ProgramRawUniqueCodingParams struct {
@@ -478,8 +594,10 @@ type ProgramRawUniqueCodingParams struct {
 	ExcludeProjects []string
 }
 
-// Raw seconds of category 'coding' across the given projects, each minute
-// counted at most once (60 s), however many projects shared it.
+// Hackatime's unique_heartbeat_seconds: the user's 'coding' heartbeats of
+// the given projects in [from_time, to_time], ordered by (time, id), summing
+// each gap to the previous one that is above 0 and at most 120 s, truncated
+// to whole seconds.
 func (q *Queries) ProgramRawUniqueCoding(ctx context.Context, arg ProgramRawUniqueCodingParams) (int64, error) {
 	row := q.db.QueryRow(ctx, programRawUniqueCoding,
 		arg.UserID,
@@ -541,10 +659,16 @@ type ProgramUserByPublicIDRow struct {
 // Every aggregate is keyed by one user id that the caller has already
 // authorised.
 //
-// Raw time is heartbeat time from user_minutes (label 'you'); counted time is
-// capped credited time from credited_project_minutes (ADR 0014). Hidden
-// projects are excluded by name through exclude_projects, which callers fill
-// for reads that aren't authorised by the user.
+// Raw time is heartbeat time from user_minutes (label 'you'), or, for stats
+// requests that filter heartbeats, Hackatime's durations over the filtered
+// heartbeats (ProgramRawTimeline); counted time is capped credited time from
+// credited_project_minutes (ADR 0014). Hidden projects are excluded by name
+// through exclude_projects.
+//
+// Heartbeats store a missing project as ”, which the rollup and every
+// response call "Unknown" (package rollup). Queries on heartbeats compare
+// project names after that same mapping, so hiding "Unknown" hides those
+// heartbeats too.
 func (q *Queries) ProgramUserByPublicID(ctx context.Context, publicID int64) (ProgramUserByPublicIDRow, error) {
 	row := q.db.QueryRow(ctx, programUserByPublicID, publicID)
 	var i ProgramUserByPublicIDRow

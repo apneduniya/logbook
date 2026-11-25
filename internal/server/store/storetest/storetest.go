@@ -60,23 +60,79 @@ func New(t testing.TB) *store.Store {
 		t.Fatalf("creating test database: %v", createErr)
 	}
 
+	return open(ctx, t, base, name)
+}
+
+// open opens the test database name and drops it when the test ends.
+func open(ctx context.Context, t testing.TB, base, name string) *store.Store {
+	t.Helper()
 	st, err := store.Open(ctx, withDB(t, base, name))
 	if err != nil {
 		t.Fatalf("opening test database: %v", err)
 	}
 	t.Cleanup(func() {
 		st.Close()
-		c, err := pgx.Connect(context.Background(), base)
+		ctx := context.WithoutCancel(ctx)
+		c, err := pgx.Connect(ctx, base)
 		if err != nil {
 			t.Logf("dropping %s: %v", name, err)
 			return
 		}
-		defer func() { _ = c.Close(context.Background()) }()
-		if _, err := c.Exec(context.Background(), fmt.Sprintf("DROP DATABASE IF EXISTS %s WITH (FORCE)", name)); err != nil {
+		defer func() { _ = c.Close(ctx) }()
+		if _, err := c.Exec(ctx, fmt.Sprintf("DROP DATABASE IF EXISTS %s WITH (FORCE)", name)); err != nil {
 			t.Logf("dropping %s: %v", name, err)
 		}
 	})
 	return st
+}
+
+// Partial is a new test database migrated only up to some version, for
+// testing a migration against rows that exist before it runs. It is
+// dropped when the test ends. River's tables are not added.
+type Partial struct {
+	Store *store.Store
+	url   string
+}
+
+// NewPartial returns a database migrated up to and including version.
+func NewPartial(t testing.TB, version int64) *Partial {
+	t.Helper()
+	base := os.Getenv("DATABASE_URL")
+	if base == "" {
+		t.Skip("DATABASE_URL not set; run `make db-up`")
+	}
+	ctx := context.Background()
+	admin, err := pgx.Connect(ctx, base)
+	if err != nil {
+		t.Fatalf("connecting to postgres: %v", err)
+	}
+	defer func() { _ = admin.Close(ctx) }()
+	var b [6]byte
+	_, _ = rand.Read(b[:])
+	name := "logbook_test_" + hex.EncodeToString(b[:])
+	if _, err := admin.Exec(ctx, "CREATE DATABASE "+name); err != nil {
+		t.Fatalf("creating test database: %v", err)
+	}
+	p := &Partial{Store: open(ctx, t, base, name), url: withDB(t, base, name)}
+	p.UpTo(t, version)
+	return p
+}
+
+// UpTo applies the migrations up to and including version.
+func (p *Partial) UpTo(t testing.TB, version int64) {
+	t.Helper()
+	sqlDB, err := sql.Open("pgx", p.url)
+	if err != nil {
+		t.Fatalf("opening database: %v", err)
+	}
+	defer func() { _ = sqlDB.Close() }()
+	goose.SetLogger(goose.NopLogger())
+	if err := goose.SetDialect("postgres"); err != nil {
+		t.Fatalf("goose dialect: %v", err)
+	}
+	if err := goose.UpToContext(context.Background(), sqlDB, migrationsDir(t), version); err != nil {
+		t.Fatalf("migrating to %d: %v", version, err)
+	}
 }
 
 // ensureTemplate creates the template database if needed and migrates it to

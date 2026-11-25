@@ -205,9 +205,15 @@ WHERE t.access_hash = sqlc.arg(access_hash) AND t.revoked_at IS NULL
   AND t.expires_at > sqlc.arg(now)::timestamptz;
 
 -- name: OAuthTokenOwnerByRefresh :one
--- The app and user of a refresh token, read without a lock so the grant can
--- be locked before the token.
-SELECT app_id, user_id FROM oauth_tokens WHERE refresh_hash = $1;
+-- The app, user and family of a refresh token, read without a lock so the
+-- grant and the family can be locked before the token.
+SELECT app_id, user_id, family_id FROM oauth_tokens WHERE refresh_hash = $1;
+
+-- name: OAuthFamilyLock :exec
+-- Serialises issuing a token into a family with revoking the family, until
+-- the transaction ends: a revocation that waited here then sees every token
+-- the issuer added. 1002 namespaces the lock (ingest uses 1001).
+SELECT pg_advisory_xact_lock(1002, hashtext(sqlc.arg(family_id)::uuid::text));
 
 -- name: OAuthTokenByRefreshForUpdate :one
 SELECT * FROM oauth_tokens WHERE refresh_hash = $1 FOR UPDATE;
@@ -240,11 +246,25 @@ WHERE app_id = sqlc.arg(app_id) AND revoked_at IS NULL;
 DELETE FROM oauth_requests WHERE expires_at <= $1;
 
 -- name: OAuthDeleteExpiredCodes :execrows
-DELETE FROM oauth_codes WHERE expires_at <= $1;
+-- Codes that expired before `before`, unless a token of their family is
+-- still usable at `now`: a used code is the record that replaying it must
+-- revoke that family, so it is kept as long as there is something to revoke.
+DELETE FROM oauth_codes c
+WHERE c.expires_at <= sqlc.arg(before)::timestamptz
+  AND NOT EXISTS (
+      SELECT 1 FROM oauth_tokens t
+      WHERE t.family_id = c.family_id AND t.revoked_at IS NULL
+        AND (t.expires_at > sqlc.arg(now)::timestamptz OR t.refresh_expires_at > sqlc.arg(now)::timestamptz));
 
 -- name: OAuthDeleteDeadTokens :execrows
--- Tokens that can no longer be used: both halves expired, or revoked.
-DELETE FROM oauth_tokens
-WHERE (expires_at <= sqlc.arg(before)::timestamptz
-       AND (refresh_expires_at IS NULL OR refresh_expires_at <= sqlc.arg(before)::timestamptz))
-   OR revoked_at <= sqlc.arg(before)::timestamptz;
+-- Tokens dead since before `before` (both halves expired, or revoked),
+-- unless a token of their family is still usable at `now`: a rotated refresh
+-- token is the record that replaying it must revoke its family.
+DELETE FROM oauth_tokens d
+WHERE ((d.expires_at <= sqlc.arg(before)::timestamptz
+        AND (d.refresh_expires_at IS NULL OR d.refresh_expires_at <= sqlc.arg(before)::timestamptz))
+       OR d.revoked_at <= sqlc.arg(before)::timestamptz)
+  AND NOT EXISTS (
+      SELECT 1 FROM oauth_tokens t
+      WHERE t.family_id = d.family_id AND t.revoked_at IS NULL
+        AND (t.expires_at > sqlc.arg(now)::timestamptz OR t.refresh_expires_at > sqlc.arg(now)::timestamptz));

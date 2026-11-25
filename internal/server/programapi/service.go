@@ -25,6 +25,7 @@ type Querier interface {
 	ProgramHackatimeLink(ctx context.Context, userID uuid.UUID) (db.ProgramHackatimeLinkRow, error)
 	ProgramProjectSettings(ctx context.Context, userID uuid.UUID) ([]db.ProgramProjectSettingsRow, error)
 	ProgramRawTotals(ctx context.Context, arg db.ProgramRawTotalsParams) ([]db.ProgramRawTotalsRow, error)
+	ProgramRawTimeline(ctx context.Context, arg db.ProgramRawTimelineParams) ([]db.ProgramRawTimelineRow, error)
 	ProgramRawUniqueCoding(ctx context.Context, arg db.ProgramRawUniqueCodingParams) (int64, error)
 	ProgramCreditedTotals(ctx context.Context, arg db.ProgramCreditedTotalsParams) ([]db.ProgramCreditedTotalsRow, error)
 	ProgramHeartbeatCounts(ctx context.Context, arg db.ProgramHeartbeatCountsParams) ([]db.ProgramHeartbeatCountsRow, error)
@@ -214,8 +215,43 @@ func (s *Service) Raw(ctx context.Context, userID uuid.UUID, rng Range, q RawQue
 	return out, nil
 }
 
-// RawUniqueCoding is raw "coding" time across projects in rng, each minute
-// counted once however many of the projects shared it.
+// Filtered reports whether q narrows the user's heartbeats by project or
+// category (hidden projects aside).
+func (q RawQuery) Filtered() bool {
+	return q.Projects != nil || q.Categories != nil || len(q.ExcludeCategories) > 0
+}
+
+// RawTimeline returns raw seconds per (project, language) in rng, and their
+// total, as Hackatime computes them for a filtered request: from the
+// filtered heartbeats, each credited its gap to the previous one, capped at
+// two minutes. boundary is Hackatime's boundary-aware total (test_param):
+// the last filtered heartbeat before rng starts the first gap, and
+// heartbeats at rng.To count. Project names are as reported ("Unknown" for
+// none); First and Last are not set.
+func (s *Service) RawTimeline(ctx context.Context, userID uuid.UUID, rng Range, q RawQuery, boundary bool) ([]RawRow, int64, error) {
+	rows, err := s.q.ProgramRawTimeline(ctx, db.ProgramRawTimelineParams{
+		UserID: userID, FromTime: rng.From, ToTime: rng.To, Boundary: boundary,
+		Projects: q.Projects, Categories: q.Categories,
+		ExcludeCategories: orEmpty(q.ExcludeCategories), ExcludeProjects: orEmpty(q.ExcludeProjects),
+	})
+	if err != nil {
+		return nil, 0, fmt.Errorf("querying raw timeline: %w", err)
+	}
+	out := make([]RawRow, 0, len(rows))
+	var total int64
+	for _, r := range rows {
+		if r.IsTotal {
+			total = r.Seconds
+			continue
+		}
+		out = append(out, RawRow{Project: r.Project, Language: r.Language, Seconds: r.Seconds})
+	}
+	return out, total, nil
+}
+
+// RawUniqueCoding is Hackatime's unique_heartbeat_seconds for projects in
+// rng: the gaps of at most two minutes between consecutive "coding"
+// heartbeats of those projects, in whole seconds.
 func (s *Service) RawUniqueCoding(ctx context.Context, userID uuid.UUID, rng Range, projects, exclude []string) (int64, error) {
 	n, err := s.q.ProgramRawUniqueCoding(ctx, db.ProgramRawUniqueCodingParams{
 		UserID: userID, FromTime: rng.From, ToTime: rng.To,

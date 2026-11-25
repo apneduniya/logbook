@@ -28,13 +28,13 @@ cache-control: private, max-age=300
         "percent": 100,
         "digital": "00:20:00",
         "credited_seconds": 1200,
-        "raw_seconds": 2400
+        "raw_seconds": 2340
       }
     ],
     "unique_total_seconds": 1200,
     "streak": 0,
     "credited_seconds": 1200,
-    "raw_seconds": 2400
+    "raw_seconds": 2340
   },
   "trust_factor": {
     "trust_level": "green",

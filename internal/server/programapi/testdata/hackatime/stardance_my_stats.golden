@@ -29,7 +29,7 @@ cache-control: no-store
         "percent": 81.63,
         "digital": "00:20:00",
         "credited_seconds": 1200,
-        "raw_seconds": 2400
+        "raw_seconds": 2340
       },
       {
         "name": "agent-only",
@@ -62,12 +62,12 @@ cache-control: no-store
         "percent": 0,
         "digital": "00:00:00",
         "credited_seconds": 0,
-        "raw_seconds": 300
+        "raw_seconds": 120
       }
     ],
     "streak": 0,
     "credited_seconds": 1470,
-    "raw_seconds": 2700
+    "raw_seconds": 2460
   },
   "trust_factor": {
     "trust_level": "green",

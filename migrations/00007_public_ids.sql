@@ -15,12 +15,27 @@ ALTER TABLE users
 -- "my" is the token's own user on the program API's stats endpoints
 -- (/api/v1/users/my/stats), so it can't be anyone's username. Nobody should
 -- hold it yet; if somebody does, they are renamed (and it is audited) rather
--- than the migration failing.
-INSERT INTO audit_log (actor_user_id, action, subject_type, subject_id, data)
-SELECT NULL, 'user.username_reserved', 'user', id::text,
-       jsonb_build_object('from', username::text, 'to', 'my-user-' || public_id)
-FROM users WHERE username = 'my';
-UPDATE users SET username = 'my-user-' || public_id WHERE username = 'my';
+-- than the migration failing. The new name is my-user-<public_id>, or, if
+-- that is taken, the first free my-user-<public_id>-<n> from n = 2.
+DO $$
+DECLARE
+    u record;
+    candidate citext;
+    n int;
+BEGIN
+    FOR u IN SELECT id, username::text AS username, public_id FROM users WHERE username = 'my' LOOP
+        candidate := 'my-user-' || u.public_id;
+        n := 1;
+        WHILE EXISTS (SELECT 1 FROM users WHERE username = candidate) LOOP
+            n := n + 1;
+            candidate := 'my-user-' || u.public_id || '-' || n;
+        END LOOP;
+        INSERT INTO audit_log (actor_user_id, action, subject_type, subject_id, data)
+        VALUES (NULL, 'user.username_reserved', 'user', u.id::text,
+                jsonb_build_object('from', u.username, 'to', candidate::text));
+        UPDATE users SET username = candidate WHERE id = u.id;
+    END LOOP;
+END $$;
 
 ALTER TABLE users ADD CONSTRAINT users_username_not_reserved CHECK (username <> 'my');
 

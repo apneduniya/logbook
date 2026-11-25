@@ -261,11 +261,58 @@ func TestCleanup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n != 2 { // the pending request and the used code
-		t.Fatalf("deleted %d rows, want 2", n)
+	if n != 1 { // the pending request; the used code stays while its token lives
+		t.Fatalf("deleted %d rows, want 1", n)
 	}
 	if rec := e.probe("/probe/profile", live.AccessToken); rec.Code != http.StatusOK {
 		t.Fatalf("live token after cleanup = %d", rec.Code)
+	}
+}
+
+// TestReplayAfterCleanup: a used code or rotated refresh token deleted by
+// cleanup while its family still had a live token could be replayed without
+// revoking the family. Cleanup now keeps dead rows while any token of their
+// family is usable, and deletes the family once it is all dead.
+func TestReplayAfterCleanup(t *testing.T) {
+	e := newEnv(t)
+	owner, alice := e.user("owner"), e.user("alice")
+	app := e.createApp(owner, "stardance")
+	refresh := func(tok string) *httptest.ResponseRecorder {
+		return e.post("/oauth/token", url.Values{"grant_type": {"refresh_token"}, "refresh_token": {tok}}, creds(app))
+	}
+
+	// Refresh token replay, 31 days after rotation.
+	r0 := e.mustExchange(app, e.codeFor(alice, authParams(app, "profile")), "")
+	rec := refresh(r0.RefreshToken)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("refresh = %d %s", rec.Code, rec.Body)
+	}
+	r1 := decode[tokenJSON](t, rec)
+
+	// Code replay, 25 hours after the exchange.
+	code := e.codeFor(alice, authParams(app, "profile"))
+	c1 := e.mustExchange(app, code, "")
+
+	e.clock.Advance(31 * 24 * time.Hour)
+	if _, err := e.svc.Cleanup(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	expectOAuthError(t, refresh(r0.RefreshToken), http.StatusBadRequest, "invalid_grant")
+	if rec := e.probe("/probe/profile", r1.AccessToken); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("R1 after R0 was replayed past cleanup = %d, want 401", rec.Code)
+	}
+	expectOAuthError(t, e.exchange(app, code, ""), http.StatusBadRequest, "invalid_grant")
+	if rec := e.probe("/probe/profile", c1.AccessToken); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("token after its code was replayed past cleanup = %d, want 401", rec.Code)
+	}
+
+	// Both families are now dead: cleanup removes them after the retention.
+	e.clock.Advance(31 * 24 * time.Hour)
+	if _, err := e.svc.Cleanup(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if n := e.count(`SELECT count(*)::int FROM oauth_tokens`) + e.count(`SELECT count(*)::int FROM oauth_codes`); n != 0 {
+		t.Fatalf("%d dead rows left after cleanup", n)
 	}
 }
 
@@ -287,65 +334,16 @@ func TestRevokeGrantDuringRefresh(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	const gate = 727021
-	hold, err := e.st.Pool.Acquire(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer hold.Release()
-	if _, err := hold.Exec(ctx, "SELECT pg_advisory_lock($1)", gate); err != nil {
-		t.Fatal(err)
-	}
-	released := false
-	release := func() {
-		if !released {
-			released = true
-			if _, err := hold.Exec(context.Background(), "SELECT pg_advisory_unlock($1)", gate); err != nil {
-				t.Errorf("unlocking: %v", err)
-			}
-		}
-	}
-	defer release()
-	if _, err := e.st.Pool.Exec(ctx, `
-		CREATE FUNCTION test_gate() RETURNS trigger LANGUAGE plpgsql AS $$
-		BEGIN PERFORM pg_advisory_xact_lock(727021); RETURN NEW; END $$;
-		CREATE TRIGGER test_gate BEFORE INSERT ON oauth_tokens FOR EACH ROW EXECUTE FUNCTION test_gate();`); err != nil {
-		t.Fatal(err)
-	}
+	g := e.gateTokenInserts(ctx)
+	defer g.release()
 
-	// waiting counts this database's backends blocked on a lock.
-	waiting := func(n int) {
-		t.Helper()
-		for ctx.Err() == nil {
-			var got int
-			if err := e.st.Pool.QueryRow(ctx, `SELECT count(*)::int FROM pg_stat_activity
-				WHERE datname = current_database() AND wait_event_type = 'Lock'`).Scan(&got); err != nil {
-				t.Fatalf("counting blocked backends: %v", err)
-			}
-			if got >= n {
-				return
-			}
-			time.Sleep(10 * time.Millisecond)
-		}
-		t.Fatalf("timed out waiting for %d blocked backends", n)
-	}
-
-	refreshed := make(chan *httptest.ResponseRecorder, 1)
-	go func() {
-		form := url.Values{"grant_type": {"refresh_token"}, "refresh_token": {tok.RefreshToken}}
-		r := httptest.NewRequestWithContext(ctx, http.MethodPost, "/oauth/token", strings.NewReader(form.Encode()))
-		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-		r.SetBasicAuth(url.QueryEscape(app.ClientID), url.QueryEscape(app.ClientSecret))
-		rec := httptest.NewRecorder()
-		e.mux.ServeHTTP(rec, r)
-		refreshed <- rec
-	}()
-	waiting(1) // the refresh, at the gate
+	refreshed := e.refreshAsync(ctx, app, tok.RefreshToken)
+	g.waiting(1) // the refresh, at the gate
 
 	revoked := make(chan error, 1)
 	go func() { revoked <- e.svc.RevokeGrant(ctx, alice, appID) }()
-	waiting(2) // the revoke, behind the refresh
-	release()
+	g.waiting(2) // the revoke, behind the refresh
+	g.release()
 
 	rec := <-refreshed
 	if err := <-revoked; err != nil {
@@ -361,5 +359,44 @@ func TestRevokeGrantDuringRefresh(t *testing.T) {
 	}
 	if n := e.count(`SELECT count(*)::int FROM oauth_tokens WHERE revoked_at IS NULL`); n != 0 {
 		t.Fatalf("%d tokens still live after the grant was revoked", n)
+	}
+}
+
+// TestRefreshReplayDuringRefresh: R0 is rotated to R1; R1 is being refreshed
+// into R2 (held at the insert) when R0 is replayed. The replay must revoke
+// the whole family, R2 included. Before issuance and family revocation took
+// a common lock, the replay's UPDATE took its snapshot before R2 existed,
+// waited on R1, then skipped it, and R2 kept working.
+func TestRefreshReplayDuringRefresh(t *testing.T) {
+	e := newEnv(t)
+	owner, alice := e.user("owner"), e.user("alice")
+	app := e.createApp(owner, "stardance")
+	r0 := e.mustExchange(app, e.codeFor(alice, authParams(app, "profile read")), "")
+	rec := e.post("/oauth/token", url.Values{"grant_type": {"refresh_token"}, "refresh_token": {r0.RefreshToken}}, creds(app))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("refresh = %d %s", rec.Code, rec.Body)
+	}
+	r1 := decode[tokenJSON](t, rec)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	g := e.gateTokenInserts(ctx)
+	defer g.release()
+
+	refreshed := e.refreshAsync(ctx, app, r1.RefreshToken)
+	g.waiting(1) // R1 -> R2, at the gate
+	replayed := e.refreshAsync(ctx, app, r0.RefreshToken)
+	g.waiting(2) // the replay of R0, behind it
+	g.release()
+
+	expectOAuthError(t, <-replayed, http.StatusBadRequest, "invalid_grant")
+	if rec := <-refreshed; rec.Code == http.StatusOK {
+		r2 := decode[tokenJSON](t, rec)
+		if got := e.probe("/probe/profile", r2.AccessToken); got.Code != http.StatusUnauthorized {
+			t.Fatalf("R2's access token after R0 was replayed = %d, want 401", got.Code)
+		}
+	}
+	if n := e.count(`SELECT count(*)::int FROM oauth_tokens WHERE revoked_at IS NULL`); n != 0 {
+		t.Fatalf("%d tokens still live after the family was revoked", n)
 	}
 }

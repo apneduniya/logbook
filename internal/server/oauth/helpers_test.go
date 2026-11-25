@@ -329,3 +329,76 @@ func actions(t *testing.T, st *store.Store, actor uuid.UUID) []string {
 	}
 	return out
 }
+
+// gate holds every INSERT into oauth_tokens at a trigger until release, so
+// a test can line up a concurrent transaction behind one that is about to
+// issue a token.
+type gate struct {
+	e        *env
+	ctx      context.Context
+	release  func()
+	released bool
+}
+
+// gateTokenInserts installs the gate. Call release (also deferred) to let
+// the held inserts through.
+func (e *env) gateTokenInserts(ctx context.Context) *gate {
+	e.t.Helper()
+	const lock = 727021
+	hold, err := e.st.Pool.Acquire(ctx)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	e.t.Cleanup(hold.Release)
+	if _, err := hold.Exec(ctx, "SELECT pg_advisory_lock($1)", lock); err != nil {
+		e.t.Fatal(err)
+	}
+	g := &gate{e: e, ctx: ctx}
+	g.release = func() {
+		if !g.released {
+			g.released = true
+			if _, err := hold.Exec(context.WithoutCancel(ctx), "SELECT pg_advisory_unlock($1)", lock); err != nil {
+				e.t.Errorf("unlocking: %v", err)
+			}
+		}
+	}
+	if _, err := e.st.Pool.Exec(ctx, `
+		CREATE FUNCTION test_gate() RETURNS trigger LANGUAGE plpgsql AS $$
+		BEGIN PERFORM pg_advisory_xact_lock(727021); RETURN NEW; END $$;
+		CREATE TRIGGER test_gate BEFORE INSERT ON oauth_tokens FOR EACH ROW EXECUTE FUNCTION test_gate();`); err != nil {
+		e.t.Fatal(err)
+	}
+	return g
+}
+
+// waiting returns once n of this database's backends are blocked on a lock.
+func (g *gate) waiting(n int) {
+	g.e.t.Helper()
+	for g.ctx.Err() == nil {
+		var got int
+		if err := g.e.st.Pool.QueryRow(g.ctx, `SELECT count(*)::int FROM pg_stat_activity
+			WHERE datname = current_database() AND wait_event_type = 'Lock'`).Scan(&got); err != nil {
+			g.e.t.Fatalf("counting blocked backends: %v", err)
+		}
+		if got >= n {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	g.e.t.Fatalf("timed out waiting for %d blocked backends", n)
+}
+
+// refreshAsync posts a refresh in the background and sends its response.
+func (e *env) refreshAsync(ctx context.Context, app appJSON, refresh string) <-chan *httptest.ResponseRecorder {
+	out := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		form := url.Values{"grant_type": {"refresh_token"}, "refresh_token": {refresh}}
+		r := httptest.NewRequestWithContext(ctx, http.MethodPost, "/oauth/token", strings.NewReader(form.Encode()))
+		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		r.SetBasicAuth(url.QueryEscape(app.ClientID), url.QueryEscape(app.ClientSecret))
+		rec := httptest.NewRecorder()
+		e.mux.ServeHTTP(rec, r)
+		out <- rec
+	}()
+	return out
+}

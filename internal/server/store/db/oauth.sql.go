@@ -595,15 +595,26 @@ func (q *Queries) OAuthCodesBurnForGrant(ctx context.Context, arg OAuthCodesBurn
 }
 
 const oAuthDeleteDeadTokens = `-- name: OAuthDeleteDeadTokens :execrows
-DELETE FROM oauth_tokens
-WHERE (expires_at <= $1::timestamptz
-       AND (refresh_expires_at IS NULL OR refresh_expires_at <= $1::timestamptz))
-   OR revoked_at <= $1::timestamptz
+DELETE FROM oauth_tokens d
+WHERE ((d.expires_at <= $1::timestamptz
+        AND (d.refresh_expires_at IS NULL OR d.refresh_expires_at <= $1::timestamptz))
+       OR d.revoked_at <= $1::timestamptz)
+  AND NOT EXISTS (
+      SELECT 1 FROM oauth_tokens t
+      WHERE t.family_id = d.family_id AND t.revoked_at IS NULL
+        AND (t.expires_at > $2::timestamptz OR t.refresh_expires_at > $2::timestamptz))
 `
 
-// Tokens that can no longer be used: both halves expired, or revoked.
-func (q *Queries) OAuthDeleteDeadTokens(ctx context.Context, before time.Time) (int64, error) {
-	result, err := q.db.Exec(ctx, oAuthDeleteDeadTokens, before)
+type OAuthDeleteDeadTokensParams struct {
+	Before time.Time
+	Now    time.Time
+}
+
+// Tokens dead since before `before` (both halves expired, or revoked),
+// unless a token of their family is still usable at `now`: a rotated refresh
+// token is the record that replaying it must revoke its family.
+func (q *Queries) OAuthDeleteDeadTokens(ctx context.Context, arg OAuthDeleteDeadTokensParams) (int64, error) {
+	result, err := q.db.Exec(ctx, oAuthDeleteDeadTokens, arg.Before, arg.Now)
 	if err != nil {
 		return 0, err
 	}
@@ -611,11 +622,24 @@ func (q *Queries) OAuthDeleteDeadTokens(ctx context.Context, before time.Time) (
 }
 
 const oAuthDeleteExpiredCodes = `-- name: OAuthDeleteExpiredCodes :execrows
-DELETE FROM oauth_codes WHERE expires_at <= $1
+DELETE FROM oauth_codes c
+WHERE c.expires_at <= $1::timestamptz
+  AND NOT EXISTS (
+      SELECT 1 FROM oauth_tokens t
+      WHERE t.family_id = c.family_id AND t.revoked_at IS NULL
+        AND (t.expires_at > $2::timestamptz OR t.refresh_expires_at > $2::timestamptz))
 `
 
-func (q *Queries) OAuthDeleteExpiredCodes(ctx context.Context, expiresAt time.Time) (int64, error) {
-	result, err := q.db.Exec(ctx, oAuthDeleteExpiredCodes, expiresAt)
+type OAuthDeleteExpiredCodesParams struct {
+	Before time.Time
+	Now    time.Time
+}
+
+// Codes that expired before `before`, unless a token of their family is
+// still usable at `now`: a used code is the record that replaying it must
+// revoke that family, so it is kept as long as there is something to revoke.
+func (q *Queries) OAuthDeleteExpiredCodes(ctx context.Context, arg OAuthDeleteExpiredCodesParams) (int64, error) {
+	result, err := q.db.Exec(ctx, oAuthDeleteExpiredCodes, arg.Before, arg.Now)
 	if err != nil {
 		return 0, err
 	}
@@ -632,6 +656,18 @@ func (q *Queries) OAuthDeleteExpiredRequests(ctx context.Context, expiresAt time
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const oAuthFamilyLock = `-- name: OAuthFamilyLock :exec
+SELECT pg_advisory_xact_lock(1002, hashtext($1::uuid::text))
+`
+
+// Serialises issuing a token into a family with revoking the family, until
+// the transaction ends: a revocation that waited here then sees every token
+// the issuer added. 1002 namespaces the lock (ingest uses 1001).
+func (q *Queries) OAuthFamilyLock(ctx context.Context, familyID uuid.UUID) error {
+	_, err := q.db.Exec(ctx, oAuthFamilyLock, familyID)
+	return err
 }
 
 const oAuthGrantActive = `-- name: OAuthGrantActive :one
@@ -1036,20 +1072,21 @@ func (q *Queries) OAuthTokenInsert(ctx context.Context, arg OAuthTokenInsertPara
 }
 
 const oAuthTokenOwnerByRefresh = `-- name: OAuthTokenOwnerByRefresh :one
-SELECT app_id, user_id FROM oauth_tokens WHERE refresh_hash = $1
+SELECT app_id, user_id, family_id FROM oauth_tokens WHERE refresh_hash = $1
 `
 
 type OAuthTokenOwnerByRefreshRow struct {
-	AppID  uuid.UUID
-	UserID pgtype.UUID
+	AppID    uuid.UUID
+	UserID   pgtype.UUID
+	FamilyID uuid.UUID
 }
 
-// The app and user of a refresh token, read without a lock so the grant can
-// be locked before the token.
+// The app, user and family of a refresh token, read without a lock so the
+// grant and the family can be locked before the token.
 func (q *Queries) OAuthTokenOwnerByRefresh(ctx context.Context, refreshHash []byte) (OAuthTokenOwnerByRefreshRow, error) {
 	row := q.db.QueryRow(ctx, oAuthTokenOwnerByRefresh, refreshHash)
 	var i OAuthTokenOwnerByRefreshRow
-	err := row.Scan(&i.AppID, &i.UserID)
+	err := row.Scan(&i.AppID, &i.UserID, &i.FamilyID)
 	return i, err
 }
 

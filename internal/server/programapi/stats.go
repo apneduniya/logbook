@@ -197,13 +197,28 @@ func (r StatsRequest) rawQuery(hidden []string) RawQuery {
 	return q
 }
 
+// statsRaw reads the raw time of a stats request and its total. Without a
+// project or category filter it is the rollup (time at the keyboard, less
+// hidden projects). Hackatime filters heartbeats before it takes the gaps
+// between them, so a filtered request is computed the same way from the
+// filtered heartbeats (RawTimeline), boundary-aware with test_param as
+// Hackatime's total is; its rows share that one timeline.
+func (s *Service) statsRaw(ctx context.Context, u User, req StatsRequest, hidden []string) ([]RawRow, int64, error) {
+	q := req.rawQuery(hidden)
+	if !q.Filtered() {
+		raw, err := s.Raw(ctx, u.ID, req.Range, q)
+		return raw, sumRaw(raw), err
+	}
+	return s.RawTimeline(ctx, u.ID, req.Range, q, req.Test)
+}
+
 // StatsTotals answers a total_seconds=true request.
 func (s *Service) StatsTotals(ctx context.Context, u User, req StatsRequest) (Totals, error) {
 	st, err := s.Settings(ctx, u.ID)
 	if err != nil {
 		return Totals{}, err
 	}
-	raw, err := s.Raw(ctx, u.ID, req.Range, req.rawQuery(st.Hidden))
+	_, rawTotal, err := s.statsRaw(ctx, u, req, st.Hidden)
 	if err != nil {
 		return Totals{}, err
 	}
@@ -211,7 +226,7 @@ func (s *Service) StatsTotals(ctx context.Context, u User, req StatsRequest) (To
 	if err != nil {
 		return Totals{}, err
 	}
-	t := Totals{RawSeconds: sumRaw(raw), CreditedSeconds: sumCredited(credited)}
+	t := Totals{RawSeconds: rawTotal, CreditedSeconds: sumCredited(credited)}
 	t.TotalSeconds = pick(req.Raw, t.RawSeconds, t.CreditedSeconds)
 	return t, nil
 }
@@ -222,7 +237,7 @@ func (s *Service) Stats(ctx context.Context, u User, req StatsRequest) (StatsBod
 	if err != nil {
 		return StatsBody{}, err
 	}
-	raw, err := s.Raw(ctx, u.ID, req.Range, req.rawQuery(st.Hidden))
+	raw, rawTotal, err := s.statsRaw(ctx, u, req, st.Hidden)
 	if err != nil {
 		return StatsBody{}, err
 	}
@@ -238,7 +253,7 @@ func (s *Service) Stats(ctx context.Context, u User, req StatsRequest) (StatsBod
 	if err != nil {
 		return StatsBody{}, err
 	}
-	rawTotal, creditedTotal := sumRaw(raw), sumCredited(credited)
+	creditedTotal := sumCredited(credited)
 	total := pick(req.Raw, rawTotal, creditedTotal)
 	sum := Summary{
 		Username:                u.Name(),
@@ -273,7 +288,10 @@ func (s *Service) Stats(ctx context.Context, u User, req StatsRequest) (StatsBod
 		sum.Projects = &projects
 	}
 	if req.ProjectsFeature && req.FilterProjects != nil { // Hackatime: filter_by_project.present?
-		unique := creditedTotal // capped per minute already, so never double counted
+		// Counted: the filtered projects' counted time, capped at 60 s per
+		// minute across projects already, so never double counted. Raw:
+		// Hackatime's unique_heartbeat_seconds.
+		unique := creditedTotal
 		if req.Raw {
 			if unique, err = s.RawUniqueCoding(ctx, u.ID, req.Range, req.FilterProjects, st.Hidden); err != nil {
 				return StatsBody{}, err
