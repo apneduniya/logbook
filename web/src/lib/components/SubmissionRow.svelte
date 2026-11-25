@@ -54,7 +54,7 @@
 			{dateRange(s.from, s.to)} · {s.program?.name ?? 'no program'}{#if s.user}<span
 					class="who-inline"
 				>
-					· {s.user.username}
+					{` · ${s.user.username}`}
 				</span>{/if}<span class="sr-only">. {status}.</span>
 		</span>
 	</div>
@@ -186,7 +186,10 @@
 	}
 	.why {
 		grid-column: 2 / -1;
+		min-width: 0;
 		color: var(--color-ink);
+		/* The server's reason can hold 64-character hashes. */
+		overflow-wrap: anywhere;
 	}
 	@media (max-width: 640px) {
 		.sr,
