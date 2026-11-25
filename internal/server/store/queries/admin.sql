@@ -280,11 +280,18 @@ SELECT a.id, a.actor_user_id, u.public_id AS actor_public_id, coalesce(u.usernam
        a.action, a.subject_type, a.subject_id, a.data::text AS data, a.created_at
 FROM audit_log a
 LEFT JOIN users u ON u.id = a.actor_user_id
-WHERE a.actor_user_id = sqlc.arg(user_id)::uuid
+WHERE a.id < sqlc.arg(before_id)::bigint
+  AND (a.actor_user_id = sqlc.arg(user_id)::uuid
    OR (a.subject_type = 'user' AND a.subject_id = sqlc.arg(subject_id)::text)
    OR (a.subject_type = 'device'
        AND a.subject_id IN (SELECT d.id::text FROM devices d WHERE d.user_id = sqlc.arg(user_id)::uuid))
    OR (a.subject_type = 'submission'
-       AND a.subject_id IN (SELECT s.id::text FROM submissions s WHERE s.user_id = sqlc.arg(user_id)::uuid))
+       AND a.subject_id IN (SELECT s.id::text FROM submissions s WHERE s.user_id = sqlc.arg(user_id)::uuid)))
 ORDER BY a.id DESC
 LIMIT sqlc.arg(max_rows) OFFSET sqlc.arg(skip_rows);
+
+-- name: AdminAuditNextID :one
+-- The id the next audit row will be above: user/audit_log pages are read
+-- below it, so rows written while paging (each page's own admin.read rows
+-- among them) never shift later pages.
+SELECT (coalesce(max(id), 0) + 1)::bigint AS next_id FROM audit_log;

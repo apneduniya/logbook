@@ -168,3 +168,28 @@ func (bigBundles) WriteBundle(_ context.Context, _ uuid.UUID, w io.Writer) error
 func (bigBundles) PartRows(context.Context, uuid.UUID, uuid.UUID, int, int) ([]submissions.EvidenceRow, int, error) {
 	return nil, 0, nil
 }
+
+// An export that fails after its submission is found (raw rows deleted,
+// or no free slot) is audited against the submission's owner, not only
+// the key.
+func TestFailedExportAuditedAgainstOwner(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	id := uuid.New()
+	g := *f
+	g.mux = http.NewServeMux()
+	reads := oneSubmission{Store: f.st, id: id, user: f.orpheus}
+	admin.NewHandler(admin.NewService(reads, deletedBundles{}, nil), f.keys, admin.HandlerOptions{}).Register(g.mux)
+	before := len(audit(t, f.st, "admin.read"))
+	g.expect(t, call{target: "/api/admin/v1/submissions/" + id.String() + "/bundle"}, http.StatusGone)
+	rows := audit(t, f.st, "admin.read")[before:]
+	if len(rows) != 1 || rows[0].SubjectType != "user" || rows[0].SubjectID != f.orpheus.String() ||
+		rows[0].Data["status"] != float64(http.StatusGone) {
+		t.Fatalf("failed export audited as %+v", rows)
+	}
+}
+
+// deletedBundles answers every export as deleted.
+type deletedBundles struct{ bigBundles }
+
+func (deletedBundles) CheckBundle(context.Context, uuid.UUID) error { return submissions.ErrEvidenceDeleted }

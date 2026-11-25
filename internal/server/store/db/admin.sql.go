@@ -18,17 +18,19 @@ SELECT a.id, a.actor_user_id, u.public_id AS actor_public_id, coalesce(u.usernam
        a.action, a.subject_type, a.subject_id, a.data::text AS data, a.created_at
 FROM audit_log a
 LEFT JOIN users u ON u.id = a.actor_user_id
-WHERE a.actor_user_id = $1::uuid
-   OR (a.subject_type = 'user' AND a.subject_id = $2::text)
+WHERE a.id < $1::bigint
+  AND (a.actor_user_id = $2::uuid
+   OR (a.subject_type = 'user' AND a.subject_id = $3::text)
    OR (a.subject_type = 'device'
-       AND a.subject_id IN (SELECT d.id::text FROM devices d WHERE d.user_id = $1::uuid))
+       AND a.subject_id IN (SELECT d.id::text FROM devices d WHERE d.user_id = $2::uuid))
    OR (a.subject_type = 'submission'
-       AND a.subject_id IN (SELECT s.id::text FROM submissions s WHERE s.user_id = $1::uuid))
+       AND a.subject_id IN (SELECT s.id::text FROM submissions s WHERE s.user_id = $2::uuid)))
 ORDER BY a.id DESC
-LIMIT $4 OFFSET $3
+LIMIT $5 OFFSET $4
 `
 
 type AdminAuditLogParams struct {
+	BeforeID  int64
 	UserID    uuid.UUID
 	SubjectID string
 	SkipRows  int32
@@ -52,6 +54,7 @@ type AdminAuditLogRow struct {
 // user's id as text.
 func (q *Queries) AdminAuditLog(ctx context.Context, arg AdminAuditLogParams) ([]AdminAuditLogRow, error) {
 	rows, err := q.db.Query(ctx, adminAuditLog,
+		arg.BeforeID,
 		arg.UserID,
 		arg.SubjectID,
 		arg.SkipRows,
@@ -83,6 +86,20 @@ func (q *Queries) AdminAuditLog(ctx context.Context, arg AdminAuditLogParams) ([
 		return nil, err
 	}
 	return items, nil
+}
+
+const adminAuditNextID = `-- name: AdminAuditNextID :one
+SELECT (coalesce(max(id), 0) + 1)::bigint AS next_id FROM audit_log
+`
+
+// The id the next audit row will be above: user/audit_log pages are read
+// below it, so rows written while paging (each page's own admin.read rows
+// among them) never shift later pages.
+func (q *Queries) AdminAuditNextID(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, adminAuditNextID)
+	var next_id int64
+	err := row.Scan(&next_id)
+	return next_id, err
 }
 
 const adminCreditedMinutes = `-- name: AdminCreditedMinutes :many

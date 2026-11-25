@@ -1,6 +1,7 @@
 package admin_test
 
 import (
+	"fmt"
 	"net/http"
 	"strconv"
 	"testing"
@@ -140,6 +141,33 @@ func TestUserAuditLog(t *testing.T) {
 	p = decode[page](t, f.expect(t, call{target: target + "&limit=2"}, http.StatusOK))
 	if len(p.Entries) != 2 || !p.HasMore || p.Entries[0].Action != "admin.read" || p.Entries[0].Actor.Username != "fiona" {
 		t.Fatalf("page = %+v", p)
+	}
+
+	// Paging one entry at a time with the first page's before_id walks the
+	// listing as it was, although every page read adds an admin.read row.
+	type cursor struct {
+		BeforeID int64 `json:"before_id"`
+		page
+	}
+	first := decode[cursor](t, f.expect(t, call{target: target + "&limit=1"}, http.StatusOK))
+	seen := map[int64]bool{first.Entries[0].ID: true}
+	walked := []string{first.Entries[0].Action}
+	for offset := 1; ; offset++ {
+		next := decode[cursor](t, f.expect(t, call{target: fmt.Sprintf("%s&limit=1&offset=%d&before_id=%d", target, offset, first.BeforeID)}, http.StatusOK))
+		if next.BeforeID != first.BeforeID {
+			t.Fatalf("before_id changed: %d, %d", first.BeforeID, next.BeforeID)
+		}
+		if len(next.Entries) == 0 {
+			break
+		}
+		if seen[next.Entries[0].ID] {
+			t.Fatalf("entry %d repeated at offset %d", next.Entries[0].ID, offset)
+		}
+		seen[next.Entries[0].ID] = true
+		walked = append(walked, next.Entries[0].Action)
+	}
+	if n := len(walked); n < 3 || walked[n-1] != "api_key.create" || walked[n-2] != "user.username_reserved" || walked[n-3] != "device.register" {
+		t.Fatalf("walked %v; want it to reach the oldest entries", walked)
 	}
 }
 

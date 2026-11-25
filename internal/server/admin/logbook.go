@@ -278,13 +278,22 @@ func userRef(id pgtype.Int8, username string) *UserRef {
 
 // AuditLog answers user/audit_log for u: entries where u is the actor or
 // the subject (u, one of u's devices or submissions), newest first.
-func (s *Service) AuditLog(ctx context.Context, u UserRow, limit, offset int64) ([]AuditEntry, Page, error) {
+// Entries are read below beforeID (0 means "now"), which the answer gives
+// back, so later pages of the same listing see the same entries.
+func (s *Service) AuditLog(ctx context.Context, u UserRow, limit, offset, beforeID int64) ([]AuditEntry, Page, int64, error) {
+	if beforeID <= 0 {
+		next, err := s.q.AdminAuditNextID(ctx)
+		if err != nil {
+			return nil, Page{}, 0, fmt.Errorf("reading audit log: %w", err)
+		}
+		beforeID = next
+	}
 	rows, err := s.q.AdminAuditLog(ctx, db.AdminAuditLogParams{
-		UserID: u.ID, SubjectID: u.ID.String(),
+		BeforeID: beforeID, UserID: u.ID, SubjectID: u.ID.String(),
 		MaxRows: int32(limit + 1), SkipRows: int32(offset), //nolint:gosec // both clamped
 	})
 	if err != nil {
-		return nil, Page{}, fmt.Errorf("reading audit log: %w", err)
+		return nil, Page{}, 0, fmt.Errorf("reading audit log: %w", err)
 	}
 	page := Page{Limit: limit, Offset: offset, HasMore: int64(len(rows)) > limit}
 	if page.HasMore {
@@ -297,7 +306,7 @@ func (s *Service) AuditLog(ctx context.Context, u UserRow, limit, offset int64) 
 			SubjectType: r.SubjectType, SubjectID: r.SubjectID, Data: json.RawMessage(r.Data), CreatedAt: r.CreatedAt.UTC(),
 		}
 	}
-	return out, page, nil
+	return out, page, beforeID, nil
 }
 
 func (h *Handler) userAuditLog(w http.ResponseWriter, r *http.Request, c *call) error {
@@ -307,13 +316,15 @@ func (h *Handler) userAuditLog(w http.ResponseWriter, r *http.Request, c *call) 
 	}
 	limit := c.p.intParam("limit", defaultAudit, 1, maxAudit)
 	offset := c.p.intParam("offset", 0, 0, math.MaxInt32-maxAudit)
-	entries, page, err := h.svc.AuditLog(r.Context(), u, limit, offset)
+	before := c.p.intParam("before_id", 0, 0, math.MaxInt64)
+	entries, page, before, err := h.svc.AuditLog(r.Context(), u, limit, offset, before)
 	if err != nil {
 		return err
 	}
 	return writeJSON(w, r, c, struct {
-		UserID  int64        `json:"user_id"`
-		Entries []AuditEntry `json:"entries"`
+		UserID   int64        `json:"user_id"`
+		BeforeID int64        `json:"before_id"`
+		Entries  []AuditEntry `json:"entries"`
 		Page
-	}{u.PublicID, entries, page}, u.ID)
+	}{u.PublicID, before, entries, page}, u.ID)
 }

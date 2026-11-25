@@ -35,6 +35,7 @@ type Reads interface {
 	AdminSubmissionParts(ctx context.Context, submissionID uuid.UUID) ([]db.AdminSubmissionPartsRow, error)
 	AdminSubmissionMinutes(ctx context.Context, submissionID uuid.UUID) ([]db.AdminSubmissionMinutesRow, error)
 	AdminAuditLog(ctx context.Context, arg db.AdminAuditLogParams) ([]db.AdminAuditLogRow, error)
+	AdminAuditNextID(ctx context.Context) (int64, error)
 }
 
 // Evidence reads what a submission stored; *submissions.Checker

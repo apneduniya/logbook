@@ -19,6 +19,10 @@ type Querier interface {
 	// devices or their submissions, newest first, one page. subject_id is the
 	// user's id as text.
 	AdminAuditLog(ctx context.Context, arg AdminAuditLogParams) ([]AdminAuditLogRow, error)
+	// The id the next audit row will be above: user/audit_log pages are read
+	// below it, so rows written while paging (each page's own admin.read rows
+	// among them) never shift later pages.
+	AdminAuditNextID(ctx context.Context) (int64, error)
 	// One admin.read audit row per subject of an admin API request: the users
 	// it read (subject_type 'user'), or the key itself when it read no user
 	// (subject_type 'admin_key').

@@ -140,6 +140,9 @@ type call struct {
 	audited bool
 	// status is the error status of a request audited after it failed.
 	status int
+	// subjects are the users the request resolved before it failed, so a
+	// failure after a user was found is still audited against that user.
+	subjects []uuid.UUID
 }
 
 // audit writes the request's admin.read rows: one per user it reads (none
@@ -199,7 +202,7 @@ func (h *Handler) route(f func(http.ResponseWriter, *http.Request, *call) error)
 			if he := (*httpapi.Error)(nil); errors.As(err, &he) {
 				c.status = he.Status
 			}
-			if aerr := c.audit(ctx); aerr != nil {
+			if aerr := c.audit(ctx, c.subjects...); aerr != nil {
 				slog.ErrorContext(ctx, "auditing a failed admin request", "err", aerr, "path", r.URL.Path)
 				err = aerr
 			}
@@ -260,6 +263,9 @@ func (h *Handler) user(ctx context.Context, c *call) (UserRow, error) {
 	u, err := h.svc.User(ctx, id)
 	if errors.Is(err, ErrNotFound) {
 		return UserRow{}, errUserNotFound
+	}
+	if err == nil {
+		c.subjects = append(c.subjects, u.ID)
 	}
 	return u, err
 }

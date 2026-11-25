@@ -322,6 +322,7 @@ func (h *Handler) submissionEvidence(w http.ResponseWriter, r *http.Request, c *
 	if err != nil {
 		return err
 	}
+	c.subjects = append(c.subjects, owner)
 	parts, err := h.svc.q.AdminSubmissionParts(ctx, id)
 	if err != nil {
 		return fmt.Errorf("reading parts: %w", err)
@@ -377,6 +378,7 @@ func (h *Handler) submissionBundle(w http.ResponseWriter, r *http.Request, c *ca
 	if err != nil {
 		return err
 	}
+	c.subjects = append(c.subjects, owner)
 	if err := h.svc.ev.CheckBundle(ctx, id); err != nil {
 		return evidenceError(err)
 	}
