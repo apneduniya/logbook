@@ -1,0 +1,140 @@
+---
+title: "Verify a bundle"
+description: "Download a submission's verification bundle and check it on your own machine with logbook verify, without trusting Logbook's server."
+---
+
+import { Steps, Tabs, TabItem, Aside } from '@astrojs/starlight/components';
+import Shot from '../../../components/Shot.astro';
+
+`logbook verify` rechecks a submission on your computer. It checks each device's signatures and evidence chain, every proof, and the replay of every minute, then recomputes the capped seconds. It prints the same counts as the review page. It uses only the public `pkg/` code the server runs, and no network.
+
+You need an [admin key](/fraud-squad/get-an-admin-key/) to download the bundle, and the submission's id ([how to find it](/fraud-squad/admin-api/#examples)).
+
+## Get the `logbook` binary
+
+`verify` is part of the normal Logbook agent from v0.2.0. If you already have the agent installed, skip this. Otherwise download the binary on its own; you don't need to install or sign in.
+
+<Tabs syncKey="os">
+<TabItem label="Windows">
+
+In PowerShell:
+
+```powershell
+Invoke-WebRequest https://github.com/apneduniya/logbook/releases/download/v0.2.0/logbook_windows_amd64.exe -OutFile logbook.exe
+Invoke-WebRequest https://github.com/apneduniya/logbook/releases/download/v0.2.0/checksums.txt -OutFile checksums.txt
+(Get-FileHash logbook.exe -Algorithm SHA256).Hash.ToLower()
+Select-String logbook_windows_amd64.exe checksums.txt
+```
+
+The two hashes must match. Use `logbook_windows_arm64.exe` on an ARM PC. Run it as `.\logbook.exe`.
+
+</TabItem>
+<TabItem label="macOS">
+
+```sh
+curl -fsSL -o logbook https://github.com/apneduniya/logbook/releases/download/v0.2.0/logbook_darwin_arm64
+curl -fsSLO https://github.com/apneduniya/logbook/releases/download/v0.2.0/checksums.txt
+shasum -a 256 logbook && grep darwin_arm64 checksums.txt
+chmod +x logbook
+```
+
+The two hashes must match. Use `logbook_darwin_amd64` on an Intel Mac. Run it as `./logbook`.
+
+</TabItem>
+<TabItem label="Linux">
+
+```sh
+curl -fsSL -o logbook https://github.com/apneduniya/logbook/releases/download/v0.2.0/logbook_linux_amd64
+curl -fsSLO https://github.com/apneduniya/logbook/releases/download/v0.2.0/checksums.txt
+sha256sum logbook && grep linux_amd64 checksums.txt
+chmod +x logbook
+```
+
+The two hashes must match. Use `logbook_linux_arm64` on ARM. Run it as `./logbook`.
+
+</TabItem>
+</Tabs>
+
+To avoid trusting our release builds too, build it from the tagged source (Go 1.27.4 or later):
+
+```sh
+git clone https://github.com/apneduniya/logbook && cd logbook
+git checkout v0.2.0
+go build -o logbook ./cmd/logbook
+```
+
+## Check a submission
+
+<Steps>
+
+1. Download the bundle. Replace `<submission-id>`:
+
+   ```sh
+   curl -fSL -o bundle.json.gz \
+     -H "Authorization: Bearer $LOGBOOK_ADMIN_KEY" \
+     https://api.logbook.boogles.dev/api/admin/v1/submissions/<submission-id>/bundle
+   ```
+
+   On Windows, put the command on one line and use `curl.exe` and `$env:LOGBOOK_ADMIN_KEY`.
+
+   `410` means the raw evidence was deleted (withdrawn, or past retention). `503` means 4 exports are already running; wait a minute.
+
+2. Get a key fingerprint for each device **from outside our server**. The coder runs `logbook status` on each device and reads you the `Key:` line, a 16-character hex fingerprint. They can also read it under Devices on their Settings page, but that page is served by Logbook.
+
+   <Shot name="web-settings.png" alt="Logbook settings page: profile, API keys, and a Devices list where each device shows its OS and a key fingerprint" />
+
+3. Run the check with every fingerprint:
+
+   ```sh
+   ./logbook verify --key 9c41d07be2a35f18 bundle.json.gz
+   ```
+
+   Repeat `--key` once per device. The file can be gzipped or plain JSON. On Windows, run `.\logbook.exe verify` instead.
+
+</Steps>
+
+## How to tell it worked
+
+`verify` exits with `0` when every check passes and non-zero when any fails. The last line says which:
+
+```text
+Submission 0b7e2c1a-5d4f-4e8b-9a61-2f3c8d9e7a10: weather-bot, 2026-11-01 to 2026-11-20 (created 2026-11-21T09:14:03Z)
+Device laptop (6a1f0c3e-8b2d-4f71-a5c9-1e7d3b4f9c22)
+  key                   OK    9c41d07be2a35f18, one of the fingerprints given
+  signatures and chain  OK    20 signed records
+  proofs and replays    OK    18 blocks, 744 minutes listed
+Cap                     OK    744 capped minutes recomputed from 761 cap inputs
+Minutes                 744 verified, 0 mismatch, 0 unbacked
+Counted                 12.4 h (44,640 s), from the frozen capped seconds
+Result                  OK: every key, signature, chain, proof, replay and the cap check out
+```
+
+Compare `Minutes` and `Counted` with the review page. They should be the same.
+
+<Aside type="caution" title="OK doesn't mean every minute is verified">
+`Result OK` means the bundle is internally consistent. It can still contain `mismatch` minutes (the replay disagreed with the device; up to 20 are listed) and `unbacked` minutes (nothing proves them, with the reason). Both are still in the counted figure, as on the review page.
+</Aside>
+
+Without `--key`, each key line says `not checked` and the result adds that the bundle names its own keys. That run proves the bundle is consistent, but not that it came from the coder's real devices.
+
+## What verification proves
+
+For every `verified` minute:
+
+- Each device's daily evidence records are signed by that device's key and form one unbroken chain.
+- The raw rows the bundle reveals are exactly the rows under the signed daily root. Salted buckets in a Merkle tree make this checkable without revealing the rest of the day.
+- The 2-hour window the minute's run read is **complete**: no row in it was left out.
+- Running the stated rules version on those rows gives the same label, project, credit and cuts the device reported.
+- The counted seconds are the cap rule recomputed from the frozen inputs, and the project's credit comes only from frozen rows.
+
+With `--key` from the coder's own devices, a server can't swap in records signed with a key of its own.
+
+## What it doesn't prove
+
+- **That the agent told the truth.** A modified agent can invent activity in real time and sign it. That is an accepted risk: Logbook makes it detectable through flags, gaps and review, not impossible.
+- **When a record was signed.** The bundle doesn't carry upload times. That each day was sealed on that day rests on the server, which refuses a different record for a day it already stores. Those refusals are listed in `user/devices` as `refused_uploads`.
+- **Flags.** Replays compare label, project, credit and cuts. Flags such as `low_signal` are advisory and not rechecked. Claude Code active-time rows, which only feed the `otel_mismatch` flag, aren't proven complete.
+- **Minutes from other projects in the cap.** The cap inputs from other projects are taken as frozen. `verify` checks the submitted project's inputs against its frozen rows, not that no other project's row was left out.
+- **Unbacked minutes**, by definition.
+
+The reviewer guide explains how these show up on the review page: [Evidence and trust](/reviewers/evidence-and-trust/).

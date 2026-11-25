@@ -1,0 +1,33 @@
+---
+title: "Logbook for Fraud Squad"
+description: "How Hack Club staff and Fraud Squad check Logbook hours without taking Logbook's word for them."
+---
+
+Logbook gives Fraud Squad a read-only admin API and a way to check any submission on your own machine. You don't have to trust our server, our review page or our numbers: every counted minute in a submission can be traced back to logs its device signed on the day.
+
+## What you can do
+
+- **Look up a user** with the same admin calls Hackatime has (`user/info`, `user/heartbeats`, `user/projects`, `user/trust_logs`, search by email or name). Tools built for Hackatime's admin API can point at Logbook.
+- **See what Hackatime can't:** a user's devices and their evidence chains, every credited minute with its cuts and flags, every submission with the server's re-check, and the raw rows a submission revealed.
+- **Download a submission's bundle** and check it offline with `logbook verify`. It checks the signatures, the proofs and the replay of every minute, and recomputes the counted hours.
+- **Read the audit log** of a user: what they did, what reviewers decided, and which admins looked at them.
+
+Everything is read-only. You can't ban, edit or delete anything through Logbook. Bans stay in Hackatime.
+
+## Where to start
+
+1. [Get an admin key](/fraud-squad/get-an-admin-key/). Only the server operator can make one.
+2. Skim the [admin API reference](/fraud-squad/admin-api/) for the calls you need.
+3. [Verify a bundle](/fraud-squad/verify-a-bundle/) when you want proof rather than our page.
+4. [Read the audit log](/fraud-squad/audit-log/) to see who did what.
+
+The [FAQ](/fraud-squad/faq/) covers the edge cases.
+
+## Every call is recorded
+
+Each admin request writes an audit row before it returns anything: who you are, which key, the path, the parameters and every user you read. Other admins can see it. Treat an admin key as the most powerful credential Logbook issues.
+
+## Related pages
+
+- What a reviewer sees on the review link: [Evidence and trust](/reviewers/evidence-and-trust/).
+- What a coder's computer sends, and when: [Privacy](/users/privacy/).

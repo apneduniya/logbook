@@ -1,0 +1,62 @@
+---
+title: "FAQ"
+description: "Edge cases and common questions from Fraud Squad about the admin API and offline verification."
+---
+
+## Is there an admin page on the website?
+
+No. Admin access is only through the [admin API](/fraud-squad/admin-api/), with an admin key. Signing in to the website as an admin doesn't show anything extra, and a browser session can't call the admin API.
+
+## Can I ban a user or mark a submission as fraud in Logbook?
+
+No. The admin API is read-only in V1. Bans stay in Hackatime: a user whose Hackatime account is banned can't submit, and reviewers can't approve or adjust their submissions. Write actions may come after the pilot, once Fraud Squad says what it needs.
+
+## Can our Hackatime admin tools use Logbook?
+
+Mostly. The Hackatime calls Logbook provides (`user/info`, `user/info_batch`, `user/heartbeats`, `user/projects`, `user/trust_logs`, `user/get_user_by_email`, `user/search_fuzzy`) match Hackatime's paths, parameters and response shapes, under `https://api.logbook.boogles.dev/api/admin/v1/`. Calls Logbook doesn't provide return `404`. The list is on the [API page](/fraud-squad/admin-api/#hackatime-compatible-calls).
+
+## How do I find a user from their Hackatime id?
+
+There's no direct lookup. Search by email (`user/get_user_by_email`) or by username, display name or GitHub username (`user/search_fuzzy`). `user/info` then shows `logbook.hackatime_id`, and each submission records `hackatime_user_id`.
+
+## Why does a user show `blue` trust?
+
+Either they never linked Hackatime, or Logbook couldn't read their level. Check `logbook.trust_verified` (`false` in both cases) and `logbook.hackatime_trust_level` (`null` without a link, `unknown` when unreadable).
+
+## What can I see that reviewers can't?
+
+Raw heartbeats, file paths included, and the raw rows of **other projects** that fell inside a submission's replay windows. Reviewers only see the review page, which shows neither.
+
+## The bundle download says `410`.
+
+The submission's raw evidence is gone: it was withdrawn, or it's more than a year since its latest decision. The packet and frozen minutes are still readable with `submissions/{id}`, but the bundle can't be rebuilt.
+
+A bundle you already downloaded stays checkable forever: `logbook verify` needs nothing else. Download the ones you may need later.
+
+## `logbook verify` can't read my bundle.
+
+The download was probably cut off. If the server fails partway, it cuts the connection, so you get a truncated gzip file rather than one that looks whole. Download it again with `curl -f`. Bundles up to 1 GiB uncompressed are accepted.
+
+## What do the `unbacked` reasons mean?
+
+| Reason | Meaning |
+|---|---|
+| no evidence from this device yet | The minute is from another device that hasn't added its part (`logbook submit --add`). |
+| its block isn't sealed | No signed record with block fields covers the log position the minute's run read. |
+| its window isn't proven complete | The bundle doesn't show that nothing was left out of the 2-hour window the run read. |
+| the repo bucket of its block isn't opened | The repo mapping the run used wasn't revealed. |
+| the device's part doesn't back it | The device's upload doesn't list this minute. |
+| stored before computation keys | The minute has no key `(T, H)` saying what its run read, so it can't be replayed. |
+| the device's evidence chain doesn't reach back to its start | The device's first record in the bundle follows an earlier day without block fields, so rows before it are in no record. |
+
+## Which devices does a bundle cover?
+
+Every device with a frozen minute or a part in the submission. `verify` needs a `--key` for each of them when you pin keys. Get the fingerprints from the coder (`logbook status` on each device).
+
+## I lost my admin key, or it leaked.
+
+Tell the operator at once with the key's prefix (`lba_` and the next 12 characters) if you know it. They run `logbook-server admin key revoke <prefix>`, then make you a new key. Check the [audit log](/fraud-squad/audit-log/#check-what-an-admin-did) for reads you didn't make.
+
+## Are my searches private?
+
+No. Every request records its parameters, including emails and search terms, in the audit log. Other admins can read it.

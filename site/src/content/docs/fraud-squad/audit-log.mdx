@@ -1,0 +1,91 @@
+---
+title: "Read the audit log"
+description: "Page through a user's audit log, find admin reads, and know what each entry records."
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+Every admin request writes audit rows before it returns any data. Sign-ins, keys, devices, Hackatime links, submissions and reviewer decisions are audited too. You read them one user at a time with `user/audit_log`.
+
+## Read a user's log
+
+<Steps>
+
+1. Get the first page. Entries come newest first, 100 by default, up to 1,000:
+
+   ```sh
+   curl -sS "https://api.logbook.boogles.dev/api/admin/v1/user/audit_log?id=100000002&limit=1000" \
+     -H "Authorization: Bearer $LOGBOOK_ADMIN_KEY" > page1.json
+   jq '{before_id, has_more}' page1.json
+   ```
+
+2. Keep the `before_id` from that answer. It pins the listing: entries are read below it, so rows written while you page (including the `admin.read` rows your own paging adds) don't shift later pages.
+
+3. While `has_more` is `true`, ask for the next page with the same `before_id` and a larger `offset`:
+
+   ```sh
+   curl -sS "https://api.logbook.boogles.dev/api/admin/v1/user/audit_log?id=100000002&limit=1000&offset=1000&before_id=58213" \
+     -H "Authorization: Bearer $LOGBOOK_ADMIN_KEY" > page2.json
+   ```
+
+   You can instead send the last entry's `id` as `before_id` with `offset=0`. Both give the same entries.
+
+</Steps>
+
+It worked when the last page says `"has_more": false`.
+
+## What's in it
+
+The log for a user holds every entry where the user is the actor, or the subject is the user, one of their devices or one of their submissions. That includes other admins' `admin.read` rows about them.
+
+Each entry:
+
+| Field | Meaning |
+|---|---|
+| `id` | Increasing number. Use it for paging. |
+| `action` | What happened, such as `submission.decide`. |
+| `actor` | `{id, username}` of who did it. `null` when there is none (for example, command-line actions) or the account was deleted. |
+| `subject_type`, `subject_id` | What it's about: `user`, `device`, `submission`, `admin_key`, and others. `subject_id` is an internal id, not the public one. |
+| `data` | Details, which depend on the action. Keys appear only as their prefix. |
+| `created_at` | When, in UTC. |
+
+Actions you'll see most:
+
+| Action | Written when |
+|---|---|
+| `auth.login`, `auth.logout` | The user signs in or out. |
+| `api_key.create`, `api_key.revoke` | A user API key is made or revoked (name and prefix only). |
+| `device.register`, `device.revoke` | A device is added or revoked. |
+| `evidence_conflict` | The server refused a different, validly signed record for a day it already stored. |
+| `hackatime.linked`, `hackatime.unlinked`, `hackatime.trust_changed` | The Hackatime link or trust level changed. |
+| `submission.create`, `submission.withdraw` | A submission is made or withdrawn. |
+| `submission.decide` | A reviewer approves, adjusts or rejects (value, approved seconds, reason, trust level). |
+| `admin.read` | An admin read this user's data. |
+| `admin.grant`, `admin.revoke`, `admin_key.create`, `admin_key.list`, `admin_key.revoke` | The operator changed admin access (`"via": "command line"`). |
+
+## Reading `admin.read` rows
+
+One admin request writes one row per user it read. If it read no user (a `404`, an empty search, an unknown path), it writes one row about the key instead. The `data` holds:
+
+- `method`, `path` and `key`: the key's prefix, never the key.
+- `request`: an id shared by all rows of one request.
+- `params`: the query and body, so searches are recorded. Each value is cut at 1 KiB and the whole at 4 KiB; `params_truncated: true` marks a cut.
+- `status`, when the request failed.
+
+A request that read more than 10 users (only `user/info_batch` can) records its parameters once, in a row about the key with `users`, the count. Its per-user rows point to it by `request` id.
+
+Requests refused by the rate limit, or with a bad key, read nothing and aren't recorded.
+
+## Check what an admin did
+
+An admin's own reads are entries where they are the actor. So read the admin's log the same way, with their public id, and filter:
+
+```sh
+curl -sS "https://api.logbook.boogles.dev/api/admin/v1/user/audit_log?id=100000009&limit=1000" \
+  -H "Authorization: Bearer $LOGBOOK_ADMIN_KEY" \
+  | jq '.entries[] | select(.action == "admin.read") | {created_at, path: .data.path, params: .data.params}'
+```
+
+<Aside>
+Reading the log is itself an admin read: it adds `admin.read` rows about the user you looked up.
+</Aside>

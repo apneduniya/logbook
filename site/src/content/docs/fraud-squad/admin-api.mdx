@@ -1,0 +1,143 @@
+---
+title: "Admin API"
+description: "Reference for the read-only admin API: authentication, limits, every endpoint and curl examples."
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Base URL: `https://api.logbook.boogles.dev/api/admin/v1/`. Every call is read-only and [audited](/fraud-squad/audit-log/). The examples assume your key is in `$LOGBOOK_ADMIN_KEY` ([how](/fraud-squad/get-an-admin-key/)).
+
+## Authentication
+
+Send `Authorization: Bearer lba_…`. Nothing else is accepted: no cookie, no `api_key` query parameter, no Basic auth. A browser session, a user API key or an OAuth token gets the same answer as a wrong key:
+
+```
+401 {"error": "HTTP Token: Access denied."}
+WWW-Authenticate: Bearer realm="Logbook admin"
+```
+
+A key stops working as soon as it is revoked or its owner loses the admin role.
+
+## Limits and headers
+
+| What | Limit |
+|---|---|
+| Requests per key | Burst of 300, refilled at 300 a minute. Then `429` with `Retry-After`. |
+| Failed authentications per client | Burst of 30, one more every 2 seconds. Then `429`. A valid key is never held back by them. |
+| Request body | 64 KiB (`413`). Malformed JSON is `400`. |
+| Bundle exports | 4 at once across the server. Then `503` with `Retry-After: 60`. |
+
+Every answer has `Cache-Control: no-store`. There is no CORS, so you can't call it from a web page.
+
+## Errors
+
+Errors are JSON: `{"error": "message"}`. The Hackatime-compatible calls use Hackatime's exact statuses and messages, so some read oddly (`"who?"`, `"bro dont have a email"`). Any path that isn't listed here, or a listed path with the wrong method, is `404 {"error": "not found"}`.
+
+## Common parameters
+
+- **The user:** `id`, or `user_id` if `id` is missing. It's the Logbook numeric public id, not a Hackatime id. Blank is `422 {"error": "who?"}`; no such user is `404 {"error": "user not found"}`. As in Rails, `12abc` reads as `12`.
+- **Dates:** `start_date` and `end_date` take Unix seconds (milliseconds from 10¹²), or anything Ruby's `Date.parse` accepts, such as `2026-11-03`, `Wed, 10 Jun 2026 00:00:00 GMT` or `10 Jun 2026`. `10/06/2026` is read day first. Both bounds are inclusive UTC days. A date `Date.parse` rejects, such as `2026-06`, is `422 {"error": "invalid start_date"}`.
+- **Paging:** `limit` and `offset`. Out-of-range values are clamped, not refused. Responses say `has_more`.
+- On the two `POST` calls, parameters can be a JSON or form body. If a name is in both the query and the body, the query wins.
+
+## Hackatime-compatible calls
+
+These match Hackatime's admin API: path, method, parameters, defaults, field names and field order. Fields Logbook has no source for are `null` (`[]` for lists, `false` for `hidden`). Logbook's extra fields sit under a `logbook` key in each object.
+
+Unlike the public pages, **trust levels are unmasked**: you see `yellow`. A user with no Hackatime link, or whose level couldn't be read, shows `blue`, with `logbook.trust_verified: false`.
+
+| Call | What you get |
+|---|---|
+| `GET user/info?id=` | `{"user": {...}}`: account, email, trust level, `stats`, `last_heartbeat_at`. `logbook` adds `username`, `hackatime_id`, `trust_verified`, `hackatime_trust_level`, `trust_checked_at`, `role`, `profile_public`, device counts and `last_credited_minute`. |
+| `GET user/info_batch?ids=1,2,3` | `{"users": [...]}`, up to 2,000 ids. Unknown ids are left out. |
+| `GET user/heartbeats?id=` | Raw heartbeats, file paths included, oldest first. Filters: `start_date`, `end_date`, `project`, `language`, `entity`, `editor`, `machine`. `limit` 1 to 5,000 (default 1,000). `include_ai=true` adds AI fields. Returns `total_count` and `has_more`. |
+| `GET user/projects?id=` | Every project with heartbeat counts and durations, hidden projects included. `logbook.credited_seconds` is Logbook's counted time. Optional `start_date`, `end_date`. |
+| `GET user/trust_logs?id=` | The 25 most recent trust levels Logbook read from Hackatime, newest first. Logbook only reads levels, so `changed_by`, `reason` and `notes` are `null`. |
+| `POST user/get_user_by_email` | Body `email`, exact match. Returns `{"user_id": ...}`, the oldest account if several share it. |
+| `POST user/search_fuzzy` | Body `query`. Up to 10 users matched on username, display name, GitHub username, email or public id, best first. Users without an email are left out. |
+
+<Aside>
+`include_ai` follows Rails: anything except empty, `0`, `f`, `F`, `false`, `FALSE`, `off` and `OFF` is true. So `False` turns it **on**.
+</Aside>
+
+Durations follow Hackatime's rule: each heartbeat gets its gap to the previous one, at most 120 seconds. That's heartbeat time, not Logbook's counted time. For counted time, use `user/minutes` or `logbook.credited_seconds`.
+
+Not provided: `check`, `user/heartbeat_values`, `get_users_by_ip`, `get_users_by_machine`, `user/stats`, `banned_users`, every write (`ban`, `user/convict`, `poison` and the rest), `admin_api_keys`, `leaderboard_shadowbans`, `trust_level_audit_logs`, `deletion_requests`, `timeline` and `heartbeats/by_user_agent_segment`. They return `404`.
+
+## Logbook calls
+
+Times are RFC 3339 UTC. Paged calls return `limit`, `offset` and `has_more`.
+
+| Call | What you get |
+|---|---|
+| `GET user/devices?id=` | Every device, revoked ones too: `public_key` (base64), `created_at`, `last_seen_at`, `revoked_at`, and `chain`: `days_sealed`, `days_with_block`, `first_day`, `last_day`, `gap_days`, `gaps`, and `refused_uploads` (every different, validly signed record the server refused for a day it already had). |
+| `GET user/minutes?id=` | Every credited minute, any device and project: `label`, `credited`, `cuts`, `flags`, `rules_version`, `key`. Filters `start_date`, `end_date`, `project`. `limit` 1 to 5,000 (default 1,000). |
+| `GET user/submissions?id=` | Every submission of any status, newest first. |
+| `GET user/audit_log?id=` | The user's audit log. See [Read the audit log](/fraud-squad/audit-log/). |
+| `GET submissions/{id}` | One submission: `submission`, `packet` (the review page's data, once ready), every `decision`, its `parts`, and every frozen minute with `result` (`verified`, `mismatch` or `unbacked`), the `reason` it's unbacked, and the server's result on a mismatch. |
+| `GET submissions/{id}/evidence?part=` | The raw rows the submission revealed for one device, decoded: `day`, `bucket`, `bucket_minute`, `seq`, `type`, `time`, `value`. `part` is the device id; leave it out when there is only one part. `limit` 1 to 5,000 (default 1,000). |
+| `GET submissions/{id}/bundle` | The verification bundle, a gzip file for [`logbook verify`](/fraud-squad/verify-a-bundle/). |
+
+`{id}` for submissions is a UUID. A wrong one is `404 {"error": "submission not found"}`. Once a submission is withdrawn, or a year after its latest decision (or after it was submitted, if nobody decided), its raw evidence is deleted: `evidence` and `bundle` then return `410`.
+
+The `submission` object includes `trust_at_submission` (unmasked), `hackatime_user_id`, `minutes` (`verified`, `mismatch`, `unbacked`), `counted_seconds`, `raw_seconds`, `raw_deleted` and the latest `decision`.
+
+## Examples
+
+Find a user by email:
+
+```sh
+curl -sS -X POST https://api.logbook.boogles.dev/api/admin/v1/user/get_user_by_email \
+  -H "Authorization: Bearer $LOGBOOK_ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"email": "someone@example.com"}'
+```
+
+Look at their account:
+
+```sh
+curl -sS "https://api.logbook.boogles.dev/api/admin/v1/user/info?id=100000002" \
+  -H "Authorization: Bearer $LOGBOOK_ADMIN_KEY"
+```
+
+Heartbeats for one project over three days, with AI fields:
+
+```sh
+curl -sS -G https://api.logbook.boogles.dev/api/admin/v1/user/heartbeats \
+  -H "Authorization: Bearer $LOGBOOK_ADMIN_KEY" \
+  --data-urlencode "id=100000002" \
+  --data-urlencode "project=weather-bot" \
+  --data-urlencode "start_date=2026-11-03" \
+  --data-urlencode "end_date=2026-11-05" \
+  --data-urlencode "include_ai=true" \
+  --data-urlencode "limit=5000"
+```
+
+Gaps in a user's evidence chains:
+
+```sh
+curl -sS "https://api.logbook.boogles.dev/api/admin/v1/user/devices?id=100000002" \
+  -H "Authorization: Bearer $LOGBOOK_ADMIN_KEY" | jq '.devices[] | {name, gaps: .chain.gaps, refused: .chain.refused_uploads}'
+```
+
+Every submission, then the minutes the server's re-check disagreed with:
+
+```sh
+curl -sS "https://api.logbook.boogles.dev/api/admin/v1/user/submissions?id=100000002" \
+  -H "Authorization: Bearer $LOGBOOK_ADMIN_KEY" | jq '.submissions[] | {id, project, status, minutes}'
+
+curl -sS "https://api.logbook.boogles.dev/api/admin/v1/submissions/<submission-id>" \
+  -H "Authorization: Bearer $LOGBOOK_ADMIN_KEY" | jq '.minutes[] | select(.result == "mismatch")'
+```
+
+Have a review link but no submission id? The public review API gives it, without using your key:
+
+```sh
+curl -sS https://api.logbook.boogles.dev/api/v1/review/<token> | jq -r .submission.id
+```
+
+`<token>` is the last part of `https://logbook.boogles.dev/r/<token>`.
+
+## How to tell it worked
+
+A `200` with JSON is a success. `401` means the key, `404` a wrong path or id, `422` a missing or unreadable parameter, `429` that you should slow down.

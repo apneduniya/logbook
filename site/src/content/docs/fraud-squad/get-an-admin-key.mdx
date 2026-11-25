@@ -1,0 +1,91 @@
+---
+title: "Get an admin key"
+description: "Ask for an admin key, store it safely and check that it works."
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+An admin key starts with `lba_` and opens the [admin API](/fraud-squad/admin-api/). There is no button for it on the website. Only the server operator can make one, on the server's command line, and it is shown once.
+
+## Ask for a key
+
+<Steps>
+
+1. Sign in at [logbook.boogles.dev](https://logbook.boogles.dev) with **Sign in with Hack Club**, so you have a Logbook account. Note your username: it's in the profile section of [Settings](https://logbook.boogles.dev/settings).
+
+2. Ask the Logbook operator for an admin key, through Hack Club HQ. Give your Logbook username and a short name for the key, such as `laptop` or `review-tool`. In V1, admins are the operator and whoever HQ names for Fraud Squad.
+
+3. Agree how the key reaches you. It is printed once and can't be shown again. Use a password manager's sharing feature or another channel that doesn't keep a copy. Don't paste it into a chat, an issue or a shared doc.
+
+4. Store it where only you can read it, such as your password manager. Load it into your shell without leaving it in your history:
+
+   ```sh
+   read -rs LOGBOOK_ADMIN_KEY && export LOGBOOK_ADMIN_KEY
+   ```
+
+   Paste the key and press Enter. Nothing is shown while you type.
+
+   In PowerShell 7, use `$env:LOGBOOK_ADMIN_KEY = Read-Host -MaskInput` instead.
+
+</Steps>
+
+## Check it works
+
+Search for your own username. Replace `your-username`:
+
+```sh
+curl -sS -X POST https://api.logbook.boogles.dev/api/admin/v1/user/search_fuzzy \
+  -H "Authorization: Bearer $LOGBOOK_ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"query": "your-username"}'
+```
+
+It worked if you get `{"users": [...]}` with your account in it. Keep its `id`: that's your numeric public id.
+
+If you get `401 {"error": "HTTP Token: Access denied."}`, the key is wrong, revoked, or your account is no longer an admin. Ask the operator to run `logbook-server admin key list` and check its status.
+
+<Aside type="caution">
+This check is itself an admin read, so it's written to the audit log, like every call you make.
+</Aside>
+
+## For the operator
+
+You run these on the server, with the same environment the server uses. Each one migrates the database first and writes an audit row with `"via": "command line"`.
+
+<Steps>
+
+1. Give the person the admin role. They must have signed in once.
+
+   ```sh
+   logbook-server admin grant <username>
+   ```
+
+2. Make a key. The name is 1 to 64 characters.
+
+   ```sh
+   logbook-server admin key create <username> <name>
+   ```
+
+   It prints the key once, with its prefix (`lba_` and the next 12 characters). Hand the key over and keep only the prefix.
+
+3. Check it's listed as `live`:
+
+   ```sh
+   logbook-server admin key list
+   ```
+
+</Steps>
+
+To take access away:
+
+```sh
+# one key, by its prefix
+logbook-server admin key revoke <prefix>
+
+# the role and every admin key of that user
+logbook-server admin revoke <username>
+```
+
+Revoking the role revokes all of that user's keys for good. Granting the role again doesn't bring them back; make a new key.
+
+In `admin key list`, a key's status is `live`, `revoked <time>`, or `inactive (user isn't an admin)`. "Last used" is updated at most once a minute.
