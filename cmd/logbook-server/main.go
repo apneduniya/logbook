@@ -26,14 +26,15 @@ import (
 	"github.com/apneduniya/logbook/internal/server/credited"
 	"github.com/apneduniya/logbook/internal/server/devices"
 	"github.com/apneduniya/logbook/internal/server/hackatime"
-	"github.com/apneduniya/logbook/internal/server/httpapi"
 	"github.com/apneduniya/logbook/internal/server/ingest"
 	"github.com/apneduniya/logbook/internal/server/jobs"
 	"github.com/apneduniya/logbook/internal/server/ledger"
 	"github.com/apneduniya/logbook/internal/server/live"
 	"github.com/apneduniya/logbook/internal/server/oauth"
 	"github.com/apneduniya/logbook/internal/server/profiles"
+	"github.com/apneduniya/logbook/internal/server/programapi"
 	"github.com/apneduniya/logbook/internal/server/projects"
+	"github.com/apneduniya/logbook/internal/server/router"
 	"github.com/apneduniya/logbook/internal/server/secretbox"
 	"github.com/apneduniya/logbook/internal/server/stats"
 	"github.com/apneduniya/logbook/internal/server/store"
@@ -78,15 +79,6 @@ func run() error {
 		return fmt.Errorf("building secretbox: %w", err)
 	}
 
-	mux := http.NewServeMux()
-	mux.Handle("GET /healthz", httpapi.Handle(func(w http.ResponseWriter, r *http.Request) error {
-		if err := st.Pool.Ping(r.Context()); err != nil {
-			return httpapi.Errorf(http.StatusServiceUnavailable, err, "database unavailable")
-		}
-		httpapi.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
-		return nil
-	}))
-
 	// Accounts and sessions.
 	authSvc, err := auth.New(st, auth.Options{
 		BaseURL: cfg.BaseURL,
@@ -105,27 +97,16 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("building auth: %w", err)
 	}
-	auth.NewHandler(authSvc).Register(mux)
 	go authSvc.RunSessionCleanup(ctx, time.Hour)
 
 	// Stats, profiles, projects and live updates.
-	publicLimit := httpapi.NewRateLimiter(120.0/60, 120, 10_000, 10*time.Minute).Middleware(httpapi.IPKey(cfg.TrustProxy))
 	hub := live.NewHub(live.DefaultLimits())
 	statsSvc := stats.NewService(st)
 	profileSvc := profiles.NewService(st, hub)
 	projectSvc := projects.NewService(st, profileSvc)
-	stats.NewHandler(statsSvc, authSvc.RequireSession).Register(mux)
-	projects.NewHandler(projectSvc, authSvc.RequireSession).Register(mux)
-	profiles.NewHandler(profileSvc, authSvc.RequireSession, publicLimit).Register(mux)
-	live.NewHandler(hub, profileSvc, authSvc.RequireSession, publicLimit, live.Config{
-		ClientKey: httpapi.IPKey(cfg.TrustProxy),
-	}).Register(mux)
 
 	// OAuth provider: apps (programs), consent, tokens and grants (ADR 0021).
-	// The program API takes oauthSvc.RequireScope / OptionalScope.
 	oauthSvc := oauth.NewService(st, oauth.Options{WebURL: cfg.WebOrigin()})
-	oauth.NewHandler(oauthSvc, authSvc.RequireSession, authSvc.OptionalSession, publicLimit,
-		oauth.HandlerOptions{TrustProxy: cfg.TrustProxy}).Register(mux)
 	go oauthSvc.RunCleanup(ctx, time.Hour)
 
 	// Heartbeat ingest. The streak cache is refreshed before the hub tells browsers to refetch.
@@ -137,12 +118,6 @@ func run() error {
 		logger.Info("rebuilt rollups", "users", n, "err", err)
 		return err
 	}
-	ingest.NewHandler(ingestSvc, authSvc.RequireAPIKey).Register(mux)
-
-	// Agent devices, credited minutes and the evidence chain (ADR 0010).
-	devices.NewHandler(devices.NewService(st), authSvc.RequireAPIKey, authSvc.RequireSession).Register(mux)
-	credited.NewHandler(credited.NewService(st, hub), authSvc.RequireAPIKey).Register(mux)
-	ledger.NewHandler(ledger.NewService(st), authSvc.RequireAPIKey).Register(mux)
 
 	// Hackatime link, history import and trust refresh.
 	htClient, err := hackatime.NewClient(hackatime.ClientConfig{
@@ -171,16 +146,37 @@ func run() error {
 		return fmt.Errorf("building job client: %w", err)
 	}
 	htSvc := hackatime.NewService(st, box, htClient, jobClient.River(), hackatime.ServiceOptions{Logger: logger})
-	hackatime.NewHandler(htSvc, authSvc.RequireSession, hackatimeHandlerOptions(cfg)).Register(mux)
+
+	// Every route, and the global middleware (CORS for the web origin).
+	handler := router.New(router.Services{
+		Ping:      st.Pool.Ping,
+		Auth:      authSvc,
+		OAuth:     oauthSvc,
+		Stats:     statsSvc,
+		Profiles:  profileSvc,
+		Projects:  projectSvc,
+		Hub:       hub,
+		Ingest:    ingestSvc,
+		Devices:   devices.NewService(st),
+		Credited:  credited.NewService(st, hub),
+		Ledger:    ledger.NewService(st),
+		Hackatime: htSvc,
+		// The Hackatime-shaped program API (ADR 0021) reuses the stats
+		// service's streaks.
+		ProgramAPI: programapi.NewService(st, statsSvc, nil),
+	}, router.Options{
+		WebOrigin:  cfg.WebOrigin(),
+		TrustProxy: cfg.TrustProxy,
+		Hackatime:  hackatimeHandlerOptions(cfg),
+	})
 
 	if err := jobClient.Start(ctx); err != nil {
 		return fmt.Errorf("starting jobs: %w", err)
 	}
 
 	srv := &http.Server{
-		Addr: cfg.Addr,
-		Handler: httpapi.Chain(mux, httpapi.Recover, httpapi.RequestID, httpapi.Logger, httpapi.SecurityHeaders,
-			httpapi.CORS(httpapi.CORSConfig{Origin: cfg.WebOrigin(), Skip: corsSkip})),
+		Addr:              cfg.Addr,
+		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		IdleTimeout:       120 * time.Second,
@@ -222,15 +218,6 @@ func hackatimeHandlerOptions(cfg config.Config) hackatime.HandlerOptions {
 		InsecureCookies: cfg.DevInsecureCookie,
 		SettingsPath:    cfg.WebOrigin() + "/settings",
 	}
-}
-
-// corsSkip lists the /api/ paths browsers never call (wakatime-cli and agent
-// endpoints, authenticated by API key), which get no CORS headers (ADR 0011).
-var corsSkip = []string{
-	"/api/hackatime/",
-	"/api/v1/users/current/heartbeats",
-	"/api/v1/users/current/statusbar/",
-	"/api/v1/devices",
 }
 
 func migrate(ctx context.Context, databaseURL string) error {
