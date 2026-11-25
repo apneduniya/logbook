@@ -123,7 +123,8 @@
 							button="Copy link"
 						/>
 					{:else if canWithdraw(s)}
-						<span aria-hidden="true"></span>
+						<!-- Holds Copy link's width, so Withdraw stays in its column. -->
+						<span class="btn invisible" aria-hidden="true">Copy link</span>
 					{/if}
 					{#if canWithdraw(s)}
 						<ConfirmButton
