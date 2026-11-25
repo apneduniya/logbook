@@ -1,8 +1,9 @@
 <!--
   The signed-in header: wordmark, section tabs (active one an inverted block),
   the agent's state, and the account menu. The tabs are the work (Today,
-  Projects, then Submissions, which are made from projects), then the
-  person's own Profile and Settings. On phones the tabs wrap to their own
+  Projects, then Submissions, which are made from projects, then Apps, where
+  people register and review programs' apps), then the person's own Profile
+  and Settings. The account menu links Apps too. On phones the tabs wrap to their own
   row, the Profile tab steps aside unless it is the open page (the account
   menu has it), and the account button shows only the identicon.
 -->
@@ -32,10 +33,15 @@
 			match: (p: string) => p.startsWith('/submissions')
 		},
 		{
+			href: resolve('/apps'),
+			label: 'Apps',
+			match: (p: string) => p.startsWith('/apps')
+		},
+		{
 			href: resolve('/u/[username]', { username: encodeURIComponent(user.username) }),
 			label: 'Profile',
 			match: (p: string) => p === `/u/${user.username}`,
-			// Five tabs don't fit a phone's row; the account menu links the profile.
+			// Six tabs don't fit a phone's row; the account menu links the profile.
 			wide: true
 		},
 		{
