@@ -69,7 +69,7 @@
 	<div class="ct">
 		{#if ready}
 			<span class="mono hrs">{hours(s.counted_seconds)}<span class="sr-only"> counted</span></span>
-			<span class="lbl">{evidenceShort(s.minutes)}</span>
+			<span class="lbl ev">{evidenceShort(s.minutes)}</span>
 		{:else}
 			<span class="mono hrs dim" aria-hidden="true">—</span>
 		{/if}
@@ -91,7 +91,7 @@
 
 <style>
 	.sr {
-		--cols: 14px minmax(0, 1fr) 104px 150px;
+		--cols: 14px minmax(0, 1fr) 176px 150px;
 		position: relative;
 		display: grid;
 		grid-template-columns: var(--cols);
@@ -103,13 +103,13 @@
 		transition: background 150ms ease-out;
 	}
 	.sr.who-col {
-		--cols: 14px minmax(0, 1fr) 160px 104px 150px;
+		--cols: 14px minmax(0, 1fr) 160px 176px 150px;
 	}
 	.sr.acts-col {
-		--cols: 14px minmax(0, 1fr) 104px 150px 200px;
+		--cols: 14px minmax(0, 1fr) 176px 150px 200px;
 	}
 	.sr.who-col.acts-col {
-		--cols: 14px minmax(0, 1fr) 160px 104px 150px 200px;
+		--cols: 14px minmax(0, 1fr) 160px 176px 150px 200px;
 	}
 	.sr:has(.name:hover) {
 		background: var(--color-fill);
@@ -163,18 +163,23 @@
 		text-align: right;
 		justify-items: end;
 	}
+	.hrs,
+	.ev {
+		white-space: nowrap;
+	}
 	.hrs {
 		font-size: var(--text-base);
-		white-space: nowrap;
 	}
 	.word {
 		letter-spacing: 0.08em;
 	}
+	/* Actions start on the column's left edge, so the same button lines up
+	   from row to row whatever the others offer. */
 	.acts {
 		position: relative;
 		z-index: 1;
 		display: flex;
-		justify-content: flex-end;
+		justify-content: flex-start;
 		align-items: center;
 		gap: 8px;
 		flex-wrap: wrap;
@@ -201,8 +206,17 @@
 		.acts {
 			grid-column: 2 / -1;
 		}
+		/* Narrow columns wrap instead of cutting off the program's name. */
+		.ct {
+			max-width: 112px;
+		}
+		.ev,
+		.dl {
+			white-space: normal;
+		}
+		/* A failed row's reason reads before its actions. */
 		.acts {
-			justify-content: flex-start;
+			order: 1;
 		}
 	}
 </style>
