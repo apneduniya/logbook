@@ -9,7 +9,7 @@ As in [devices.md](devices.md): API-key auth for the agent, session auth (plus `
 - A submission `{id}` that isn't a UUID, doesn't exist, or isn't the caller's is `404 {"error": "submission not found"}`.
 - **Rate limits** per user: `POST /api/v1/submissions` and `POST /api/v1/submissions/{id}/parts` share a burst of 10, refilled at 10 per hour. `GET /api/v1/me/submissions/plan`: a burst of 60, refilled at 1 per second. `POST /api/v1/review/{token}/decision`: a burst of 30, refilled at 30 per minute. `GET /api/v1/review/{token}`: per IP, a burst of 120, refilled at 120 per minute. `GET /api/v1/submissions*`: per token, a burst of 600, refilled at 600 per minute (ADR 0021). Over the limit: `429` with `Retry-After`.
 - **CORS:** the agent's routes (`/api/v1/me/submissions/plan`, `POST /api/v1/submissions*`) and the program's client-credentials routes (`GET /api/v1/submissions*`) answer no CORS; the review link, decisions and the user's and members' lists keep the web origin's CORS.
-- Every answer that can carry a review link (`/api/v1/me/submissions*`, the program lists, `POST /api/v1/submissions`) is `Cache-Control: no-store`. The request log records a review link's path as `/api/v1/review/{token}`, never the token.
+- Every answer that can carry a review link (`/api/v1/me/submissions*`, the program lists, `POST /api/v1/submissions`) is `Cache-Control: no-store`. No log line records a review token: every request under `/api/v1/review/` (matched on the cleaned path, in any case) is logged as `/api/v1/review/{token}/…`, whether a route answered it or not (a CORS preflight, a `404`, a `405`, a redirect), and so is the path of a `5xx`'s error line (`httpapi.LoggedPath`).
 
 ## Status values
 
@@ -36,7 +36,7 @@ Query: `project` (required), `from`, `to` (days, inclusive; at most 92 days).
   "project": "terra-bot",
   "from": "2026-11-01", "to": "2026-11-20",
   "devices": [
-    {"id": "<uuid>", "name": "laptop", "sealed_through": "2026-11-24", "this_device": true}
+    {"id": "<uuid>", "name": "laptop", "sealed_through": "2026-11-24", "this_device": true, "revoked": false}
   ],
   "minutes": [
     {"device_id": "<uuid>", "minute": "2026-11-03T14:21:00Z", "project": "terra-bot",
@@ -46,10 +46,11 @@ Query: `project` (required), `from`, `to` (days, inclusive; at most 92 days).
 }
 ```
 - `submission.Plan` in Go. `minutes` are the rows the server holds for this project and range, every device and every label (cut and idle rows too), sorted by (device, minute). Rows stored before ADR 0017 have no key: `computed_at` and `snapshot` are `null`, and they can't be backed.
-- `devices` are the devices with a row in the range, by id; `sealed_through` is the latest day the device has an evidence record for (any record), or `null` for a device that has sealed no day.
+- `devices` are the devices with a row in the range, by id; `sealed_through` is the latest day the device has an evidence record for (any record), or `null` for a device that has sealed no day; `revoked` is true for a revoked device.
 - `project` is normalised as credited minutes store it (control characters removed, surrounding space trimmed), and must then be 1–256 bytes.
 - Optional query `device`: the agent's own device id. `this_device` is true for that device; it only helps the agent print which minutes it can back. Naming another user's device reveals nothing: every read is the caller's.
-- `400` when `to` is after the `sealed_through` of some device with rows in the range, saying the day the range can end on (the earliest `sealed_through` of those devices), or when such a device has sealed no day yet. Every device with rows counts, whatever its rows' labels: their idle and cut rows are re-checked too.
+- `400` when `to` is after the `sealed_through` of some unrevoked device with rows in the range, saying the day the range can end on (the earliest `sealed_through` of those devices), or when such a device has sealed no day yet. Every unrevoked device with rows counts, whatever its rows' labels: their idle and cut rows are re-checked too. A revoked device can't seal any more days, so it never holds a range back: its rows on days it didn't seal are frozen and stay `unbacked`. The message says so, since a device that was replaced (a reinstall, a lost laptop) seals nothing more until the user revokes it.
+- Optional query `submission`: the id of one of the caller's submissions. The plan is then that submission's **frozen** rows (every device) and the devices that have them, so a part built from it (`logbook submit … --add <id>`) lists no row the server didn't freeze. `project`, `from` and `to` must be the submission's (`400` naming them otherwise); the range isn't checked against sealed days (the freeze did that). `404` when it isn't the caller's submission (or isn't a UUID), and `409` as `POST /api/v1/submissions/{id}/parts` gives it when the submission takes no more parts.
 
 ## `POST /api/v1/submissions`
 
@@ -80,6 +81,7 @@ Auth: API key. `Content-Encoding: gzip` required; at most 32 MiB compressed and 
 - The server checks synchronously, in this order: the body (gzip, size, JSON), `Upload.Validate`, the project, the range, the part's device (one of the caller's devices, revoked ones included: their evidence was signed before revocation), that every block's `day` has a stored evidence record with block fields, the program (a live public app), and the Hackatime trust gate. Then, in one repeatable-read transaction, it checks the range against every device with rows (as the plan does), freezes the rows, the capped seconds and the cap inputs, stores the part, writes the audit entry and queues the re-check. Proofs themselves are checked by the job.
 - **Trust gate (ADR 0020):** a linked account's stored trust level decides. When it was last read more than 24 hours ago (or never), it is re-read from Hackatime first (the trust refresher, with a 10-second timeout, keeping `red` sticky); if Hackatime can't be reached the last known level decides. `red` is refused; every other level, and no link at all, may submit. The unmasked level is stored with the submission (`trust_at_submission`, `null` without a link).
 - The body may take up to 10 minutes to arrive (the server's usual 30-second read timeout is extended for uploads).
+- **Upload memory:** decoding a body holds several times its decompressed size (about 1.3 GB at the 256 MiB limit), so uploads (this route and `/parts`) pass a gate: one upload per user at a time (another while one runs is `429` with `Retry-After: 60`); the compressed body is read in full first; then it waits for one of 2 decode slots server-wide (`HandlerOptions.UploadSlots`), and after a minute (`UploadWait`) it is refused with `503` and `Retry-After: 60`. A malformed body costs the same until it is decoded.
 
 | Status | Body | When |
 |---|---|---|
@@ -90,25 +92,28 @@ Auth: API key. `Content-Encoding: gzip` required; at most 32 MiB compressed and 
 | `409` | `{"error": "no counted minutes in this range"}` | No row of the project in the range has credit. |
 | `413` | `{"error": "request body too large"}` | Over 32 MiB as sent or 256 MiB decompressed, found while the body streams. |
 | `415` | error | No `Content-Encoding: gzip`. |
+| `429` | error | The upload rate limit, or another upload of the user's is still in progress. |
+| `503` | error | Every decode slot stayed busy for a minute. |
 
 `review_url` is on the web UI's origin. The token is 128 random bits, base64url without padding (22 characters). It is returned in full here, to the submitter on `GET /api/v1/me/submissions*`, and to the program (its members' inbox and its client-credentials token), which pastes it into Airtable and decides through it. Once withdrawn, `review_url` is `null` everywhere.
 
 ## `POST /api/v1/submissions/{id}/parts`
 
-Auth: API key. Same body as `part` above, from another device of the same user, gzip as above. The same synchronous checks apply (device, blocks, trust gate). The part is stored, the status goes back to `verifying`, and the re-check runs again for the whole submission.
+Auth: API key. Same body as `part` above, from another device of the same user, gzip as above. The same synchronous checks apply (device, blocks, trust gate, the upload gate), and one more: every minute the part lists must be a frozen row of its device in this submission with the same key (`submission.CheckListed`, the re-check's own rule), or it is refused with `400` before it is stored. Such a part would otherwise fail the whole submission in the re-check, other devices' verified minutes included. The part is stored, the status goes back to `verifying`, `version` goes up by one, and the re-check runs again for the whole submission.
 
 | Status | Body | When |
 |---|---|---|
 | `202` | `{"id": "<uuid>", "status": "verifying"}` | Accepted. |
-| `400`, `403`, `413`, `415` | error | As above. |
+| `400` | error | As above, or the part lists a minute that isn't a frozen row of its device with that key. |
+| `403`, `413`, `415`, `429`, `503` | error | As above. |
 | `404` | `{"error": "submission not found"}` | Not one of the caller's submissions. |
-| `409` | error | A decision exists, the submission was withdrawn or failed (submit again), or that device already has a part. |
+| `409` | error | A decision exists, the submission was withdrawn or failed (submit again), its stored parts were deleted by retention (the re-check of the whole submission needs them; submit again), or that device already has a part. |
 
 The agent (`logbook submit … --add <id>`) accepts `200`, `201`, `202` or `204`, with the body of `POST /api/v1/submissions` or none, and sends the same `Content-Encoding: gzip` and size limits.
 
 ## The agent's side
 
-[docs/agent/submit.md](../agent/submit.md) settles what `logbook submit` and `logbook verify` do with these endpoints: the agent lists in its part only minutes whose rows share one key whose window holds the minute and that `crediting.BuildProofs` backs (so a part it builds never fails the submission), prints which other projects' rows and repo folders the part reveals before asking, refuses a range ending today, and maps `401`/`403`/`400`/`404`/`409`/`413`/`429` to plain messages. It never retries an upload by itself.
+[docs/agent/submit.md](../agent/submit.md) settles what `logbook submit` and `logbook verify` do with these endpoints: the agent lists in its part only minutes whose rows share one key whose window holds the minute and that `crediting.BuildProofs` backs, and with `--add` only the submission's frozen rows (its plan with `submission=<id>`), so a part it builds never fails the submission; prints which other projects' rows and repo folders the part reveals before asking, refuses a range ending today, and maps `401`/`403`/`400`/`404`/`409`/`413`/`429` to plain messages. It never retries an upload by itself.
 
 ## `GET /api/v1/me/submissions`
 
@@ -144,11 +149,12 @@ Auth: none (the token is the credential). `Cache-Control: no-store`, `Referrer-P
 {
   "submission": {"id": "…", "project": "terra-bot", "from": "…", "to": "…", "status": "ready",
                  "user": {"username": "fiona", "display_name": "Fiona", "hackatime_id": 4321},
-                 "program": {"slug": "terra", "name": "Terra"}, "created_at": "…"},
+                 "program": {"slug": "terra", "name": "Terra"}, "created_at": "…", "version": 1},
   "packet": {
     "rules_version": "v1",
     "counted_seconds": 44640,
-    "trust": {"at_submission": "green", "now": "green", "checked_at": "…", "hackatime_linked": true},
+    "trust": {"at_submission": "green", "now": "green", "checked_at": "…", "hackatime_linked": true,
+              "hackatime_linked_now": true},
     "raw_seconds": 61200,
     "raw_ai_seconds": 9000,
     "one_third_rule_seconds": 55200,
@@ -171,7 +177,7 @@ Auth: none (the token is the credential). `Cache-Control: no-store`, `Referrer-P
 ```
 The packet is `submission.Packet`, built by `submission.BuildPacket` (pure, so re-running the job gives the same packet). Field by field:
 - `strip`: one character per minute of the UTC day, for every day of the range: `y` counted, `a` AI ran alone, `c` cut (counted label but 0 credit), `i` idle or nothing, `u` counted but unbacked, `m` mismatch. Precedence: `m` when any of the minute's frozen rows mismatches; else, when the minute is counted (capped seconds above 0, or a row with credit), `u` if a row with credit is unbacked and `y` otherwise; else `c` for a `you` row with no credit and a cut; else `a` for an `agent` row; else `i`.
-- `counted_seconds` and everything derived from it use the frozen **capped** seconds (ADR 0020). Each day also has its own `counted_seconds` and `raw_seconds`. `trust` levels are masked as Hackatime masks them publicly (`yellow` and `unknown` show as `blue`). `trust.now` and `checked_at` are read when the response is made; the stored packet has only `at_submission` and `hackatime_linked`.
+- `counted_seconds` and everything derived from it use the frozen **capped** seconds (ADR 0020). Each day also has its own `counted_seconds` and `raw_seconds`. `trust` levels are masked as Hackatime masks them publicly (`yellow` and `unknown` show as `blue`). `trust.now`, `checked_at` and `hackatime_linked_now` are read when the response is made; the stored packet has only `at_submission` and `hackatime_linked` (whether Hackatime was linked at submission). A submitter who has unlinked since shows `now` as `blue` (as any unlinked user) with `hackatime_linked_now: false`.
 - `rules_version` is the frozen rows' rules version (several are joined with `, `).
 - `minutes` counts distinct submitted minutes, every label (cut and idle minutes too, since the re-check verifies cuts as well): a minute is `mismatch` when any of its rows (one per device) mismatches, else `unbacked` when any is unbacked, else `verified`.
 - `devices` are the devices with frozen rows. `gaps` are the range's days, from the device's first sealed day on, that it has no evidence record for (every day when it has sealed none).
@@ -185,7 +191,7 @@ The packet is `submission.Packet`, built by `submission.BuildPacket` (pure, so r
 - `mismatches` lists at most 200, newest first (ties by device). `server` is the replay's row for the project, or `{"label": "idle", "credited": 0, "cuts": []}` when the replay has none.
 - Never in the packet: file paths, other projects, prompt hashes, session ids, device ids.
 
-The `submission` object: `user.hackatime_id` is `null` when Hackatime isn't linked; `program` is `null` without one (a deleted program keeps its slug and name). It never carries the failure reason, the trust level unmasked or a device id.
+The `submission` object: `version` identifies the packet: it starts at 1 and goes up by one with each part added (a re-check of the same version gives the same packet). `user.hackatime_id` is `null` when Hackatime isn't linked; `program` is `null` without one (a deleted program keeps its slug and name). It never carries the failure reason, the trust level unmasked or a device id.
 
 | Status | When |
 |---|---|
@@ -201,10 +207,11 @@ Every answer, errors and `429` included, carries the three headers above.
 Auth: session + CSRF; the caller must be a member (owner or reviewer, ADR 0021) of the submission's program while the app is live, and not its submitter. Membership is the `oauth` package's (`GetApp`).
 
 ```json
-{"value": "adjusted", "approved_seconds": 40000, "reason": "Two days of idle editor time"}
+{"value": "adjusted", "approved_seconds": 40000, "reason": "Two days of idle editor time", "version": 1}
 ```
 - `approved`: no other field (`approved_seconds` or a non-blank `reason` is `400`). `adjusted`: `approved_seconds` from 0 to below the frozen `counted_seconds`, and a `reason`. `rejected`: a `reason`, no `approved_seconds`. A reason is trimmed, then 1–500 characters.
-- Before recording, the submitter's trust level is re-read from Hackatime when it is more than 24 hours old (the last known level decides if Hackatime can't be reached); approving or adjusting while it is `red` is refused, rejecting is allowed.
+- `version` is optional: the review's `submission.version` the reviewer read. When given and a part has been added since, the decision is `409` ("reload it"). The web UI sends it. Without it the decision applies to the packet as it is when recorded.
+- Before recording, the submitter's trust level is re-read from Hackatime when it is more than 24 hours old (the last known level decides if Hackatime can't be reached); approving or adjusting while it is `red` is refused, rejecting is allowed. Approving or adjusting is also refused when the submitter was linked at submission and has unlinked Hackatime since: a ban could no longer be checked (unlinking only refuses a stored `red`, which can be up to a day old). Linking again restores it.
 - Adds a decision; the newest is the one shown. Every decision is kept (`submission_decisions`) and audited (`submission.decide`, by the reviewer, with the value, approved seconds, reason, counted seconds, program and the submitter's trust level).
 - Raw rows are then kept for a year after the newest decision.
 
@@ -214,7 +221,7 @@ Auth: session + CSRF; the caller must be a member (owner or reviewer, ADR 0021) 
 | `400` | The body breaks the rules above. |
 | `403` | Not a member, the submitter, a submission with no program (it takes no decisions), or a deleted program. |
 | `404` | Unknown token. |
-| `409` | Status isn't `ready` (or it was re-checked meanwhile), or approving/adjusting while the submitter's Hackatime account is banned now. |
+| `409` | Status isn't `ready`, the given `version` is no longer current, or approving/adjusting while the submitter's Hackatime account is banned now or was unlinked since submitting. |
 | `410` | Withdrawn. |
 
 ## The program's inbox

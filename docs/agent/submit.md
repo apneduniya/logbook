@@ -18,8 +18,8 @@ logbook submit <project> --from YYYY-MM-DD --to YYYY-MM-DD [--program <slug>] [-
 
 The project may come before or after the flags. Days are UTC and inclusive, at most 92.
 
-1. **Checks before anything is sent.** The agent must be signed in, have a local log and a registered, unrevoked device for the configured server. A range ending today or later is refused: "today's evidence is sealed after midnight UTC; end it on <yesterday> or earlier". Without `--yes` or `--preview`, stdin must be a terminal (a character device), or submit refuses before calling the server: there would be no way to confirm.
-2. **Plan.** `GET /api/v1/me/submissions/plan?project=…&from=…&to=…&device=<this device>`. The server's `400` for a range a device hasn't sealed is shown with its reason. The agent also refuses when the plan names a device whose `sealed_through` is before `--to` (or `null`), naming the device. An empty plan stops with "nothing to submit".
+1. **Checks before anything is sent.** The agent must be signed in, have a local log and a registered, unrevoked device for the configured server. A bad range says why: a day that isn't `YYYY-MM-DD`, `--to` before `--from`, or more than 92 days ("the range is 324 days; submit at most 92 days at a time"). A range ending today or later is refused: "today's evidence is sealed after midnight UTC; end it on <yesterday> or earlier". Without `--yes` or `--preview`, stdin must be a terminal, or submit refuses before calling the server: there would be no way to confirm. A terminal is a character device, or on Windows the named pipe a Cygwin or MSYS2 terminal (mintty, as in Git Bash) gives native programs instead of a console (`\msys-…-ptyN-from-master` and the like).
+2. **Plan.** `GET /api/v1/me/submissions/plan?project=…&from=…&to=…&device=<this device>`, plus `&submission=<id>` with `--add`. The server's `400` for a range a device hasn't sealed is shown with its reason. The agent also refuses when the plan names an unrevoked device whose `sealed_through` is before `--to` (or `null`), naming the device and saying that if it's no longer in use (lost, replaced or reinstalled) revoking it on the dashboard lets the range through, its minutes there staying unbacked. A revoked device never holds a range back. An empty plan stops with "nothing to submit".
 3. **Which minutes this part lists.** For each of this device's minutes in the plan: listed when every row of it has the same computation key `(T, H)`, the minute is in `[T − 60 min, T)`, and `BuildProofs` backs the key. Otherwise it isn't listed (the server shows it unbacked), counted under one reason:
    - computed before minutes recorded how they were computed (no key);
    - its rows were computed at different keys, or its key's window doesn't hold it (listing either would make the server fail the whole part, so the agent never does);
@@ -38,7 +38,7 @@ The project may come before or after the flags. Days are UTC and inclusive, at m
 
 `--preview FILE` runs steps 1 to 4 and writes the exact, uncompressed request body to FILE (mode 0600: it holds the revealed rows), then stops. Nothing is uploaded and no confirmation is needed.
 
-`--add <submission-id>` uploads this device's part of an existing submission to `POST /api/v1/submissions/{id}/parts`. Give the same project and range as the submission: the agent can't read a submission's metadata with an API key, and the server treats a part that lists minutes it didn't freeze as malformed. `--program` can't be combined with it. A device that can back none of the submission's minutes has nothing to add and stops with an error.
+`--add <submission-id>` uploads this device's part of an existing submission to `POST /api/v1/submissions/{id}/parts`. Its plan is the submission's own frozen rows (`submission=<id>`), not the rows the server holds now, so the part never lists a row that reached the server after the freeze (a device that uploaded late) or one outside the submission's range: the server would refuse such a part (`400`). Give the same project and range as the submission; the plan's `400` names them otherwise, and a submission that takes no more parts (decided, withdrawn, failed, or its evidence deleted after a year) stops at the plan with the server's `409`, naming the submission. `--program` can't be combined with it. A device that can back none of the submission's minutes has nothing to add and stops with an error.
 
 ### Server answers
 
@@ -50,8 +50,8 @@ The project may come before or after the flags. Days are UTC and inclusive, at m
 | `404` (JSON) | not found (an unknown program or submission), with the reason |
 | `409` (JSON) | conflict: nothing to submit, a decision already recorded, or this device's part already added |
 | `413` | too large; submit a shorter range |
-| `429` | too many submissions; try again in <Retry-After> |
-| network error, `5xx`, a redirect, or any answer without the server's JSON error body (a school filter's HTML `403`) | the error, "nothing was submitted; try again later" |
+| `429` | too many submissions (or another upload of yours is still in progress); try again in <Retry-After> |
+| network error, `5xx` (`503` when the server is busy with other uploads), a redirect, or any answer without the server's JSON error body (a school filter's HTML `403`) | the error, "nothing was submitted; try again later" |
 
 `serverapi.SubmitError` carries both: `errors.Is` matches the reason (`ErrBanned`, `ErrRefused`, `ErrNotFound`, `ErrConflict`, `ErrTooLarge`, `ErrKeyRejected`) and `errors.As` finds the `*serverapi.Error` with the status and message.
 
@@ -64,7 +64,7 @@ The plan call has 3 minutes (`serverapi.PlanTimeout`) and reads at most 256 MiB;
 ## `logbook verify`
 
 ```
-logbook verify <bundle.json | bundle.json.gz>
+logbook verify [--key FINGERPRINT]... <bundle.json | bundle.json.gz>
 ```
 
 Reads the verification bundle the admin API exports (gzip or plain JSON, told apart by the gzip header, not the file name; at most 1 GiB decompressed) and checks it with `pkg/` code only:
@@ -72,5 +72,7 @@ Reads the verification bundle the admin API exports (gzip or plain JSON, told ap
 - per device: its signatures and chain (`submission.VerifyPart` with an empty part when the device uploaded none), then its part's proofs and replays (`VerifyPart`);
 - the cap (`submission.CheckCap`);
 - the whole bundle (`submission.CheckBundle`), whose answer decides.
+
+The bundle carries the devices' public keys, and every signature is checked against them, so a bundle re-signed with substituted keys would check out too. The report therefore prints each device's key fingerprint (`evidence.KeyFingerprint`: the first 16 hex characters of the key's SHA-256, the same value as `key_fingerprint` in the device list), which the auditor compares with the `Key:` line of `logbook status` on that device. Each `--key` (repeatable, before or after the file) is such a fingerprint from outside the bundle: when any is given, every device's key must be one of them, or that device fails. Without `--key` the result says the keys weren't checked.
 
 It prints each step as OK or FAIL with the reason, then the packet's minute counts (verified, mismatch, unbacked), unbacked rows by reason, the first 20 mismatches (device's credit next to the replay's), and the counted hours from the frozen capped seconds. It exits 1 when any check fails. Mismatched and unbacked minutes are reported, not failures: the reviewer decides on them, as on the review page.
