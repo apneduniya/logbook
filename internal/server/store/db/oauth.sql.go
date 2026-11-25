@@ -487,6 +487,56 @@ func (q *Queries) OAuthAppsForMember(ctx context.Context, userID uuid.UUID) ([]O
 	return items, nil
 }
 
+const oAuthCleanupFamilies = `-- name: OAuthCleanupFamilies :many
+SELECT c.family_id FROM oauth_codes c WHERE c.expires_at <= $1::timestamptz
+UNION
+SELECT t.family_id FROM oauth_tokens t
+WHERE (t.expires_at <= $2::timestamptz
+       AND (t.refresh_expires_at IS NULL OR t.refresh_expires_at <= $2::timestamptz))
+   OR t.revoked_at <= $2::timestamptz
+`
+
+type OAuthCleanupFamiliesParams struct {
+	CodeBefore  time.Time
+	TokenBefore time.Time
+}
+
+// Families with a code that expired before code_before or a token dead
+// (both halves expired, or revoked) since before token_before: the
+// candidates for cleanup, which decides each one under its family lock.
+func (q *Queries) OAuthCleanupFamilies(ctx context.Context, arg OAuthCleanupFamiliesParams) ([]uuid.UUID, error) {
+	rows, err := q.db.Query(ctx, oAuthCleanupFamilies, arg.CodeBefore, arg.TokenBefore)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []uuid.UUID{}
+	for rows.Next() {
+		var family_id uuid.UUID
+		if err := rows.Scan(&family_id); err != nil {
+			return nil, err
+		}
+		items = append(items, family_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const oAuthCodeFamily = `-- name: OAuthCodeFamily :one
+SELECT family_id FROM oauth_codes WHERE code_hash = $1
+`
+
+// A code's family, read without a lock so the family can be locked before
+// the code.
+func (q *Queries) OAuthCodeFamily(ctx context.Context, codeHash []byte) (uuid.UUID, error) {
+	row := q.db.QueryRow(ctx, oAuthCodeFamily, codeHash)
+	var family_id uuid.UUID
+	err := row.Scan(&family_id)
+	return family_id, err
+}
+
 const oAuthCodeForUpdate = `-- name: OAuthCodeForUpdate :one
 SELECT code_hash, app_id, user_id, redirect_uri, scopes, code_challenge, code_challenge_method, family_id, created_at, expires_at, used_at FROM oauth_codes WHERE code_hash = $1 FOR UPDATE
 `
@@ -594,58 +644,6 @@ func (q *Queries) OAuthCodesBurnForGrant(ctx context.Context, arg OAuthCodesBurn
 	return err
 }
 
-const oAuthDeleteDeadTokens = `-- name: OAuthDeleteDeadTokens :execrows
-DELETE FROM oauth_tokens d
-WHERE ((d.expires_at <= $1::timestamptz
-        AND (d.refresh_expires_at IS NULL OR d.refresh_expires_at <= $1::timestamptz))
-       OR d.revoked_at <= $1::timestamptz)
-  AND NOT EXISTS (
-      SELECT 1 FROM oauth_tokens t
-      WHERE t.family_id = d.family_id AND t.revoked_at IS NULL
-        AND (t.expires_at > $2::timestamptz OR t.refresh_expires_at > $2::timestamptz))
-`
-
-type OAuthDeleteDeadTokensParams struct {
-	Before time.Time
-	Now    time.Time
-}
-
-// Tokens dead since before `before` (both halves expired, or revoked),
-// unless a token of their family is still usable at `now`: a rotated refresh
-// token is the record that replaying it must revoke its family.
-func (q *Queries) OAuthDeleteDeadTokens(ctx context.Context, arg OAuthDeleteDeadTokensParams) (int64, error) {
-	result, err := q.db.Exec(ctx, oAuthDeleteDeadTokens, arg.Before, arg.Now)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
-}
-
-const oAuthDeleteExpiredCodes = `-- name: OAuthDeleteExpiredCodes :execrows
-DELETE FROM oauth_codes c
-WHERE c.expires_at <= $1::timestamptz
-  AND NOT EXISTS (
-      SELECT 1 FROM oauth_tokens t
-      WHERE t.family_id = c.family_id AND t.revoked_at IS NULL
-        AND (t.expires_at > $2::timestamptz OR t.refresh_expires_at > $2::timestamptz))
-`
-
-type OAuthDeleteExpiredCodesParams struct {
-	Before time.Time
-	Now    time.Time
-}
-
-// Codes that expired before `before`, unless a token of their family is
-// still usable at `now`: a used code is the record that replaying it must
-// revoke that family, so it is kept as long as there is something to revoke.
-func (q *Queries) OAuthDeleteExpiredCodes(ctx context.Context, arg OAuthDeleteExpiredCodesParams) (int64, error) {
-	result, err := q.db.Exec(ctx, oAuthDeleteExpiredCodes, arg.Before, arg.Now)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
-}
-
 const oAuthDeleteExpiredRequests = `-- name: OAuthDeleteExpiredRequests :execrows
 DELETE FROM oauth_requests WHERE expires_at <= $1
 `
@@ -658,13 +656,73 @@ func (q *Queries) OAuthDeleteExpiredRequests(ctx context.Context, expiresAt time
 	return result.RowsAffected(), nil
 }
 
+const oAuthFamilyDeleteDeadCodes = `-- name: OAuthFamilyDeleteDeadCodes :execrows
+DELETE FROM oauth_codes c
+WHERE c.family_id = $1
+  AND c.expires_at <= $2::timestamptz
+  AND NOT EXISTS (
+      SELECT 1 FROM oauth_tokens t
+      WHERE t.family_id = $1 AND t.revoked_at IS NULL
+        AND (t.expires_at > $3::timestamptz OR t.refresh_expires_at > $3::timestamptz))
+`
+
+type OAuthFamilyDeleteDeadCodesParams struct {
+	FamilyID uuid.UUID
+	Before   time.Time
+	Now      time.Time
+}
+
+// The family's codes that expired before `before`, unless a token of the
+// family is still usable at `now`: a used code is the record that replaying
+// it must revoke the family, so it is kept while there is something to
+// revoke. The caller holds the family lock, so no token is being issued.
+func (q *Queries) OAuthFamilyDeleteDeadCodes(ctx context.Context, arg OAuthFamilyDeleteDeadCodesParams) (int64, error) {
+	result, err := q.db.Exec(ctx, oAuthFamilyDeleteDeadCodes, arg.FamilyID, arg.Before, arg.Now)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const oAuthFamilyDeleteDeadTokens = `-- name: OAuthFamilyDeleteDeadTokens :execrows
+DELETE FROM oauth_tokens d
+WHERE d.family_id = $1
+  AND ((d.expires_at <= $2::timestamptz
+        AND (d.refresh_expires_at IS NULL OR d.refresh_expires_at <= $2::timestamptz))
+       OR d.revoked_at <= $2::timestamptz)
+  AND NOT EXISTS (
+      SELECT 1 FROM oauth_tokens t
+      WHERE t.family_id = $1 AND t.revoked_at IS NULL
+        AND (t.expires_at > $3::timestamptz OR t.refresh_expires_at > $3::timestamptz))
+`
+
+type OAuthFamilyDeleteDeadTokensParams struct {
+	FamilyID uuid.UUID
+	Before   time.Time
+	Now      time.Time
+}
+
+// The family's tokens dead since before `before` (both halves expired, or
+// revoked), unless a token of the family is still usable at `now`: a rotated
+// refresh token is the record that replaying it must revoke the family. The
+// caller holds the family lock.
+func (q *Queries) OAuthFamilyDeleteDeadTokens(ctx context.Context, arg OAuthFamilyDeleteDeadTokensParams) (int64, error) {
+	result, err := q.db.Exec(ctx, oAuthFamilyDeleteDeadTokens, arg.FamilyID, arg.Before, arg.Now)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const oAuthFamilyLock = `-- name: OAuthFamilyLock :exec
 SELECT pg_advisory_xact_lock(1002, hashtext($1::uuid::text))
 `
 
-// Serialises issuing a token into a family with revoking the family, until
-// the transaction ends: a revocation that waited here then sees every token
-// the issuer added. 1002 namespaces the lock (ingest uses 1001).
+// Serialises issuing a token into a family with revoking the family and
+// with cleanup deleting its dead rows, until the transaction ends: a
+// revocation or cleanup that waited here then sees every token the issuer
+// added. Taken after the grant and before any code or token row. 1002
+// namespaces the lock (ingest uses 1001).
 func (q *Queries) OAuthFamilyLock(ctx context.Context, familyID uuid.UUID) error {
 	_, err := q.db.Exec(ctx, oAuthFamilyLock, familyID)
 	return err

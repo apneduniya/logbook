@@ -344,6 +344,14 @@ type gate struct {
 // the held inserts through.
 func (e *env) gateTokenInserts(ctx context.Context) *gate {
 	e.t.Helper()
+	return e.gateAt(ctx, "BEFORE INSERT ON oauth_tokens")
+}
+
+// gateAt installs a gate at a row trigger point such as
+// "AFTER UPDATE ON oauth_grants": every statement reaching it waits there
+// until release.
+func (e *env) gateAt(ctx context.Context, when string) *gate {
+	e.t.Helper()
 	const lock = 727021
 	hold, err := e.st.Pool.Acquire(ctx)
 	if err != nil {
@@ -365,7 +373,7 @@ func (e *env) gateTokenInserts(ctx context.Context) *gate {
 	if _, err := e.st.Pool.Exec(ctx, `
 		CREATE FUNCTION test_gate() RETURNS trigger LANGUAGE plpgsql AS $$
 		BEGIN PERFORM pg_advisory_xact_lock(727021); RETURN NEW; END $$;
-		CREATE TRIGGER test_gate BEFORE INSERT ON oauth_tokens FOR EACH ROW EXECUTE FUNCTION test_gate();`); err != nil {
+		CREATE TRIGGER test_gate `+when+` FOR EACH ROW EXECUTE FUNCTION test_gate();`); err != nil {
 		e.t.Fatal(err)
 	}
 	return g

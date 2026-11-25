@@ -167,6 +167,11 @@ VALUES (sqlc.arg(code_hash), sqlc.arg(app_id), sqlc.arg(user_id), sqlc.arg(redir
         sqlc.arg(scopes)::text[], sqlc.arg(code_challenge), sqlc.arg(code_challenge_method),
         sqlc.arg(family_id), sqlc.arg(created_at), sqlc.arg(expires_at));
 
+-- name: OAuthCodeFamily :one
+-- A code's family, read without a lock so the family can be locked before
+-- the code.
+SELECT family_id FROM oauth_codes WHERE code_hash = $1;
+
 -- name: OAuthCodeForUpdate :one
 SELECT * FROM oauth_codes WHERE code_hash = $1 FOR UPDATE;
 
@@ -210,9 +215,11 @@ WHERE t.access_hash = sqlc.arg(access_hash) AND t.revoked_at IS NULL
 SELECT app_id, user_id, family_id FROM oauth_tokens WHERE refresh_hash = $1;
 
 -- name: OAuthFamilyLock :exec
--- Serialises issuing a token into a family with revoking the family, until
--- the transaction ends: a revocation that waited here then sees every token
--- the issuer added. 1002 namespaces the lock (ingest uses 1001).
+-- Serialises issuing a token into a family with revoking the family and
+-- with cleanup deleting its dead rows, until the transaction ends: a
+-- revocation or cleanup that waited here then sees every token the issuer
+-- added. Taken after the grant and before any code or token row. 1002
+-- namespaces the lock (ingest uses 1001).
 SELECT pg_advisory_xact_lock(1002, hashtext(sqlc.arg(family_id)::uuid::text));
 
 -- name: OAuthTokenByRefreshForUpdate :one
@@ -245,26 +252,41 @@ WHERE app_id = sqlc.arg(app_id) AND revoked_at IS NULL;
 -- name: OAuthDeleteExpiredRequests :execrows
 DELETE FROM oauth_requests WHERE expires_at <= $1;
 
--- name: OAuthDeleteExpiredCodes :execrows
--- Codes that expired before `before`, unless a token of their family is
--- still usable at `now`: a used code is the record that replaying it must
--- revoke that family, so it is kept as long as there is something to revoke.
+-- name: OAuthCleanupFamilies :many
+-- Families with a code that expired before code_before or a token dead
+-- (both halves expired, or revoked) since before token_before: the
+-- candidates for cleanup, which decides each one under its family lock.
+SELECT c.family_id FROM oauth_codes c WHERE c.expires_at <= sqlc.arg(code_before)::timestamptz
+UNION
+SELECT t.family_id FROM oauth_tokens t
+WHERE (t.expires_at <= sqlc.arg(token_before)::timestamptz
+       AND (t.refresh_expires_at IS NULL OR t.refresh_expires_at <= sqlc.arg(token_before)::timestamptz))
+   OR t.revoked_at <= sqlc.arg(token_before)::timestamptz;
+
+-- name: OAuthFamilyDeleteDeadCodes :execrows
+-- The family's codes that expired before `before`, unless a token of the
+-- family is still usable at `now`: a used code is the record that replaying
+-- it must revoke the family, so it is kept while there is something to
+-- revoke. The caller holds the family lock, so no token is being issued.
 DELETE FROM oauth_codes c
-WHERE c.expires_at <= sqlc.arg(before)::timestamptz
+WHERE c.family_id = sqlc.arg(family_id)
+  AND c.expires_at <= sqlc.arg(before)::timestamptz
   AND NOT EXISTS (
       SELECT 1 FROM oauth_tokens t
-      WHERE t.family_id = c.family_id AND t.revoked_at IS NULL
+      WHERE t.family_id = sqlc.arg(family_id) AND t.revoked_at IS NULL
         AND (t.expires_at > sqlc.arg(now)::timestamptz OR t.refresh_expires_at > sqlc.arg(now)::timestamptz));
 
--- name: OAuthDeleteDeadTokens :execrows
--- Tokens dead since before `before` (both halves expired, or revoked),
--- unless a token of their family is still usable at `now`: a rotated refresh
--- token is the record that replaying it must revoke its family.
+-- name: OAuthFamilyDeleteDeadTokens :execrows
+-- The family's tokens dead since before `before` (both halves expired, or
+-- revoked), unless a token of the family is still usable at `now`: a rotated
+-- refresh token is the record that replaying it must revoke the family. The
+-- caller holds the family lock.
 DELETE FROM oauth_tokens d
-WHERE ((d.expires_at <= sqlc.arg(before)::timestamptz
+WHERE d.family_id = sqlc.arg(family_id)
+  AND ((d.expires_at <= sqlc.arg(before)::timestamptz
         AND (d.refresh_expires_at IS NULL OR d.refresh_expires_at <= sqlc.arg(before)::timestamptz))
        OR d.revoked_at <= sqlc.arg(before)::timestamptz)
   AND NOT EXISTS (
       SELECT 1 FROM oauth_tokens t
-      WHERE t.family_id = d.family_id AND t.revoked_at IS NULL
+      WHERE t.family_id = sqlc.arg(family_id) AND t.revoked_at IS NULL
         AND (t.expires_at > sqlc.arg(now)::timestamptz OR t.refresh_expires_at > sqlc.arg(now)::timestamptz));

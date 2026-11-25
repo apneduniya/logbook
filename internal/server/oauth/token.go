@@ -140,17 +140,28 @@ func (s *Service) exchangeCode(ctx context.Context, app db.OAuthAppByIDRow, req 
 	var out TokenResponse
 	var failure *TokenError
 	err := s.st.InTx(ctx, func(q *db.Queries) error {
-		now := s.now()
-		c, err := q.OAuthCodeForUpdate(ctx, hash(req.Code))
-		if store.IsNotFound(err) || (err == nil && c.AppID != app.ID) {
+		// The family is locked before the code row, the order cleanup takes
+		// them in (family lock, then codes), so the two can't deadlock.
+		family, err := q.OAuthCodeFamily(ctx, hash(req.Code))
+		if store.IsNotFound(err) {
 			failure = errBadCode
 			return nil
 		}
 		if err != nil {
 			return fmt.Errorf("reading code: %w", err)
 		}
-		if err := q.OAuthFamilyLock(ctx, c.FamilyID); err != nil {
+		if err := q.OAuthFamilyLock(ctx, family); err != nil {
 			return fmt.Errorf("locking token family: %w", err)
+		}
+		now := s.now()
+		c, err := q.OAuthCodeForUpdate(ctx, hash(req.Code))
+		if store.IsNotFound(err) || (err == nil && c.AppID != app.ID) {
+			// Not found: deleted by cleanup since it was read.
+			failure = errBadCode
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("locking code: %w", err)
 		}
 		if c.UsedAt != nil {
 			failure = errBadCode

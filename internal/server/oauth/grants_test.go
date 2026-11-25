@@ -362,6 +362,66 @@ func TestRevokeGrantDuringRefresh(t *testing.T) {
 	}
 }
 
+// TestCleanupDuringRefresh: R1 is refreshed just before its refresh half
+// expires, and the refresh is held before it inserts R2; cleanup then runs
+// after the expiry. Cleanup must not decide the family is dead while R2 is
+// being issued: before it took the family lock, it saw no usable token,
+// deleted the used code and the rotated R0, and replaying R0 after R2
+// committed was a plain invalid_grant that left R2 working.
+func TestCleanupDuringRefresh(t *testing.T) {
+	e := newEnv(t)
+	owner, alice := e.user("owner"), e.user("alice")
+	app := e.createApp(owner, "stardance")
+	refresh := func(tok string) *httptest.ResponseRecorder {
+		return e.post("/oauth/token", url.Values{"grant_type": {"refresh_token"}, "refresh_token": {tok}}, creds(app))
+	}
+	r0 := e.mustExchange(app, e.codeFor(alice, authParams(app, "profile")), "")
+	rec := refresh(r0.RefreshToken)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("refresh = %d %s", rec.Code, rec.Body)
+	}
+	r1 := decode[tokenJSON](t, rec)
+	e.clock.Advance(oauth.RefreshTokenTTL - time.Second) // R1's refresh half has a second left
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	g := e.gateTokenInserts(ctx)
+	defer g.release()
+	refreshed := e.refreshAsync(ctx, app, r1.RefreshToken)
+	g.waiting(1) // R1 -> R2, at the gate
+
+	e.clock.Advance(31 * 24 * time.Hour) // R1 expired; R0 and the code long dead
+	cleaned := make(chan error, 1)
+	go func() {
+		_, err := e.svc.Cleanup(ctx)
+		cleaned <- err
+	}()
+	// Cleanup either finishes or blocks behind the refresh; give it the
+	// chance to do either before letting the refresh go.
+	select {
+	case err := <-cleaned:
+		cleaned <- err
+	case <-time.After(2 * time.Second):
+	}
+	g.release()
+	if err := <-cleaned; err != nil {
+		t.Fatalf("cleanup: %v", err)
+	}
+	rec = <-refreshed
+	if rec.Code != http.StatusOK {
+		t.Fatalf("refresh of R1 = %d %s", rec.Code, rec.Body)
+	}
+	r2 := decode[tokenJSON](t, rec)
+
+	if n := e.count(`SELECT count(*)::int FROM oauth_codes`); n != 1 {
+		t.Fatalf("%d codes left, want the used code kept", n)
+	}
+	expectOAuthError(t, refresh(r0.RefreshToken), http.StatusBadRequest, "invalid_grant")
+	if rec := e.probe("/probe/profile", r2.AccessToken); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("R2 after R0 was replayed = %d, want 401", rec.Code)
+	}
+}
+
 // TestRefreshReplayDuringRefresh: R0 is rotated to R1; R1 is being refreshed
 // into R2 (held at the insert) when R0 is replayed. The replay must revoke
 // the whole family, R2 included. Before issuance and family revocation took
