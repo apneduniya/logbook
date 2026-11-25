@@ -144,7 +144,7 @@ func (h *Handler) revoke(w http.ResponseWriter, r *http.Request) {
 func writeTokenError(w http.ResponseWriter, r *http.Request, err error, basic bool) {
 	var te *TokenError
 	if !errors.As(err, &te) {
-		slog.ErrorContext(r.Context(), "oauth request failed", "err", err, "path", r.URL.Path)
+		slog.ErrorContext(r.Context(), "oauth request failed", "err", err, "path", httpapi.LoggedPath(r))
 		te = &TokenError{Code: "server_error", Description: "internal error"}
 		w.Header().Set("Cache-Control", "no-store")
 		httpapi.WriteJSON(w, http.StatusInternalServerError, map[string]string{"error": te.Code, "error_description": te.Description})
