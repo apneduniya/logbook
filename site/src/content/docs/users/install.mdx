@@ -1,0 +1,96 @@
+---
+title: "Install Logbook"
+description: "Install the Logbook agent on Windows, macOS or Linux."
+---
+
+import { Steps, Tabs, TabItem, Aside } from '@astrojs/starlight/components';
+import Shot from '../../../components/Shot.astro';
+
+You get a key on the website, then paste one line into a terminal. It takes about 2 minutes and needs no admin rights: everything goes in your own user folder.
+
+## Get your install command
+
+<Steps>
+
+1. Open [logbook.boogles.dev](https://logbook.boogles.dev) and choose **Sign in with Hack Club**.
+
+   <Shot name="web-signin.png" alt="The Logbook home page, signed out, with a Sign in with Hack Club button" />
+
+2. On the home page, choose **Get my install command**. This creates a key for this computer. (It's also in **Settings**, under **Install keys**.)
+
+   <Shot name="web-home-setup.png" alt="The signed-in home page for a new user, with the install step at the top" />
+
+3. Pick your system (**Windows**, or **macOS · Linux**) and choose **Copy**. The key in the command is masked on screen, but Copy copies all of it.
+
+   The key is shown only once. Don't paste the command anywhere public.
+
+</Steps>
+
+## Run it
+
+<Tabs syncKey="os">
+<TabItem label="Windows">
+
+Open **PowerShell** (not Command Prompt), paste the command and press Enter. It looks like this, with your own key:
+
+```powershell
+$env:LOGBOOK_API_KEY="YOUR_KEY"; $env:LOGBOOK_SERVER="https://api.logbook.boogles.dev"; irm https://raw.githubusercontent.com/apneduniya/logbook/main/scripts/install.ps1 | iex
+```
+
+<Shot name="web-install-windows.png" alt="The install panel with Windows selected and the key masked in the command" />
+
+What you'll see:
+
+<Shot name="windows-install.png" alt="PowerShell after the installer ran: one line per step, ending with Done. Logbook is tracking, and the status page address" />
+
+Logbook is not added to your `PATH` on Windows. The last lines print the full path of `logbook.exe`; you can always run it as `& "$env:LOCALAPPDATA\Programs\Logbook\logbook.exe"`.
+
+</TabItem>
+<TabItem label="macOS">
+
+<Aside type="caution" title="Known problem in v0.2.0">
+On macOS, the v0.2.0 installer gets through every step and then fails while starting the agent, with an error like `launchctl kickstart -k gui/501/dev.boogles.logbook: signal: killed`. It then undoes everything, so nothing is left installed. A fix is not released yet. Until it is, Logbook can't be installed on macOS. Watch the [releases page](https://github.com/apneduniya/logbook/releases) for a newer version.
+</Aside>
+
+Open **Terminal**, paste the command and press Enter. It looks like this, with your own key:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/apneduniya/logbook/main/scripts/install.sh | LOGBOOK_API_KEY=YOUR_KEY LOGBOOK_SERVER=https://api.logbook.boogles.dev sh
+```
+
+<Shot name="web-install-unix.png" alt="The install panel with macOS · Linux selected and the key masked in the command" />
+
+Don't run it with `sudo`; the installer refuses to run as root. Logbook goes in `~/Library/Application Support/Logbook/bin`, which isn't on your `PATH`. The installer prints the folder to add if you want to type plain `logbook`.
+
+</TabItem>
+<TabItem label="Linux">
+
+Open a terminal, paste the command and press Enter. It looks like this, with your own key:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/apneduniya/logbook/main/scripts/install.sh | LOGBOOK_API_KEY=YOUR_KEY LOGBOOK_SERVER=https://api.logbook.boogles.dev sh
+```
+
+<Shot name="web-install-unix.png" alt="The install panel with macOS · Linux selected and the key masked in the command" />
+
+Don't run it with `sudo`; the installer refuses to run as root. Logbook goes in `~/.local/bin/logbook`. If that folder isn't on your `PATH`, the installer says how to add it.
+
+Install from your desktop session if you can. The agent then starts with your desktop, and it can tell when you're at the keyboard.
+
+</TabItem>
+</Tabs>
+
+## What the installer does
+
+It downloads Logbook for your system and checks its checksum, then:
+
+- saves your key and checks it with the server;
+- points your WakaTime config (`.wakatime.cfg`) at the agent, so every WakaTime or Hackatime editor plugin now sends to Logbook. Hackatime or WakaTime still gets a copy ([mirroring](/users/coming-from-hackatime/));
+- connects the AI tools it finds: Claude Code, Codex, Gemini CLI, OpenCode, Cursor and Copilot ([details](/users/editors-and-ai-tools/));
+- starts the agent now and at every login.
+
+## How to tell it worked
+
+The output ends with `Done. Logbook is tracking.` and a status page address, usually `http://127.0.0.1:47231/`. **Restart your editors** so their plugins pick up the new settings. Then [check it works](/users/check-it-works/).
+
+If the command failed, see [Troubleshooting](/users/troubleshooting/).

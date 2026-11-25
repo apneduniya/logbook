@@ -1,0 +1,95 @@
+---
+title: "Submit your hours"
+description: "Send counted hours to a program for review."
+---
+
+import { Steps, Tabs, TabItem, Aside } from '@astrojs/starlight/components';
+import Shot from '../../../components/Shot.astro';
+
+You submit from the computer where you did the work, because only its agent holds the signed record that backs your hours. The website gives you the exact command.
+
+## Before you start
+
+- Days are **UTC** and the last day can be **yesterday** at the latest: a day's hours are sealed after midnight UTC.
+- You can submit up to **92 days** at a time.
+- You need the program's short name (its slug) if you're sending to a program.
+
+## Submit
+
+<Steps>
+
+1. On [logbook.boogles.dev](https://logbook.boogles.dev), open **Projects**, then your project, and find **Submit these hours**.
+
+2. Pick the first and last day. Both count. The default is the 30 days ending yesterday.
+
+3. Pick your **Program**. With **No program**, nobody is sent a review; you share the review link yourself.
+
+4. Copy the command. It looks like this, with your project, days and program filled in:
+
+   ```sh
+   logbook submit my-project --from 2026-10-01 --to 2026-10-31 --program example-program
+   ```
+
+   If `logbook` isn't on your `PATH` (it never is on Windows, and isn't by default on macOS), replace `logbook` with its full path:
+
+   <Tabs syncKey="os">
+   <TabItem label="Windows">
+
+   ```powershell
+   & "$env:LOCALAPPDATA\Programs\Logbook\logbook.exe" submit my-project --from 2026-10-01 --to 2026-10-31 --program example-program
+   ```
+
+   </TabItem>
+   <TabItem label="macOS">
+
+   ```sh
+   "$HOME/Library/Application Support/Logbook/bin/logbook" submit my-project --from 2026-10-01 --to 2026-10-31 --program example-program
+   ```
+
+   </TabItem>
+   <TabItem label="Linux">
+
+   ```sh
+   ~/.local/bin/logbook submit my-project --from 2026-10-01 --to 2026-10-31 --program example-program
+   ```
+
+   </TabItem>
+   </Tabs>
+
+5. Run it in a terminal on the computer you worked on. It prints a summary first: how many minutes it can back with evidence, and exactly what the server will see. Read it.
+
+6. Type `y` and press Enter to upload. Anything else cancels, and nothing is sent.
+
+</Steps>
+
+## How to tell it worked
+
+The command prints `Submitted ... as submission <id>` and a **review link**. The server then re-checks your hours from the signed record, usually within minutes.
+
+Open **Submissions** on the website. Your submission shows as verifying, then as ready for review. From there you can **Copy link** or **Withdraw** it.
+
+<Shot name="web-submissions.png" alt="The Submissions page with one submission per row: project, days, program, counted hours, status and Copy link" />
+
+## Worked on more than one computer?
+
+Minutes from your other computers are part of the submission but show as "not yet backed by evidence" until each adds its part. The command prints what to run on each, in this form:
+
+```sh
+logbook submit my-project --from 2026-10-01 --to 2026-10-31 --add SUBMISSION_ID
+```
+
+If you no longer use a computer (lost, replaced, reinstalled), disconnect it in **Settings**, under **Computers**. It then stops holding your submissions back; its minutes stay unbacked.
+
+## Check before you send
+
+`--preview FILE` writes exactly what would be uploaded to a file and stops. Nothing is sent. See [Privacy](/users/privacy/) for what a submission reveals.
+
+<Aside>
+After a decision, a submission can't be withdrawn, because the program and Hack Club rely on its link. Before that, **Withdraw** stops the link working and deletes the uploaded records.
+</Aside>
+
+## What reviewers see
+
+The review link shows your counted hours next to your time at the keyboard and the one-third rule, what was cut and why, each day minute by minute with your commits, and your AI sessions. The [reviewer guide](/reviewers/) shows the whole page.
+
+If the command stops with an error, see [Troubleshooting](/users/troubleshooting/).

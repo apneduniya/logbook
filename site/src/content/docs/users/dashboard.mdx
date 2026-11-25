@@ -1,0 +1,56 @@
+---
+title: "Your dashboard"
+description: "Read your today, streak, week, projects and languages."
+---
+
+import Shot from '../../../components/Shot.astro';
+
+Your dashboard is the home page at [logbook.boogles.dev](https://logbook.boogles.dev) once you're signed in. It updates live while the tab is open.
+
+<Shot name="web-home-today.png" alt="The signed-in home page with Today, Streak, the week by day, languages and projects" />
+
+## Today
+
+The big figure is your **counted** time today. Under it, a bar splits the agent's minutes three ways:
+
+- **You**: minutes you were working. These are counted.
+- **Agent alone**: an AI agent was running while you were away. Not counted.
+- **Idle**: no input and no agent running. Not counted.
+
+The last line says how much time your editor plugins logged **at the keyboard** today. [What counts](/users/what-counts/) explains the difference.
+
+## Streak
+
+How many days in a row you reached **15 counted minutes**, and your best run. The squares are the last 14 days, with today outlined. Today doesn't break your streak before it ends.
+
+## Days, languages and projects
+
+- **7d · 30d · Year**: your time by day for the range you pick.
+- **Languages** and editors, from your editor plugins.
+- **Projects**: counted and at-the-keyboard time per project. **Projects** in the header lists them all.
+- **Agent**: each computer with the agent, and when it last uploaded.
+- **Year**: the whole year as a grid.
+
+<Shot name="web-projects.png" alt="The Projects page listing each project with counted time, keyboard time and when it was last active" />
+
+Open a project to see its last 30 days, submit its hours, link its GitHub repository, hide it from your public profile, or archive it.
+
+## Before your first install
+
+Until a computer is connected, the dashboard shows only time at the keyboard (for example, imported Hackatime history) with the install step on top. Counted columns show "—" until the agent is installed. Nothing raw is ever called counted.
+
+## On your phone
+
+The dashboard works on a phone too. The panels stack in one column.
+
+<Shot name="web-home-phone.png" alt="The home page on a 390 pixel wide phone screen, with Today and Streak stacked" />
+
+## Days and your time zone
+
+Days and streaks start at midnight in your time zone. Set it in **Settings**, under **Profile**.
+
+<Shot name="web-settings.png" alt="The top of Settings with Profile, Install keys and Computers" />
+
+In the same place you can turn your public profile off. It's on by default and shows your totals, top projects and languages at `/u/<your username>`, never your email, code or prompts.
+
+Submissions use UTC days instead, because reviewers live in many time zones. See [Submit your hours](/users/submit/).

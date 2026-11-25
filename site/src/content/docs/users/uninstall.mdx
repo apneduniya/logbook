@@ -1,0 +1,75 @@
+---
+title: "Uninstall"
+description: "Remove the Logbook agent and its data from your computer."
+---
+
+import { Steps, Tabs, TabItem, Aside } from '@astrojs/starlight/components';
+import Shot from '../../../components/Shot.astro';
+
+One command removes the agent, stops it, takes its hooks out of your AI tools and puts your `.wakatime.cfg` back the way it was. Your editor plugins then send straight to Hackatime or WakaTime again.
+
+<Steps>
+
+1. Run `logbook uninstall`:
+
+   <Tabs syncKey="os">
+   <TabItem label="Windows">
+
+   In PowerShell:
+
+   ```powershell
+   & "$env:LOCALAPPDATA\Programs\Logbook\logbook.exe" uninstall
+   ```
+
+   <Shot name="windows-uninstall.png" alt="PowerShell after logbook uninstall: autostart removed, wakatime config restored, binary removed, data kept" />
+
+   </TabItem>
+   <TabItem label="macOS">
+
+   ```sh
+   "$HOME/Library/Application Support/Logbook/bin/logbook" uninstall
+   ```
+
+   <Shot name="macos-uninstall.png" alt="Terminal after logbook uninstall: LaunchAgent removed, wakatime config restored, binary removed, data kept" />
+
+   </TabItem>
+   <TabItem label="Linux">
+
+   ```sh
+   ~/.local/bin/logbook uninstall
+   ```
+
+   </TabItem>
+   </Tabs>
+
+2. Restart your editors so their plugins pick up the restored settings.
+
+</Steps>
+
+## Also delete local data
+
+By default the data folder (config, local database, logs) is kept, so a reinstall picks up where you left off. To delete it too, add `--purge --yes`:
+
+```sh
+logbook uninstall --purge --yes
+```
+
+(On Windows and macOS, use the full path as above.) If any earlier step failed, the data is kept, because a retry needs it. Your original `.wakatime.cfg` is never lost: if it couldn't be restored exactly, a copy is saved next to it as `.wakatime.cfg.logbook-backup`.
+
+| System | Data folder |
+|---|---|
+| Windows | `%AppData%\logbook` |
+| macOS | `~/Library/Application Support/logbook` |
+| Linux | `~/.config/logbook` |
+
+## Your account
+
+Uninstalling doesn't touch your account or the time already on the website. To stop a computer from sending anything with its key, revoke the key in **Settings**, under **Install keys**, and disconnect the computer under **Computers**.
+
+<Aside>
+If you edited `.wakatime.cfg` yourself while Logbook was installed, uninstall puts back only `api_url` and `api_key` and keeps your other changes.
+</Aside>
+
+## How to tell it worked
+
+The output ends with `Done.`, with lines saying the autostart entry, the `.wakatime.cfg` change and the binary were removed. `logbook` is no longer found, and `http://127.0.0.1:47231/` no longer opens. On Windows, the program file goes away a few seconds after the command ends.

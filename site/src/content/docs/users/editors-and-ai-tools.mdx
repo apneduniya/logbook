@@ -1,0 +1,52 @@
+---
+title: "Editors and AI tools"
+description: "Which editors and AI coding tools Logbook understands."
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Logbook learns what you're doing from three places: your editor's WakaTime plugin, hooks in your AI coding tools, and your computer itself (whether you're at the keyboard and which app is in front).
+
+## Editors
+
+Any editor with a WakaTime plugin works: VS Code, Cursor, JetBrains IDEs, Vim, Neovim, Sublime, Zed and many more. The Hackatime plugin setup is the same thing. Logbook doesn't install the plugin for you.
+
+- **Already have the plugin?** Nothing to do. The installer points it at the agent. Restart the editor.
+- **No plugin yet?** Install the WakaTime extension for your editor. It reads the same `.wakatime.cfg` the installer set up, so it sends to Logbook straight away.
+
+Without a plugin, Logbook can still see AI tool activity, but not your own editing. Plain typing in an editor with no plugin isn't counted.
+
+## AI coding tools
+
+The installer connects every tool below that it finds on your computer. It adds Logbook's hooks to your **user** settings only; your projects' files are never touched.
+
+| Tool | What Logbook sees | Notes |
+|---|---|---|
+| Claude Code | prompts sent, tool calls, permission asks, turn end | Needs Claude Code 2.1.139 or newer. Also turns on Claude Code's own active-time measure, sent only to the agent on your computer. Restart running sessions after install. |
+| Codex (CLI, IDE extension, app) | prompts, tool calls, permission asks, turn end | Codex asks you to review and trust new hooks once: open `/hooks` in the CLI, or Settings > Hooks in the app. |
+| Gemini CLI | prompts, tool calls, permission asks, turn end | |
+| Cursor (editor Agent and Cursor CLI) | prompts, finished tool calls, turn end | Tab completions aren't seen. Cloud agents don't run your hooks. |
+| GitHub Copilot (Copilot CLI, VS Code agent, Copilot app) | prompts, finished tool calls, permission asks, turn end | Inline completions and next edit suggestions aren't seen; your editor plugin still records that time. JetBrains, Visual Studio and Xcode Copilot aren't covered. |
+| OpenCode | prompts, tool calls, permission asks and answers, turn end | Installed as a small plugin. Needs OpenCode 1.18.29 or newer. |
+
+For every tool, Logbook keeps the **length** of a prompt and a scrambled fingerprint of it (so it can spot the same prompt sent again), never the text. Tool inputs, outputs and the AI's answers aren't read. See [Privacy](/users/privacy/).
+
+## Installed a tool after Logbook?
+
+Hooks go in only for tools found at install time. `logbook status` lists each tool as installed or not. To connect a new tool, run the installer again with a fresh command from **Settings**, under **Install keys**. Re-installing keeps your settings and doesn't double anything up.
+
+To skip AI hooks, or pick some, add `--harness none` or a list such as `--harness claude-code,codex` to `logbook install`.
+
+## Your computer
+
+The agent checks every 5 seconds how long since you last touched the keyboard or mouse, and the name of the app in front (for example `Code.exe`). It never reads window titles, keystrokes or the screen. It needs no special permissions on any system.
+
+<Aside>
+On Linux with Wayland, the app in front can't be read, so it shows as unknown. That's never held against you. On some Linux desktops idle time can't be read either; Logbook then falls back to your editor activity and marks those minutes for reviewers.
+</Aside>
+
+It also reads your own recent git commits (hash, time, files and lines changed) to show reviewers. Commits never add or remove counted time.
+
+## How to tell it worked
+
+Run `logbook status`. Each `AI hooks:` line says whether that tool is connected, and the `Today:` line counts heartbeats and AI events.

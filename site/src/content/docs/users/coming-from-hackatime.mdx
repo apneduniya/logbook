@@ -1,0 +1,61 @@
+---
+title: "Coming from Hackatime"
+description: "What changes, and what stays the same, if you used Hackatime before."
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+import Shot from '../../../components/Shot.astro';
+
+If you use Hackatime or WakaTime today, keep your editor plugins. Logbook works with them, keeps sending your time to Hackatime, and can bring your old history over.
+
+## Your plugins keep working
+
+Hackatime and WakaTime plugins read one file, `.wakatime.cfg` in your home folder. The installer changes only two lines in it, `api_url` and `api_key`, so they point at the Logbook agent on your computer. Every other line stays as it was, and the original is backed up.
+
+You don't install anything new in your editor. Restart it after installing Logbook.
+
+## Hackatime still gets your time (mirroring)
+
+The agent sends each heartbeat to Logbook and a copy to wherever your `.wakatime.cfg` pointed before:
+
+| Before Logbook, your config pointed at | Copies go to |
+|---|---|
+| Hackatime | Hackatime |
+| WakaTime, or no `api_url` | WakaTime |
+| another WakaTime-compatible server | that server |
+| no key at all | nowhere (mirroring is off) |
+
+Your old key is kept only on your computer and is never printed. Programs that still read hours from Hackatime keep working.
+
+Check it with `logbook status`: the `Hackatime:` line says where copies go. The install output also has a `mirror` line.
+
+<Aside>
+To stop mirroring, run `logbook install --key YOUR_KEY --no-mirror`. Keys are shown only once, so get a new one in **Settings**, under **Install keys**. Your editors then send only to Logbook. The output prints the command to turn mirroring back on.
+</Aside>
+
+## Bring your Hackatime history
+
+<Steps>
+
+1. On [logbook.boogles.dev](https://logbook.boogles.dev), open **Settings** and find the **Hackatime** section.
+
+   <Shot name="web-settings-hackatime.png" alt="The Hackatime section of Settings with the import progress" />
+
+2. Choose **Link Hackatime** and allow access on Hackatime.
+
+3. Wait for the import. The last 30 days come first, usually within seconds, then older history fills in.
+
+</Steps>
+
+How to tell it worked: the Hackatime section says how many heartbeats were imported and from which months, and your dashboard shows your past days.
+
+## What's different
+
+- **Imported history is "at the keyboard" time only.** Logbook can only count time from now on, because counting needs the agent on your computer. Old Hackatime time is never shown as counted. See [What counts](/users/what-counts/).
+- **Counted time is usually lower than Hackatime's number.** Hackatime counts time at the keyboard. Logbook also takes off idle time and time an AI agent ran while you were away.
+- **Your Hackatime trust level carries over.** If your Hackatime account is banned, you can't submit hours with Logbook either. You can submit without linking Hackatime; the review page then says it isn't linked.
+- **One Hackatime account links to one Logbook account.**
+
+## Going back
+
+`logbook uninstall` puts your `.wakatime.cfg` back the way it was, so your plugins send straight to Hackatime again. See [Uninstall](/users/uninstall/).

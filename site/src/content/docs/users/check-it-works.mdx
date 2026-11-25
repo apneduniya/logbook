@@ -1,0 +1,87 @@
+---
+title: "Check it works"
+description: "Confirm the agent is running and your time is reaching Logbook."
+---
+
+import { Steps, Tabs, TabItem } from '@astrojs/starlight/components';
+import Shot from '../../../components/Shot.astro';
+
+Three quick checks after you [install](/users/install/). Restart your editors first.
+
+<Steps>
+
+1. **Open the status page.** Go to `http://127.0.0.1:47231/` in your browser. It's served by the agent on your own computer, so it works only there. Look for **Signed in: yes**.
+
+   <Shot name="agent-status-page.png" alt="The Logbook agent status page with Account, uploads, credited time and AI tool hooks sections" />
+
+2. **Run `logbook status`.**
+
+   <Tabs syncKey="os">
+   <TabItem label="Windows">
+
+   ```powershell
+   & "$env:LOCALAPPDATA\Programs\Logbook\logbook.exe" status
+   ```
+
+   <Shot name="windows-status.png" alt="PowerShell showing logbook status: Agent running, signed in yes, the Hackatime mirror line, today's totals and one line per AI tool" />
+
+   </TabItem>
+   <TabItem label="macOS">
+
+   ```sh
+   "$HOME/Library/Application Support/Logbook/bin/logbook" status
+   ```
+
+   <Shot name="macos-status.png" alt="Terminal showing logbook status: Agent running, signed in yes, the Hackatime mirror line, today's totals and one line per AI tool" />
+
+   </TabItem>
+   <TabItem label="Linux">
+
+   ```sh
+   ~/.local/bin/logbook status
+   ```
+
+   </TabItem>
+   </Tabs>
+
+   You want `Agent: running` and `signed in: yes`. Right after a start, a `settling` line says the agent waits about 15 minutes before it makes minutes final. That's normal.
+
+3. **Run `logbook doctor`.** It checks your setup and prints a fix for anything wrong.
+
+   <Tabs syncKey="os">
+   <TabItem label="Windows">
+
+   ```powershell
+   & "$env:LOCALAPPDATA\Programs\Logbook\logbook.exe" doctor
+   ```
+
+   <Shot name="windows-doctor.png" alt="PowerShell showing logbook doctor with every check marked OK" />
+
+   </TabItem>
+   <TabItem label="macOS">
+
+   ```sh
+   "$HOME/Library/Application Support/Logbook/bin/logbook" doctor
+   ```
+
+   <Shot name="macos-doctor.png" alt="Terminal showing logbook doctor with every check marked OK" />
+
+   </TabItem>
+   <TabItem label="Linux">
+
+   ```sh
+   ~/.local/bin/logbook doctor
+   ```
+
+   </TabItem>
+   </Tabs>
+
+</Steps>
+
+## How to tell it worked
+
+- Every `logbook doctor` line starts with `[OK  ]`.
+- Edit a file for a minute or two. On the status page, **Heartbeats** under **Today on this device** goes up.
+- Open [logbook.boogles.dev](https://logbook.boogles.dev). Counted time shows up under **Today** a few minutes after you start working.
+
+If a check fails, do what `logbook doctor` says, or see [Troubleshooting](/users/troubleshooting/).

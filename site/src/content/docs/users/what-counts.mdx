@@ -1,0 +1,57 @@
+---
+title: "What counts"
+description: "How Logbook decides which minutes are counted."
+---
+
+Logbook doesn't count every minute your editor is open. It starts from the time you're actually there and working, and takes off what clearly isn't work. Every cut gives its reason, and the rules are [public](https://github.com/apneduniya/logbook/blob/main/docs/STRUGGLE-RULES.md).
+
+## Two numbers
+
+- **At the keyboard** is the time your editor plugins logged. It's the same kind of number Hackatime and WakaTime show.
+- **Counted** is what's left after the rules below. It's the number you submit to programs.
+
+Counted is usually lower. That's expected.
+
+## How a minute is labelled
+
+The agent looks at every minute on its own and gives it one label:
+
+- **You**: you touched the keyboard or mouse in that minute or the 3 minutes before, and you were in an editor, a terminal or an AI app. A browser counts too while you're in the middle of a coding session, for example reading docs. **Only "you" minutes are counted.**
+- **Agent alone**: an AI agent was working, but you weren't. Not counted.
+- **Idle**: no input and no agent working. Not counted.
+
+The 3 minutes cover thinking and reading. Watching an agent work counts, as long as you're still at the computer with the terminal or AI app in front.
+
+## AI work counts the same as typing
+
+The same rules apply whether you write the code yourself or with Claude Code, Codex, Cursor, Copilot or any other tool. Prompting, reading the agent's changes and fixing them is work, and it's counted.
+
+What isn't counted is time the agent spends **alone**. If you send a prompt and walk away for 20 minutes, the minutes after your last input (plus the 3-minute grace) are **agent alone**.
+
+## Cuts
+
+A few patterns are cut even when you're at the keyboard:
+
+| Cut | What it means |
+|---|---|
+| Idle | No input and no agent running |
+| Agent working alone | The agent ran while you were away |
+| Rubber-stamping | Saying "yes" or "continue" three or more times in a row, quickly, without reading or editing in between |
+| Loops | Sending the same long prompt three or more times in 30 minutes, with no editing in between |
+| Background editor | Editor open but nothing happening (only on computers where Logbook can't read your input) |
+
+A minute where you edited code yourself is never cut by the rubber-stamping or loop rules.
+
+## Flags
+
+Some things are only **flagged** for reviewers. Flags never change your counted time. Examples: input that's too regular to be human, AI sessions that start with nobody at the keyboard (scheduled or scripted runs), and days with more than 12 counted hours.
+
+## Never penalised
+
+No rule looks at how good your code is, how hard the project is, which AI model you used or how many tokens it took. Beginners are never penalised. Git commits are shown to reviewers but never add or remove counted time, so you never have to commit just to be counted.
+
+## The one-third rule
+
+Hack Club's YSWS handbook caps AI coding at one third of your hours unless there's significant evidence. Logbook doesn't apply that cap to counted time. Its evidence is the minute-by-minute record above: agent-alone time is already taken off.
+
+When you submit, the review page shows reviewers three figures side by side: your counted hours, your time at the keyboard, and what the flat one-third rule would give (keyboard time, with time your editor plugin labelled as AI coding counted at one third). The program decides which it accepts. See [Submit your hours](/users/submit/).

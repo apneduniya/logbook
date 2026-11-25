@@ -1,0 +1,64 @@
+---
+title: "FAQ"
+description: "Common questions from coders."
+---
+
+### Do I have to start or stop anything?
+
+No. The agent starts when you log in and counts while you work.
+
+### Does it slow my computer down?
+
+It's built for old laptops: one small program, a light check every 5 seconds, and uploads in batches. On Linux with systemd it is also capped at 64 MB of memory and 10% of one CPU.
+
+### Is my time counted if I'm offline?
+
+Yes. The agent records everything locally and uploads when you're back online. The website's numbers catch up then.
+
+### Why is my counted time lower than Hackatime's?
+
+Hackatime counts time at the keyboard. Logbook also takes off idle minutes and time an AI agent ran while you were away. See [What counts](/users/what-counts/).
+
+### Does using AI make my hours worth less?
+
+No. Minutes you spend prompting, reading and fixing the AI's work count the same as typing. Only time the agent runs while you're away isn't counted. See [What counts](/users/what-counts/).
+
+### Can I count the time my agent runs overnight?
+
+No. That's agent-alone time. It shows on your dashboard and to reviewers, but it isn't counted.
+
+### Will my old Hackatime hours count?
+
+They show on your dashboard as time at the keyboard. Only time the agent records from now on can be counted. See [Coming from Hackatime](/users/coming-from-hackatime/).
+
+### Does Hackatime still get my time?
+
+Yes, if your plugins were set up for Hackatime before. The agent sends it a copy of every heartbeat.
+
+### I use two computers. Is that OK?
+
+Yes. Install on each with its own key (each install command makes one). Time from both adds up, and a minute never counts twice. When you submit, add each computer's part with `--add`. See [Submit your hours](/users/submit/).
+
+### Can I submit today's hours?
+
+Not yet. A day is sealed after it ends in UTC. Submit up to yesterday.
+
+### Does Logbook read my prompts or code?
+
+No. See [Privacy](/users/privacy/) for exactly what's recorded and sent.
+
+### Can someone else see my stats?
+
+Your public profile shows totals, top projects and languages. Turn it off, or hide projects, in **Settings**. Review links show a submission to whoever has the link.
+
+### Do I need admin rights?
+
+No. Everything installs in your own user folder.
+
+### How do I update Logbook?
+
+Get a new install command in **Settings**, under **Install keys**, and run it. Installing over an existing install keeps your data and settings.
+
+### Where's the source code?
+
+On [GitHub](https://github.com/apneduniya/logbook), under the AGPLv3 licence.
