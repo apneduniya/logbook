@@ -124,12 +124,12 @@ func TestStalledExportFreesItsSlot(t *testing.T) {
 	target := "/api/admin/v1/submissions/" + id.String() + "/bundle"
 
 	// The stalled client reads the status line, then nothing more.
-	conn, err := net.Dial("tcp", srv.Listener.Addr().String())
+	conn, err := (&net.Dialer{}).DialContext(t.Context(), "tcp", srv.Listener.Addr().String())
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close()
-	fmt.Fprintf(conn, "GET %s HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer %s\r\n\r\n", target, f.key)
+	defer func() { _ = conn.Close() }()
+	_, _ = fmt.Fprintf(conn, "GET %s HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer %s\r\n\r\n", target, f.key)
 	if line, err := bufio.NewReader(conn).ReadString('\n'); err != nil || line != "HTTP/1.1 200 OK\r\n" {
 		t.Fatalf("stalled client got %q, %v", line, err)
 	}
@@ -143,7 +143,7 @@ func TestStalledExportFreesItsSlot(t *testing.T) {
 			t.Fatal(err)
 		}
 		_, _ = io.Copy(io.Discard, resp.Body)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if resp.StatusCode == http.StatusOK {
 			return
 		}
