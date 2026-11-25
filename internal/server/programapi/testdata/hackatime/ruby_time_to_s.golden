@@ -1,0 +1,10 @@
+# Ruby programs passing Time values (HTTParty, Faraday, to_query)
+# GET /api/v1/users/100000001/stats?total_seconds=true&filter_by_project=logbook&start_date=2026-06-01+00:00:00+UTC&end_date=2026-06-30T00:00:00%2B0000
+status: 200
+cache-control: private, max-age=300
+
+{
+  "total_seconds": 1200,
+  "credited_seconds": 1200,
+  "raw_seconds": 2400
+}

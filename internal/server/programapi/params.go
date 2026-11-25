@@ -11,14 +11,22 @@ import (
 
 // timeLayouts are the forms ParseTime accepts, standing in for Rails'
 // Time.zone.parse in the UTC zone: dates (midnight UTC), RFC 3339, and
-// date-times without a zone (UTC), with "T" or a space.
+// date-times without a zone (UTC), with "T" or a space. An offset may have
+// a colon or not (+05:30, +0530), and a space may come before it or a "UTC"
+// suffix: Ruby's Time#to_s ("2026-06-10 10:00:00 UTC", "... +0000") is what
+// Ruby clients send when they put a Time in a query.
 var timeLayouts = []string{
 	"2006-01-02",
 	time.RFC3339Nano,
+	"2006-01-02T15:04:05.999999999Z0700",
 	"2006-01-02T15:04:05.999999999",
+	"2006-01-02T15:04:05.999999999 UTC",
 	"2006-01-02 15:04:05.999999999",
 	"2006-01-02 15:04:05.999999999Z07:00",
 	"2006-01-02 15:04:05.999999999 Z07:00",
+	"2006-01-02 15:04:05.999999999Z0700",
+	"2006-01-02 15:04:05.999999999 Z0700",
+	"2006-01-02 15:04:05.999999999 UTC",
 	"2006-01-02T15:04",
 	"2006-01-02 15:04",
 }
@@ -63,33 +71,36 @@ func firstTime(q url.Values, def time.Time, names ...string) time.Time {
 }
 
 // listParam reads a comma-separated list the way Hackatime does
-// (params[name].presence&.split(",")): nil when absent or empty. Ruby's
-// split drops trailing empty strings but keeps inner ones. The array form
-// name[]=a&name[]=b is accepted too (Rails splits an array on "," elements,
-// which Stardance relies on).
+// (params[name].presence&.split(",")): nil (no filter) when absent or blank.
+// Ruby's split drops trailing empty strings but keeps inner ones, so a value
+// of only commas is an empty, non-nil list that matches nothing, as
+// where(project: []) does. The array form name[]=a&name[]=b is accepted too
+// (Rails splits an array on "," elements, which Stardance relies on). An
+// array of only "," elements is likewise an empty filter; one of only blank
+// elements is no filter (Rails munges a bare name[] to an empty array).
 func listParam(q url.Values, name string) []string {
 	if vs, ok := q[name+"[]"]; ok && len(q.Get(name)) == 0 {
-		out := make([]string, 0, len(vs))
+		var out []string
 		for _, v := range vs {
-			if v != "," && v != "" {
+			switch v {
+			case "":
+			case ",":
+				if out == nil {
+					out = []string{}
+				}
+			default:
 				out = append(out, v)
 			}
-		}
-		if len(out) == 0 {
-			return nil
 		}
 		return out
 	}
 	raw := q.Get(name)
-	if raw == "" {
+	if strings.TrimSpace(raw) == "" {
 		return nil
 	}
 	parts := strings.Split(raw, ",")
 	for len(parts) > 0 && parts[len(parts)-1] == "" {
 		parts = parts[:len(parts)-1]
-	}
-	if len(parts) == 0 {
-		return nil
 	}
 	return parts
 }

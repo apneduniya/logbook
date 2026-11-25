@@ -1,0 +1,14 @@
+# spans with Time#to_s bounds
+# GET /api/v1/users/100000001/heartbeats/spans?start_date=2026-06-10+00:00:00+UTC&end_date=2026-06-11+00:00:00+%2B0000&project=logbook
+status: 200
+cache-control: private, max-age=300
+
+{
+  "spans": [
+    {
+      "start_time": 1781082000,
+      "end_time": 1781084340,
+      "duration": 2340
+    }
+  ]
+}
