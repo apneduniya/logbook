@@ -10,3 +10,6 @@ research/
 coverage.out
 .claude/
 /bin/
+/site/node_modules/
+/site/dist/
+/site/.astro/
