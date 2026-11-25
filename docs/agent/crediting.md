@@ -6,6 +6,7 @@ How the agent runs the struggle engine and keeps the evidence chain (ADR 0010, A
 |---|---|
 | `pkg/evidence` | Canonical line of a logged row, salted minute buckets under a Merkle root (`Hasher`, `HashBlock`, `Bucket.Check`), proofs and completeness (`BuildProof`, `VerifyProof`, `PlanProof`), chain hash, signing |
 | `pkg/replay` | Engine input for a computation key from logged rows; what replays compare. Shared by live runs, `ReplayMinute` and the server's re-check |
+| `pkg/submission` | The submission wire types (`Plan`, `Upload`, `Part`, `Bundle`) and the verifier the server and `logbook verify` run (`VerifyPart`, `CheckBundle`) |
 | `internal/agent/devicekey` | The device's ed25519 key file and its registration with the server |
 | `internal/agent/serverapi` | HTTP client for `/api/v1/devices`, `/minutes`, `/evidence-days` |
 | `internal/agent/crediting` | The per-minute pipeline: engine input, local minutes and their keys, uploads, sealing blocks, replays, proofs for submissions |
@@ -85,6 +86,8 @@ A day is reserved once it has ended plus one hour by the earlier of the system c
 ## Proofs
 
 `crediting.BuildProofs(keys)` builds what `logbook submit` uploads for the minutes computed at the given keys (ADR 0020), from the log and the stored bucket lists in one snapshot. For each key it takes the window its run read, `[T − 120 min, T)`. Each accepted block whose signed minute span overlaps a window and whose `seq_from` is below the key's `H` opens every minute bucket in it, with the leaves just before and after as edges (completeness, ADR 0019 point 6); the block holding `H` also opens its repo bucket. Hidden buckets are proven from the bucket list alone, so pruning their rows doesn't matter. A key is **unbacked** (its minutes go without evidence) when no accepted block holds its `H`, when the block holding it follows a day sealed before bucket lists were kept (no repo snapshot opens it, so its repo bucket lacks paths mapped earlier), when its window read rows outside the device's provable blocks (logged before its chain started, or in a day sealed before bucket lists were kept), or when a bucket it needs opened has lost rows to pruning.
+
+A submission sends the proofs as a `submission.Part`: one `Block` per proven block (its day next to the proof's fields), and one `PartMinute` (`minute`, `computed_at`, `snapshot`) per minute the part backs, which must be a row the server froze with exactly that key. The server checks it with `submission.VerifyPart`, which is stricter than `BuildProofs` in one place: it can't see the log, so it needs completeness from every block whose signed span overlaps a window and that starts below `H`, even when the rows of the window in that block all came after `H` (a late row sealed in the next block). `BuildProofs` already opens those buckets, so its keys verify; leaving one out leaves the key's minutes unbacked on the server.
 
 ## Status
 

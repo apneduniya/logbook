@@ -28,6 +28,7 @@ laptop                                     server (Go + Postgres)
 | `pkg/evidence` | Canonical encoding of the agent's logged rows, salted minute buckets under a Merkle root (resumable hasher), proofs that reveal some buckets and the completeness of minute ranges, hash chain, ed25519 signing and verification |
 | `pkg/projectname` | Project name normalisation shared by heartbeat ingest and credited minutes |
 | `pkg/replay` | Turns evidence rows and a computation key into engine input, and says what a replay compares; shared by the agent's live runs and replays and the server's submission re-check (ADR 0020) |
+| `pkg/submission` | What a submission is, in one copy for `logbook submit`, the server and `logbook verify` (ADR 0020): the plan, upload, part and verification-bundle wire types; the verifier of a part against a device's signed chain (verified, mismatch or unbacked per frozen row); the multi-device cap recomputed exactly as `credited_project_minutes`; the review packet and its justification text; the whole offline check of a bundle |
 | `internal/server/config` | Typed env config |
 | `internal/server/store` | sqlc-generated queries and transaction helpers |
 | `internal/server/auth` | HCA sign-in, sessions, API keys, CSRF |
