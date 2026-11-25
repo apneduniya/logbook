@@ -281,27 +281,6 @@ func (c *Checker) verifyPart(ctx context.Context, id, device uuid.UUID, dev subm
 	return checked, "", nil
 }
 
-// parts reads and decodes every stored part at once, for the bundle.
-// failed is set when a part's raw rows were deleted.
-func (c *Checker) parts(ctx context.Context, id uuid.UUID) (parts map[uuid.UUID]submission.Part, failed string, err error) {
-	pr, err := c.st.SubmissionParts(ctx, id)
-	if err != nil {
-		return nil, "", fmt.Errorf("reading parts: %w", err)
-	}
-	parts = make(map[uuid.UUID]submission.Part, len(pr))
-	for _, r := range pr {
-		if r.Data == nil {
-			return nil, evidenceDeleted, nil
-		}
-		p, err := decodePart(r.Data)
-		if err != nil {
-			return nil, "", fmt.Errorf("part of device %s: %w", r.DeviceID, err)
-		}
-		parts[r.DeviceID] = p
-	}
-	return parts, "", nil
-}
-
 // records reads a device's every stored record with block fields, for the
 // verifier, and the days of every record, for the packet's gaps.
 func (c *Checker) records(ctx context.Context, user, device uuid.UUID) ([]submission.EvidenceRecord, []string, error) {
