@@ -184,7 +184,10 @@ func trustFactor(t Trust) TrustFactor { return TrustFactor{TrustLevel: t.Level, 
 
 // rawQuery is which raw time a stats request counts. Hackatime applies
 // filter_by_category only to the plain total_seconds=true path, and its
-// category exclusions only with test_param or no_ai_coding.
+// category exclusions only with test_param or no_ai_coding. no_ai_coding
+// compares lower(category) on the summary and test_param paths
+// (WakatimeService's exclude_categories) but the exact category on the
+// plain total_seconds=true path (where.not(category: "ai coding")).
 func (r StatsRequest) rawQuery(hidden []string) RawQuery {
 	q := RawQuery{Projects: r.FilterProjects, ExcludeProjects: hidden}
 	if r.Test {
@@ -193,7 +196,11 @@ func (r StatsRequest) rawQuery(hidden []string) RawQuery {
 		q.Categories = r.FilterCategories
 	}
 	if r.NoAICoding {
-		q.ExcludeCategories = append(q.ExcludeCategories, aiCodingCategory)
+		if r.TotalOnly && !r.Test {
+			q.ExcludeCategoriesExact = []string{aiCodingCategory}
+		} else {
+			q.ExcludeCategories = append(q.ExcludeCategories, aiCodingCategory)
+		}
 	}
 	return q
 }

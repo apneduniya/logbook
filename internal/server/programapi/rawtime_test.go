@@ -176,7 +176,33 @@ func TestFilteredRawRowsRoundOnce(t *testing.T) {
 	}
 }
 
-// TestRawUniqueTotalSecondsMatchesHackatime:Hackatime's
+// TestNoAICodingCaseByMode: Hackatime's plain total_seconds=true path
+// leaves out exactly "ai coding" (where.not(category: "ai coding")), while
+// its summary and test_param paths compare lower(category). A heartbeat in
+// "AI Coding" therefore counts on the first and not on the others.
+func TestNoAICodingCaseByMode(t *testing.T) {
+	f := newFixture(t)
+	u := seedtest.User(t, f.st, "turing", "UTC", true)
+	t0 := time.Date(2026, 6, 10, 9, 0, 0, 0, time.UTC)
+	rawHeartbeat(t, f.st, u, t0, "alpha", "coding", "a.go")
+	rawHeartbeat(t, f.st, u, t0.Add(time.Minute), "alpha", "AI Coding", "a.go")
+	const rng = "&raw=true&no_ai_coding=true&start_date=2026-06-10T09:00:00Z&end_date=2026-06-10T10:00:00Z"
+	for _, tc := range []struct {
+		query string
+		total func(map[string]any) any
+		want  float64
+	}{
+		{"total_seconds=true" + rng, func(b map[string]any) any { return b["total_seconds"] }, 60},
+		{"total_seconds=true&test_param=true" + rng, func(b map[string]any) any { return b["total_seconds"] }, 0},
+		{"features=projects" + rng, func(b map[string]any) any { return b["data"].(map[string]any)["total_seconds"] }, 0},
+	} {
+		if got := tc.total(f.getJSON(t, call{target: "/api/v1/users/turing/stats?" + tc.query})); got != tc.want {
+			t.Errorf("%s: total_seconds = %v, want %v", tc.query, got, tc.want)
+		}
+	}
+}
+
+// TestRawUniqueTotalSecondsMatchesHackatime: Hackatime's
 // unique_heartbeat_seconds sums only the gaps of at most 120 s between
 // consecutive coding heartbeats of the filtered projects, and truncates.
 // Two heartbeats ten minutes apart are 0; before, Logbook read the rollup's

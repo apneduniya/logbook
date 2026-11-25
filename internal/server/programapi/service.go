@@ -187,8 +187,11 @@ type Range struct {
 type RawQuery struct {
 	Projects          []string
 	Categories        []string
-	ExcludeCategories []string // lower case
-	ExcludeProjects   []string
+	ExcludeCategories []string // lower case, compared with lower(category)
+	// ExcludeCategoriesExact are compared with the category as stored. Only
+	// RawTimeline reads it; a query with it is Filtered.
+	ExcludeCategoriesExact []string
+	ExcludeProjects        []string
 }
 
 // RawRow is raw seconds for one (project, language) in a range. Seconds is
@@ -220,7 +223,7 @@ func (s *Service) Raw(ctx context.Context, userID uuid.UUID, rng Range, q RawQue
 // Filtered reports whether q narrows the user's heartbeats by project or
 // category (hidden projects aside).
 func (q RawQuery) Filtered() bool {
-	return q.Projects != nil || q.Categories != nil || len(q.ExcludeCategories) > 0
+	return q.Projects != nil || q.Categories != nil || len(q.ExcludeCategories) > 0 || len(q.ExcludeCategoriesExact) > 0
 }
 
 // RawTimeline returns raw seconds per (project, language) in rng, and their
@@ -235,7 +238,8 @@ func (s *Service) RawTimeline(ctx context.Context, userID uuid.UUID, rng Range, 
 	rows, err := s.q.ProgramRawTimeline(ctx, db.ProgramRawTimelineParams{
 		UserID: userID, FromTime: rng.From, ToTime: rng.To, Boundary: boundary,
 		Projects: q.Projects, Categories: q.Categories,
-		ExcludeCategories: orEmpty(q.ExcludeCategories), ExcludeProjects: orEmpty(q.ExcludeProjects),
+		ExcludeCategories: orEmpty(q.ExcludeCategories), ExcludeCategoriesExact: orEmpty(q.ExcludeCategoriesExact),
+		ExcludeProjects: orEmpty(q.ExcludeProjects),
 	})
 	if err != nil {
 		return nil, 0, fmt.Errorf("querying raw timeline: %w", err)

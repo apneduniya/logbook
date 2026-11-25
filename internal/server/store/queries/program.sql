@@ -84,7 +84,7 @@ FROM gaps;
 -- credited LEAST(its gap to the previous filtered heartbeat, 120 s), the
 -- first 0. Heartbeats count in [from_time, to_time). A NULL projects or
 -- categories array means no filter; exclude_categories is compared
--- case-insensitively.
+-- case-insensitively and exclude_categories_exact exactly.
 --
 -- With boundary (Hackatime's test_param, duration_seconds_boundary_aware)
 -- the filtered heartbeats at the latest time before from_time also take
@@ -104,6 +104,7 @@ WITH filtered AS NOT MATERIALIZED (
            OR (CASE WHEN h.project = '' THEN 'Unknown' ELSE h.project END) = ANY (sqlc.narg(projects)::text[]))
       AND (sqlc.narg(categories)::text[] IS NULL OR h.category = ANY (sqlc.narg(categories)::text[]))
       AND NOT (lower(h.category) = ANY (sqlc.arg(exclude_categories)::text[]))
+      AND NOT (h.category = ANY (sqlc.arg(exclude_categories_exact)::text[]))
       AND NOT ((CASE WHEN h.project = '' THEN 'Unknown' ELSE h.project END) = ANY (sqlc.arg(exclude_projects)::text[]))
 ),
 timeline AS (

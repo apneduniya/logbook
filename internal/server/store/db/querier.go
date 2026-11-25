@@ -261,7 +261,7 @@ type Querier interface {
 	// credited LEAST(its gap to the previous filtered heartbeat, 120 s), the
 	// first 0. Heartbeats count in [from_time, to_time). A NULL projects or
 	// categories array means no filter; exclude_categories is compared
-	// case-insensitively.
+	// case-insensitively and exclude_categories_exact exactly.
 	//
 	// With boundary (Hackatime's test_param, duration_seconds_boundary_aware)
 	// the filtered heartbeats at the latest time before from_time also take
