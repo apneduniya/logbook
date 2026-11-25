@@ -212,15 +212,30 @@ func session(evs []wire.AIEvent, rg Range, capped map[int64]int64, ms map[int64]
 	return s, true
 }
 
+// commitHash reports whether h looks like a git object name: 7 to 64
+// lowercase hex digits. Other values (an agent that isn't ours) are left
+// out of the packet.
+func commitHash(h string) bool {
+	if len(h) < 7 || len(h) > 64 {
+		return false
+	}
+	for _, c := range h {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
 // commits returns the project's commits in the range by day: revealed git
-// commit events whose project is the submission's, once per hash (the
-// earliest), by time.
+// commit events whose project is the submission's and whose hash is a git
+// object name, once per hash (the earliest), by time.
 func (a *activity) commits(rg Range, repoURL string) map[string][]Commit {
 	seen := map[string]wire.GitEvent{}
 	for _, dl := range a.devs {
 		for _, e := range dl.events {
 			g, ok := e.Value.(wire.GitEvent)
-			if !ok || g.Kind != "commit" || g.CommitHash == "" || normalProject(g.Project) != a.project || !rg.Contains(g.Time) {
+			if !ok || g.Kind != "commit" || !commitHash(g.CommitHash) || normalProject(g.Project) != a.project || !rg.Contains(g.Time) {
 				continue
 			}
 			if cur, dup := seen[g.CommitHash]; !dup || g.Time.Before(cur.Time) {

@@ -221,6 +221,17 @@ func TestCommitURL(t *testing.T) {
 	}
 }
 
+func TestCommitHash(t *testing.T) {
+	for h, want := range map[string]bool{
+		"0123abc": true, strings.Repeat("a", 40): true, strings.Repeat("f", 64): true,
+		"0123ab": false, strings.Repeat("a", 65): false, "0123ABC": false, "0123abg": false, "<script>": false, "": false,
+	} {
+		if got := commitHash(h); got != want {
+			t.Errorf("commitHash(%q) = %v", h, got)
+		}
+	}
+}
+
 func TestJustification(t *testing.T) {
 	p := Packet{RulesVersion: "v1", CountedSeconds: 44640, RawSeconds: 61200, OneThirdRuleSeconds: 55200,
 		Minutes: Counts{Verified: 2431}}
