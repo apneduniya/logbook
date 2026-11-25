@@ -39,8 +39,8 @@ const closedRangeCache = "private, max-age=300"
 type Options struct {
 	// Limiter is shared by every route; nil means NewRateLimiter().
 	Limiter *httpapi.RateLimiter
-	// ClientKey turns a request into its client's rate-limit key (see
-	// httpapi.IPKey); required.
+	// ClientKey turns a request into its client's rate-limit key; nil means
+	// httpapi.IPKey(false). Pass httpapi.IPKey(cfg.TrustProxy) behind a proxy.
 	ClientKey func(*http.Request) string
 }
 
@@ -56,6 +56,9 @@ type Handler struct {
 func NewHandler(svc *Service, auth Authenticator, opts Options) *Handler {
 	if opts.Limiter == nil {
 		opts.Limiter = NewRateLimiter()
+	}
+	if opts.ClientKey == nil {
+		opts.ClientKey = httpapi.IPKey(false)
 	}
 	return &Handler{svc: svc, auth: auth, limiter: opts.Limiter, clientKey: opts.ClientKey}
 }
