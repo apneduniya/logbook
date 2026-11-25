@@ -42,10 +42,13 @@ WHERE a.deleted_at IS NULL
 ORDER BY a.created_at DESC, a.id;
 
 -- name: OAuthAppLockOwned :one
--- Locks a live app owned by owner_id for the rest of the transaction.
+-- Locks a live app owned by owner_id against other changes to it for the
+-- rest of the transaction. FOR NO KEY UPDATE, not FOR UPDATE: a token
+-- insert's foreign key check takes FOR KEY SHARE on the app, and must not
+-- wait here while it holds a grant that app deletion then waits for.
 SELECT id FROM oauth_apps
 WHERE id = sqlc.arg(id) AND owner_id = sqlc.arg(owner_id) AND deleted_at IS NULL
-FOR UPDATE;
+FOR NO KEY UPDATE;
 
 -- name: OAuthAppUpdate :one
 UPDATE oauth_apps

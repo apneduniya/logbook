@@ -320,7 +320,7 @@ func (q *Queries) OAuthAppInsert(ctx context.Context, arg OAuthAppInsertParams) 
 const oAuthAppLockOwned = `-- name: OAuthAppLockOwned :one
 SELECT id FROM oauth_apps
 WHERE id = $1 AND owner_id = $2 AND deleted_at IS NULL
-FOR UPDATE
+FOR NO KEY UPDATE
 `
 
 type OAuthAppLockOwnedParams struct {
@@ -328,7 +328,10 @@ type OAuthAppLockOwnedParams struct {
 	OwnerID uuid.UUID
 }
 
-// Locks a live app owned by owner_id for the rest of the transaction.
+// Locks a live app owned by owner_id against other changes to it for the
+// rest of the transaction. FOR NO KEY UPDATE, not FOR UPDATE: a token
+// insert's foreign key check takes FOR KEY SHARE on the app, and must not
+// wait here while it holds a grant that app deletion then waits for.
 func (q *Queries) OAuthAppLockOwned(ctx context.Context, arg OAuthAppLockOwnedParams) (uuid.UUID, error) {
 	row := q.db.QueryRow(ctx, oAuthAppLockOwned, arg.ID, arg.OwnerID)
 	var id uuid.UUID

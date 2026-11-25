@@ -155,7 +155,10 @@ type Querier interface {
 	OAuthAppForMember(ctx context.Context, arg OAuthAppForMemberParams) (OAuthAppForMemberRow, error)
 	// Returns no row when the slug is taken (by any app, deleted ones included).
 	OAuthAppInsert(ctx context.Context, arg OAuthAppInsertParams) (OauthApp, error)
-	// Locks a live app owned by owner_id for the rest of the transaction.
+	// Locks a live app owned by owner_id against other changes to it for the
+	// rest of the transaction. FOR NO KEY UPDATE, not FOR UPDATE: a token
+	// insert's foreign key check takes FOR KEY SHARE on the app, and must not
+	// wait here while it holds a grant that app deletion then waits for.
 	OAuthAppLockOwned(ctx context.Context, arg OAuthAppLockOwnedParams) (uuid.UUID, error)
 	// Replaces a confidential app's secret. No row for public apps.
 	OAuthAppSetSecret(ctx context.Context, arg OAuthAppSetSecretParams) (OauthApp, error)
