@@ -25,6 +25,8 @@ const (
 type HandlerOptions struct {
 	// TrustProxy keys IP rate limits on the proxy-set X-Forwarded-For hop.
 	TrustProxy bool
+	// Now is the rate limiters' clock; nil means time.Now.
+	Now func() time.Time
 }
 
 // Handler serves the OAuth, app, grant and program routes.
@@ -44,8 +46,12 @@ type Handler struct {
 // httpapi.CurrentUser on the context and must not accept bearer tokens or
 // API keys. publicLimit rate-limits the public program list.
 func NewHandler(svc *Service, requireSession, optionalSession, publicLimit httpapi.Middleware, opts HandlerOptions) *Handler {
+	now := opts.Now
+	if now == nil {
+		now = time.Now
+	}
 	perMinute := func(burst int) *httpapi.RateLimiter {
-		return httpapi.NewRateLimiter(float64(burst)/60, burst, limiterMaxKeys, limiterIdleTTL)
+		return httpapi.NewRateLimiter(float64(burst)/60, burst, limiterMaxKeys, limiterIdleTTL).WithClock(now)
 	}
 	return &Handler{
 		svc: svc, requireSession: requireSession, optionalSession: optionalSession, publicLimit: publicLimit,

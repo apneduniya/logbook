@@ -51,6 +51,13 @@ func NewRateLimiter(perSecond float64, burst, maxKeys int, idleTTL time.Duration
 	}
 }
 
+// WithClock makes l read the time from now instead of time.Now, so tests
+// can hold the buckets still. It returns l and must be called before use.
+func (l *RateLimiter) WithClock(now func() time.Time) *RateLimiter {
+	l.now = now
+	return l
+}
+
 // Allow takes one token for key and reports whether one was available.
 func (l *RateLimiter) Allow(key string) bool {
 	l.mu.Lock()

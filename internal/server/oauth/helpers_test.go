@@ -61,7 +61,8 @@ func newEnv(t *testing.T) *env {
 	clk := &clock{t: time.Date(2026, 11, 25, 12, 0, 0, 0, time.UTC)}
 	svc := oauth.NewService(st, oauth.Options{WebURL: webURL, Now: clk.Now})
 	mux := http.NewServeMux()
-	oauth.NewHandler(svc, httpapitest.StubSession, optionalSession, httpapitest.NoLimit, oauth.HandlerOptions{}).Register(mux)
+	// The limiters share the test clock, so a slow run doesn't refill them.
+	oauth.NewHandler(svc, httpapitest.StubSession, optionalSession, httpapitest.NoLimit, oauth.HandlerOptions{Now: clk.Now}).Register(mux)
 	// Probes for the bearer middleware.
 	mux.Handle("GET /probe/profile", svc.RequireScope(oauth.ScopeProfile)(whoami()))
 	mux.Handle("GET /probe/read", svc.RequireScope(oauth.ScopeRead)(whoami()))
