@@ -1,0 +1,56 @@
+---
+title: "FAQ"
+description: "Short answers to common questions from program owners and developers."
+---
+
+## Do teens have to stop using Hackatime?
+
+No. When a teen who already used Hackatime installs the agent, it keeps forwarding their heartbeats to Hackatime by default, so Hackatime keeps the same data while you compare. See [Switch from Hackatime](/programs/switch-from-hackatime/).
+
+## Why is `total_seconds` lower than on Hackatime?
+
+On Logbook it's counted time: idle minutes are cut and a minute counts once, even across projects. Add `raw=true` for time at the keyboard, or read `raw_seconds`, which stats and project responses include next to it. What counts: [What counts](/users/what-counts/).
+
+## Why does a teen have 0 counted seconds?
+
+They haven't installed the agent, or it hasn't counted anything in that range. Counted time comes only from the agent. Their `raw_seconds` can still be above zero from editor heartbeats. See [Install Logbook](/users/install/).
+
+## Why is a teen's trust level `blue` when Hackatime shows something else?
+
+Logbook masks the level the way Hackatime does in public: `yellow` reads as `blue`. A teen who hasn't linked Hackatime on Logbook also reads as `blue`, with `logbook.trust_verified: false`.
+
+## Can I look users up by Slack id?
+
+Not yet. Use the numeric `id` from `authenticated/me`, or the username. To match teens with your Hackatime records, use `logbook.hackatime_id` from `authenticated/me`.
+
+## Can I get a webhook when someone submits?
+
+Not yet. Poll `GET /api/v1/submissions` with your app's token. See [Receive submissions](/programs/receive-submissions/#pull-them-into-your-own-system).
+
+## Can I approve submissions through the API?
+
+No. Decisions are recorded on the review page by a signed-in owner or reviewer. The API lets you read them.
+
+## Can I change my app's slug?
+
+No. The slug is fixed at registration, and a deleted app keeps it, so nobody can take a program's name. Pick it carefully.
+
+## I lost the client secret.
+
+Logbook keeps only a hash, so it can't show it again. Choose **Rotate secret** on the app's page and copy the new one. The old secret stops working at once; tokens you already have keep working.
+
+## Sign-in says "This app's link is broken."
+
+Logbook doesn't recognise the client id, or the `redirect_uri` your app sent isn't exactly one of the app's redirect URIs. Compare them character for character, including the trailing slash, and add the right one under **Edit**.
+
+## My token calls get `401`.
+
+Check the token goes in `Authorization: Bearer …`, not the URL. It may have expired (access tokens last 1 year, client-credentials tokens 1 hour), or the teen may have removed your app in **Settings → Apps with access**. User endpoints don't accept a client-credentials token, and the submission endpoints accept only that kind.
+
+## Can I call the API from a browser?
+
+No. The program API sends no CORS headers. Call it from your server.
+
+## How many apps and reviewers can I have?
+
+Up to 10 apps per owner, and 50 reviewers per app.

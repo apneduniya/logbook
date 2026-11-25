@@ -1,0 +1,375 @@
+---
+title: "API reference"
+description: "Every endpoint a program calls: paths, credentials, parameters, example requests and responses, and rate limits."
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Base URL: `https://api.logbook.boogles.dev`. Examples use `$ACCESS_TOKEN` (a user's OAuth token), `$APP_TOKEN` (your app's client-credentials token) and the made-up user `orpheus`, whose id is `100000001`. Example responses come from the server's contract tests and API docs, shortened where marked.
+
+## Basics
+
+**Call from your server.** The program API sends no CORS headers, so a browser page can't read it.
+
+**Credentials.** Send tokens only as `Authorization: Bearer <token>`. A token in the query string is ignored. How to get one: [OAuth](/programs/oauth/).
+
+| Credential | Works on |
+|---|---|
+| User's OAuth token (`lbo_…`) with `profile` | `authenticated/me` |
+| User's OAuth token with `read` | `authenticated/projects`, `users/{id}/*` for that user, `my/heartbeats` |
+| User's own Logbook API key | `users/{id}/*` and `my/heartbeats` (as on Hackatime). Never `authenticated/*` |
+| Your app's client-credentials token with `submissions` | `GET /api/v1/submissions` and `/{id}` |
+| None | `users/{id}/*` of a public profile, `trust_factor`, `GET /api/v1/programs` |
+
+**User ids.** `{id}` in a path is the user's numeric `public_id` (from `100000001` up), or their username (any case). On the stats endpoints `my` means the user of the credential. Slack ids aren't accepted. An id that names nobody: `404 {"error": "User not found"}`.
+
+**Counted and raw time.** `total_seconds` is counted time unless you add `raw=true`, which gives time at the keyboard. Most responses also carry `credited_seconds` (counted) and `raw_seconds` (at the keyboard). Language, editor, OS, machine and category breakdowns are always time at the keyboard. Why: [Switch from Hackatime](/programs/switch-from-hackatime/#what-reads-differently).
+
+**The `logbook` object.** Some responses carry an extra top-level `logbook` object that Hackatime clients ignore. It may hold `username`, `hackatime_id`, `trust_verified` and `notes` (a list of sentences, for example saying a breakdown is raw time).
+
+**Trust.** `trust_level` and `trust_value` follow Hackatime: `blue` 0, `red` 1, `green` 2, `yellow` 3. They are masked as Hackatime masks them in public: `yellow` reads as `blue`, and so does a user with no Hackatime link. `logbook.trust_verified` is `false` when the level wasn't read from Hackatime.
+
+**Hidden projects** that a user hid are left out of every response, even with their own token.
+
+**Times.** Date parameters take a date (`2026-06-10`, midnight UTC), an RFC 3339 time, or `YYYY-MM-DD HH:MM[:SS]` in UTC. A value that can't be read is `422`, such as `{"error": "Invalid start_date"}`.
+
+## `GET /api/v1/authenticated/me`
+
+Who the token belongs to. Scope `profile`.
+
+```sh
+curl -s -H "Authorization: Bearer $ACCESS_TOKEN" \
+  https://api.logbook.boogles.dev/api/v1/authenticated/me
+```
+
+```json
+{
+  "id": 100000001,
+  "emails": ["orpheus@example.com"],
+  "slack_id": null,
+  "github_username": "orpheus-gh",
+  "trust_factor": {"trust_level": "green", "trust_value": 2},
+  "logbook": {"username": "orpheus", "hackatime_id": 4242, "trust_verified": true}
+}
+```
+
+`emails` is the user's Hack Club email. `slack_id` is always `null`. `github_username` is the one Hackatime reported when the user linked it, else `null`. `logbook.hackatime_id` is left out when the user hasn't linked Hackatime.
+
+## `GET /api/v1/authenticated/projects`
+
+The token user's projects, largest `total_seconds` first. Scope `read`.
+
+| Parameter | Meaning |
+|---|---|
+| `start` or `start_date` | From (default: all time) |
+| `end` or `end_date` | To (default: now) |
+| `projects` | Comma list of names to include |
+| `include_archived=true` | Include archived projects |
+| `raw=true` | `total_seconds` is time at the keyboard |
+
+```sh
+curl -s -H "Authorization: Bearer $ACCESS_TOKEN" \
+  https://api.logbook.boogles.dev/api/v1/authenticated/projects
+```
+
+```json
+{
+  "projects": [
+    {
+      "name": "logbook",
+      "total_seconds": 1200,
+      "most_recent_heartbeat": "2026-06-10T09:39:00Z",
+      "languages": ["Go"],
+      "archived": false,
+      "credited_seconds": 1200,
+      "raw_seconds": 2400,
+      "repo_url": "https://github.com/orpheus/logbook"
+    },
+    {
+      "name": "agent-only",
+      "total_seconds": 180,
+      "most_recent_heartbeat": "2026-06-10T13:03:00Z",
+      "languages": [],
+      "archived": false,
+      "credited_seconds": 180,
+      "raw_seconds": 0,
+      "repo_url": null
+    }
+  ]
+}
+```
+
+Shortened: the test response has a third project.
+
+## `GET /api/v1/users/{id}/stats`
+
+A user's totals and breakdowns. Public when the user's profile is public; otherwise it needs a `read` token or API key of that same user, or it answers `403 {"error": "user has disabled public stats"}`. A credential that doesn't verify is ignored (the call goes on as if anonymous), never a `401`.
+
+| Parameter | Meaning |
+|---|---|
+| `start_date`, `end_date` | Range (default: ten years ago to the end of today, UTC) |
+| `features` | Comma list: `languages`, `projects`. Absent means `languages` |
+| `filter_by_project` | Comma list, or `filter_by_project[]=a&filter_by_project[]=b` |
+| `filter_by_category` | Only with `total_seconds=true`, as on Hackatime |
+| `total_seconds=true` | Return only the three totals |
+| `test_param=true` | Raw time leaves out `browsing`, `meeting` and `communicating` |
+| `no_ai_coding=true` | Raw time also leaves out `ai coding` |
+| `limit` | Keep the first N rows of each breakdown |
+| `raw=true` | `total_seconds` values are time at the keyboard |
+
+Filters and categories change only raw figures, because counted time is per project.
+
+```sh
+curl -s "https://api.logbook.boogles.dev/api/v1/users/100000001/stats?features=projects&start_date=2026-05-31"
+```
+
+```json
+{
+  "data": {
+    "username": "Name orpheus",
+    "user_id": "100000001",
+    "is_coding_activity_visible": true,
+    "is_other_usage_visible": true,
+    "status": "ok",
+    "start": "2026-05-31T00:00:00Z",
+    "end": "2026-07-01T23:59:59Z",
+    "range": "all_time",
+    "human_readable_range": "All Time",
+    "total_seconds": 1470,
+    "daily_average": 47,
+    "human_readable_total": "24m 30s",
+    "human_readable_daily_average": "47s",
+    "projects": [
+      {
+        "name": "logbook",
+        "total_seconds": 1200,
+        "text": "20m",
+        "hours": 0,
+        "minutes": 20,
+        "percent": 81.63,
+        "digital": "00:20:00",
+        "credited_seconds": 1200,
+        "raw_seconds": 2340
+      }
+    ],
+    "streak": 0,
+    "credited_seconds": 1470,
+    "raw_seconds": 2460
+  },
+  "trust_factor": {"trust_level": "green", "trust_value": 2},
+  "logbook": {"trust_verified": true}
+}
+```
+
+Shortened: the test response lists three more projects. `streak` is the current run of days with at least 15 minutes counted. With `features=languages`, `logbook.notes` says the languages are time at the keyboard.
+
+With `total_seconds=true`:
+
+```sh
+curl -s "https://api.logbook.boogles.dev/api/v1/users/100000001/stats?total_seconds=true&filter_by_project=logbook,site&start_date=2026-05-31"
+```
+
+```json
+{"total_seconds": 1290, "credited_seconds": 1290, "raw_seconds": 2340}
+```
+
+## `GET /api/v1/users/{id}/trust_factor`
+
+Public; no credential needed. `my` isn't accepted here.
+
+```sh
+curl -s https://api.logbook.boogles.dev/api/v1/users/100000001/trust_factor
+```
+
+```json
+{"trust_level": "green", "trust_value": 2, "logbook": {"trust_verified": true}}
+```
+
+## `GET /api/v1/users/{id}/heartbeats/spans`
+
+Coding sessions from raw heartbeats, in Unix seconds. A span ends where the next heartbeat is more than 120 seconds away. Same access rule as stats.
+
+Parameters: `start_date`, `end_date`; `project` (one name, or `project[]=a&project[]=b`), else `filter_by_project` (comma list).
+
+```sh
+curl -s "https://api.logbook.boogles.dev/api/v1/users/100000001/heartbeats/spans?start_date=2026-06-10&end_date=2026-06-11&project[]=logbook&project[]=site"
+```
+
+```json
+{
+  "spans": [
+    {"start_time": 1781082000, "end_time": 1781084460, "duration": 2460},
+    {"start_time": 1781085600, "end_time": 1781085630, "duration": 30}
+  ]
+}
+```
+
+## `GET /api/v1/users/{id}/projects`
+
+Project names with time between `since` (or `start`, `start_date`; default 30 days ago) and `until` (or `until_date`, `end`, `end_date`; default now), archived included, by name. Same access rule as stats.
+
+```json
+{"projects": ["agent-only", "logbook", "old", "site"]}
+```
+
+## `GET /api/v1/users/{id}/project/{name}`
+
+One project. `404 {"error": "found nuthin"}` if there's no such project. Range: `start`/`start_date` (default a year ago) to `end`/`end_date` (default now). `total_seconds` is counted unless `raw=true`.
+
+```sh
+curl -s https://api.logbook.boogles.dev/api/v1/users/100000001/project/logbook
+```
+
+```json
+{
+  "name": "logbook",
+  "total_seconds": 1200,
+  "languages": ["Go"],
+  "repo_url": "https://github.com/orpheus/logbook",
+  "total_heartbeats": 40,
+  "first_heartbeat": "2026-06-10T09:00:00Z",
+  "last_heartbeat": "2026-06-10T09:39:00Z",
+  "most_recent_heartbeat": "2026-06-10T09:39:00Z",
+  "archived": false,
+  "credited_seconds": 1200,
+  "raw_seconds": 2400
+}
+```
+
+## `GET /api/v1/users/{id}/projects/details`
+
+`{"projects": [row, ...]}` with rows shaped like `project/{name}`. Filter with `projects` (comma list). Archived projects are left out. Same range and `raw=true` as above.
+
+## `GET /api/v1/my/heartbeats`
+
+The credential user's heartbeats, oldest first, in Hackatime's model shape. Needs a `read` token or the user's API key (`Bearer`, or `Basic` with the key); otherwise `401 {"error": "Unauthorized"}`.
+
+Parameters: `start_time`, `end_time` (default: today, UTC); `raw=true`.
+
+```sh
+curl -s -H "Authorization: Bearer $ACCESS_TOKEN" \
+  "https://api.logbook.boogles.dev/api/v1/my/heartbeats?start_time=2026-06-10T10:00:00Z&end_time=2026-06-10T10:59:59Z"
+```
+
+```json
+{
+  "start_time": "2026-06-10T10:00:00.000Z",
+  "end_time": "2026-06-10T10:59:59.000Z",
+  "total_seconds": 90,
+  "heartbeats": [
+    {"id": 41, "user_id": 100000001, "time": 1781085600, "entity": "https://example.com", "type": "file",
+     "category": "browsing", "project": "site", "language": "Svelte", "editor": "vscode", "source_type": "direct_entry"}
+  ],
+  "credited_seconds": 90,
+  "raw_seconds": 300
+}
+```
+
+Shortened: each heartbeat has all of Hackatime's fields, with empty ones as `null`. At most 25,000 heartbeats are listed; `logbook.notes` says so when the list was cut.
+
+## `GET /api/v1/submissions`
+
+The submissions sent to your program, newest first. Needs your app's client-credentials token with scope `submissions`.
+
+| Parameter | Meaning |
+|---|---|
+| `status` | `verifying`, `ready`, `failed` or `withdrawn` |
+| `decision` | `approved`, `adjusted`, `rejected`, or `none` for no decision yet |
+| `limit` | 1 to 500 (default 100) |
+| `offset` | 0 to 1,000,000 |
+
+```sh
+curl -s -H "Authorization: Bearer $APP_TOKEN" \
+  "https://api.logbook.boogles.dev/api/v1/submissions?status=ready&decision=none"
+```
+
+```json
+{
+  "submissions": [
+    {
+      "id": "…",
+      "project": "terra-bot",
+      "from": "2026-11-01",
+      "to": "2026-11-20",
+      "user": {"username": "orpheus", "display_name": "Orpheus", "hackatime_id": 4242},
+      "program": {"slug": "example-program", "name": "Example Program"},
+      "status": "ready",
+      "counted_seconds": 44640,
+      "raw_seconds": 61200,
+      "minutes": {"verified": 744, "mismatch": 0, "unbacked": 0},
+      "decision": null,
+      "review_url": "https://logbook.boogles.dev/r/<token>",
+      "created_at": "…"
+    }
+  ]
+}
+```
+
+- `counted_seconds`, `raw_seconds` and `minutes` are 0 until the status is `ready`.
+- `decision`, when there is one: `{"value", "approved_seconds", "reason", "by", "at"}`. `approved_seconds` is set only for `adjusted`.
+- `review_url` is `null` once the teen withdrew the submission.
+- `user.hackatime_id` is `null` when the teen hasn't linked Hackatime.
+
+Statuses: `verifying` (being re-checked), `ready` (checked; the review page is complete), `failed` (the evidence didn't check out; reviewers see nothing), `withdrawn` (the teen took it back before a decision).
+
+## `GET /api/v1/submissions/{id}`
+
+One submission with its `packet`: everything the review page shows, including the `justification` paragraph. `packet` is `null` unless the status is `ready`. `404 {"error": "submission not found"}` unless it was sent to your app.
+
+```sh
+curl -s -H "Authorization: Bearer $APP_TOKEN" \
+  https://api.logbook.boogles.dev/api/v1/submissions/$SUBMISSION_ID
+```
+
+The packet's main fields: `counted_seconds`, `raw_seconds`, `raw_ai_seconds`, `one_third_rule_seconds`, `minutes`, `trust`, `made_of`, `cuts`, `flags`, `days`, `ai_sessions`, `mismatches`, `justification`. What each means for a reviewer: [Read the hours](/reviewers/read-the-hours/).
+
+## `GET /api/v1/programs`
+
+The programs teens can pick when they submit: live apps with **Take submissions** on, by name. No credential.
+
+```json
+{"programs": [{"slug": "example-program", "name": "Example Program", "homepage_url": "https://program.example"}]}
+```
+
+## OAuth endpoints
+
+| Call | What |
+|---|---|
+| `GET /oauth/authorize` | Starts sign-in in the browser |
+| `POST /oauth/token` | `authorization_code`, `refresh_token` or `client_credentials` |
+| `POST /oauth/revoke` | Revokes an access or refresh token (RFC 7009) |
+
+Parameters and examples: [OAuth](/programs/oauth/).
+
+<Aside>
+Registering and editing apps, adding reviewers and recording decisions happen on the website. Their endpoints (`/api/v1/me/apps…`, `/api/v1/review/…`) need a browser session and don't take OAuth tokens or API keys.
+</Aside>
+
+## Errors
+
+| Status | Where | Body |
+|---|---|---|
+| `401` | `authenticated/*`: no token, or an unknown, expired or revoked one | Empty, with `WWW-Authenticate: Bearer realm="Doorkeeper", error="invalid_token"` |
+| `403` | `authenticated/*`: token lacks the scope | Empty, with `error="insufficient_scope"` |
+| `401` / `403` | `/api/v1/submissions*` | `{"error": "…"}`, with `WWW-Authenticate: Bearer realm="logbook"` |
+| `403` | Stats of a private profile | `{"error": "user has disabled public stats"}` |
+| `404` | Unknown user | `{"error": "User not found"}` |
+| `422` | A date or time that can't be read | `{"error": "Invalid start_date"}` |
+| `429` | Over the rate limit | `{"error": "too many requests"}` with `Retry-After` |
+
+A user whose Hackatime account is banned (`red`) is treated as having no credential: `authenticated/projects` and `my/heartbeats` answer `401 {"error": "Unauthorized"}`.
+
+## Caching
+
+Responses about a range that already ended (`users/{id}/*` with a past `end_date` or `end`) carry `Cache-Control: private, max-age=300`. Everything else is `no-store`, except `trust_factor` and errors, which carry no `Cache-Control`.
+
+## Rate limits
+
+| Calls | Limit |
+|---|---|
+| Program API and `/api/v1/submissions*` | Per token or API key (per IP when there's none): a burst of 600, refilled at 600 a minute |
+| `/oauth/token` and `/oauth/revoke` | 60 a minute per client id and caller network |
+| `/oauth/authorize` | 120 a minute per IP |
+| `GET /api/v1/programs` | 120 a minute per IP |
+
+Over the limit: `429` with `Retry-After` (seconds). Wait that long, then try again.

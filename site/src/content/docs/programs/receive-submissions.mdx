@@ -1,0 +1,90 @@
+---
+title: "Receive submissions"
+description: "Let teens send their hours to your program, and get each submission into your review workflow."
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+import Shot from '../../../components/Shot.astro';
+
+A submission is one project's counted hours over a range of days, sent by a teen to your program. Logbook re-checks it on its server and gives it a review link. You find new ones in your app's inbox on the website, or by polling the API.
+
+## Open your program to submissions
+
+<Steps>
+
+1. On your app's page, check the FACTS panel says "Takes submissions". If not, choose **Edit**, tick **Take submissions** and save. Your program now appears in the list teens pick from.
+
+2. Tell teens your slug. They submit from the computer that tracked the time:
+
+   ```sh
+   logbook submit my-project --from 2026-10-01 --to 2026-10-31 --program example-program
+   ```
+
+   A project's page on the website also builds this command for them, with a program they pick from the list. Point teens at [Submit your hours](/users/submit/).
+
+</Steps>
+
+Teens can submit up to 92 days at a time, ending yesterday (UTC) at the latest. Someone whose linked Hackatime account is banned can't submit.
+
+## Find new submissions on the website
+
+Open your app from **Apps**. The INBOX panel shows **To review** first: submissions that are checked and have no decision yet. The other filters are Verifying, Approved, Adjusted, Rejected and All.
+
+<Shot name="web-app-detail.png" alt="An app's page with the INBOX panel showing the To review filter and a row per submission with project, dates, submitter, counted hours and a Copy link button" />
+
+Each row opens the review page. **Copy link** copies the review link, to paste into your program's tracker. Reviewers decide on the review page: see [Decide](/reviewers/decide/) and [Paste into Airtable](/reviewers/paste-into-airtable/).
+
+## Pull them into your own system
+
+Logbook doesn't send webhooks. To sync submissions into your own database, poll the API from your server.
+
+<Steps>
+
+1. Get an app token with client credentials. It lasts 1 hour. (This example uses `jq` to pick the token out of the JSON.)
+
+   ```sh
+   APP_TOKEN=$(curl -s -u "$CLIENT_ID:$CLIENT_SECRET" \
+     -d grant_type=client_credentials -d scope=submissions \
+     https://api.logbook.boogles.dev/oauth/token | jq -r .access_token)
+   ```
+
+2. List the ones waiting for a decision:
+
+   ```sh
+   curl -s -H "Authorization: Bearer $APP_TOKEN" \
+     "https://api.logbook.boogles.dev/api/v1/submissions?status=ready&decision=none"
+   ```
+
+3. Store each `id` with its `review_url`, `counted_seconds` and `user`. Read one in full, with its justification paragraph, from `GET /api/v1/submissions/{id}`.
+
+4. Repeat every few minutes. Page through long lists with `limit` (up to 500) and `offset`.
+
+</Steps>
+
+Field by field: [API reference](/programs/api-reference/#get-apiv1submissions).
+
+<Aside>
+Decisions are recorded only on the review page, by a signed-in member of your program. The API lets you read decisions, not make them.
+</Aside>
+
+## What the statuses mean
+
+| Status | What to do |
+|---|---|
+| `verifying` | Wait. Logbook is re-checking the evidence |
+| `ready` | Review it. The review page and packet are complete |
+| `failed` | Nothing to review. The evidence didn't check out; the teen sees why and can submit again |
+| `withdrawn` | The teen took it back before a decision. The review link stops working |
+
+A teen with more than one computer can add another device's evidence to a submission. It goes back to `verifying`, and the review page shows a new version.
+
+## How to tell it worked
+
+- Your program is in the public list:
+
+  ```sh
+  curl -s https://api.logbook.boogles.dev/api/v1/programs
+  ```
+
+- Send a test submission from your own account with `--program` and your slug. It appears in the inbox under **Verifying**, then under **To review**, and in the API list.
+- A reviewer who opens your test submission's link sees Approve, Adjust and Reject. You won't see them on your own submission: nobody can decide on their own hours.

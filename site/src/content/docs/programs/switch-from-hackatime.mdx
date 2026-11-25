@@ -1,0 +1,78 @@
+---
+title: "Switch from Hackatime"
+description: "Point an existing Hackatime integration at Logbook by changing its base URL, and know what reads differently."
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+
+Logbook answers the program calls Hackatime answers, at the same paths, with the same parameters and JSON shapes. Contract tests pin each request that real program code makes. If your program keeps the Hackatime address in config, switching is a config change plus a new OAuth app.
+
+## Switch
+
+<Steps>
+
+1. [Register an app](/programs/register-an-app/) on Logbook. Add the same redirect URI your Hackatime app uses (for an OmniAuth setup that is often something like `https://program.example/auth/hackatime/callback`). It must match exactly.
+
+2. In your program's config, replace the Hackatime host with Logbook's API host, and the Hackatime client id and secret with the new ones:
+
+   | | Hackatime | Logbook |
+   |---|---|---|
+   | Base URL | `https://hackatime.hackclub.com` | `https://api.logbook.boogles.dev` |
+   | Authorize | `/oauth/authorize` | `/oauth/authorize` |
+   | Token | `/oauth/token` | `/oauth/token` |
+   | API | `/api/v1/...` | `/api/v1/...` |
+
+   If the host is written into your code instead of config, you need a small patch to change it.
+
+3. Deploy, then ask each participant to connect once. Their Hackatime tokens don't work on Logbook, so everyone goes through the Logbook consent page one time.
+
+4. Teens need the Logbook agent for their time to be counted. Point them at [Install Logbook](/users/install/) and [Coming from Hackatime](/users/coming-from-hackatime/).
+
+</Steps>
+
+<Aside>
+For teens who already used Hackatime, the agent keeps forwarding their heartbeats to Hackatime by default, so you can read both side by side while you compare.
+</Aside>
+
+## What stays the same
+
+- OAuth 2 authorization code, with scopes `profile` and `read`, and Doorkeeper's token response shape.
+- `GET /api/v1/authenticated/me`, `authenticated/projects`, `users/{id}/stats`, `trust_factor`, `heartbeats/spans`, `projects`, `project/{name}`, `projects/details` and `my/heartbeats`: paths, parameters (`start_date`, `end_date`, `features`, `filter_by_project`, `total_seconds=true`, `test_param`, `no_ai_coding`, ...), status codes and JSON keys.
+- `users/my/...` means the user of the token.
+- Public stats are public when the user's profile is public. A private profile answers `403 {"error": "user has disabled public stats"}`.
+
+## What reads differently
+
+**`total_seconds` is counted time.** On Logbook, `total_seconds` (top level and per project) is the time Logbook counted: idle minutes cut, capped at 60 seconds a minute across projects. Add `raw=true` to get time at the keyboard instead, the figure closest to Hackatime's.
+
+**Both numbers are always there.** Responses add `credited_seconds` (counted) and `raw_seconds` (at the keyboard) beside `total_seconds`, so you can show both. Clients that don't know these keys ignore them.
+
+**Some breakdowns are always raw.** Counted time is kept per project only. Languages, editors, operating systems, machines and categories are time at the keyboard, with or without `raw=true`, and `logbook.notes` says so.
+
+**No agent means zero counted time.** A user who never installed the agent has `credited_seconds: 0`, even if their editor sends heartbeats. You get zero, not an unchecked number.
+
+**User ids are new numbers.** `id` is the user's Logbook `public_id`, an integer from `100000001` up, so it never collides with a Hackatime id you stored. `authenticated/me` carries the user's Hackatime id as `logbook.hackatime_id` when they've linked Hackatime, so you can join old and new records. Slack ids aren't accepted as a path id; use the `public_id` or the username.
+
+**Trust is masked.** `trust_factor` is the user's Hackatime trust level, masked as Hackatime masks it in public: `yellow` reads as `blue`. A user with no Hackatime link, or one whose level couldn't be read, reads as `blue`. `red` stays `red`. Responses add `logbook.trust_verified`, which is `false` in those two `blue` cases. `slack_id` is always `null`.
+
+**Tokens expire.** Access tokens last 1 year, and you also get a refresh token. See [OAuth](/programs/oauth/#refresh-a-token).
+
+**Server-side only.** The program API sends no CORS headers, so call it from your server, not from a browser page.
+
+**Smaller differences.** Hidden projects are left out everywhere. `my/heartbeats` lists at most 25,000 heartbeats (with a note when cut) and answers `422` to a bad time where Hackatime gives `500`.
+
+## How to tell it worked
+
+Sign in to your program with a test account, then check that `authenticated/me` returns an `id` of 100000001 or higher:
+
+```sh
+curl -s -H "Authorization: Bearer $ACCESS_TOKEN" \
+  https://api.logbook.boogles.dev/api/v1/authenticated/me
+```
+
+Then read that user's stats and check the response has `credited_seconds` and `raw_seconds`:
+
+```sh
+curl -s -H "Authorization: Bearer $ACCESS_TOKEN" \
+  "https://api.logbook.boogles.dev/api/v1/users/my/stats?features=projects"
+```
