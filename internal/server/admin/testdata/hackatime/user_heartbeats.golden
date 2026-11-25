@@ -1,0 +1,107 @@
+# Hackatime user_utilities.rb user_heartbeats, a page with filters
+# GET /api/admin/v1/user/heartbeats?id=100000002&project=logbook&start_date=2026-06-10&end_date=2026-06-10&limit=3&offset=1
+status: 200
+
+{
+  "user_id": 100000002,
+  "heartbeats": [
+    {
+      "id": 2,
+      "time": 1781082060,
+      "created_at": "<volatile>",
+      "lineno": null,
+      "cursorpos": null,
+      "is_write": false,
+      "project": "logbook",
+      "language": "Go",
+      "entity": "main.go",
+      "branch": null,
+      "category": "coding",
+      "dependencies": [],
+      "editor": "vscode",
+      "machine": null,
+      "operating_system": null,
+      "type": "file",
+      "project_root_count": null,
+      "user_agent": null,
+      "line_additions": null,
+      "line_deletions": null,
+      "ip_address": null,
+      "lines": null,
+      "source_type": "direct_entry",
+      "hidden": false,
+      "ja4": null,
+      "logbook": {
+        "source": "editor",
+        "plugin": null,
+        "fields_hash": "<volatile>"
+      }
+    },
+    {
+      "id": 3,
+      "time": 1781082120,
+      "created_at": "<volatile>",
+      "lineno": null,
+      "cursorpos": null,
+      "is_write": false,
+      "project": "logbook",
+      "language": "Go",
+      "entity": "main.go",
+      "branch": null,
+      "category": "coding",
+      "dependencies": [],
+      "editor": "vscode",
+      "machine": null,
+      "operating_system": null,
+      "type": "file",
+      "project_root_count": null,
+      "user_agent": null,
+      "line_additions": null,
+      "line_deletions": null,
+      "ip_address": null,
+      "lines": null,
+      "source_type": "direct_entry",
+      "hidden": false,
+      "ja4": null,
+      "logbook": {
+        "source": "editor",
+        "plugin": null,
+        "fields_hash": "<volatile>"
+      }
+    },
+    {
+      "id": 4,
+      "time": 1781082180,
+      "created_at": "<volatile>",
+      "lineno": null,
+      "cursorpos": null,
+      "is_write": false,
+      "project": "logbook",
+      "language": "Go",
+      "entity": "main.go",
+      "branch": null,
+      "category": "coding",
+      "dependencies": [],
+      "editor": "vscode",
+      "machine": null,
+      "operating_system": null,
+      "type": "file",
+      "project_root_count": null,
+      "user_agent": null,
+      "line_additions": null,
+      "line_deletions": null,
+      "ip_address": null,
+      "lines": null,
+      "source_type": "direct_entry",
+      "hidden": false,
+      "ja4": null,
+      "logbook": {
+        "source": "editor",
+        "plugin": null,
+        "fields_hash": "<volatile>"
+      }
+    }
+  ],
+  "total_count": 40,
+  "has_more": true
+}

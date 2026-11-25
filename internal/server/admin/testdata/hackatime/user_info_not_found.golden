@@ -1,0 +1,7 @@
+# Hackatime user_utilities.rb find_user_by_id, unknown id
+# GET /api/admin/v1/user/info?id=7
+status: 404
+
+{
+  "error": "user not found"
+}

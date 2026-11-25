@@ -1,0 +1,8 @@
+# Hackatime user_utilities.rb search_users_fuzzy, no query
+# POST /api/admin/v1/user/search_fuzzy
+# body: {"query": ""}
+status: 422
+
+{
+  "error": "bro dont have a query"
+}

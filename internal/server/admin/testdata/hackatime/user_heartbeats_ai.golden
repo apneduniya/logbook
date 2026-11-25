@@ -1,0 +1,91 @@
+# Hackatime user_utilities.rb user_heartbeats with include_ai, the last page
+# GET /api/admin/v1/user/heartbeats?id=100000002&include_ai=1&limit=2&offset=41
+status: 200
+
+{
+  "user_id": 100000002,
+  "heartbeats": [
+    {
+      "id": 42,
+      "time": 1781085630,
+      "created_at": "<volatile>",
+      "lineno": null,
+      "cursorpos": null,
+      "is_write": false,
+      "project": "site",
+      "language": "Svelte",
+      "entity": "https://example.com",
+      "branch": null,
+      "category": "browsing",
+      "dependencies": [],
+      "editor": "vscode",
+      "machine": null,
+      "operating_system": null,
+      "type": "file",
+      "project_root_count": null,
+      "user_agent": null,
+      "line_additions": null,
+      "line_deletions": null,
+      "ip_address": null,
+      "lines": null,
+      "source_type": "direct_entry",
+      "ai_model": null,
+      "ai_session": null,
+      "ai_subscription_plan": null,
+      "ai_input_tokens": null,
+      "ai_output_tokens": null,
+      "ai_prompt_length": null,
+      "ai_line_changes": null,
+      "human_line_changes": null,
+      "hidden": false,
+      "ja4": null,
+      "logbook": {
+        "source": "editor",
+        "plugin": null,
+        "fields_hash": "<volatile>"
+      }
+    },
+    {
+      "id": 43,
+      "time": 1781089200,
+      "created_at": "<volatile>",
+      "lineno": null,
+      "cursorpos": null,
+      "is_write": false,
+      "project": "secret",
+      "language": "Rust",
+      "entity": "secret.rs",
+      "branch": null,
+      "category": "coding",
+      "dependencies": [],
+      "editor": "vscode",
+      "machine": null,
+      "operating_system": null,
+      "type": "file",
+      "project_root_count": null,
+      "user_agent": null,
+      "line_additions": null,
+      "line_deletions": null,
+      "ip_address": null,
+      "lines": null,
+      "source_type": "direct_entry",
+      "ai_model": null,
+      "ai_session": null,
+      "ai_subscription_plan": null,
+      "ai_input_tokens": null,
+      "ai_output_tokens": null,
+      "ai_prompt_length": null,
+      "ai_line_changes": null,
+      "human_line_changes": null,
+      "hidden": false,
+      "ja4": null,
+      "logbook": {
+        "source": "editor",
+        "plugin": null,
+        "fields_hash": "<volatile>"
+      }
+    }
+  ],
+  "total_count": 43,
+  "has_more": false
+}

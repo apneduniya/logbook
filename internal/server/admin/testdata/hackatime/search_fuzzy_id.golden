@@ -1,0 +1,18 @@
+# Hackatime user_utilities.rb search_users_fuzzy by id
+# POST /api/admin/v1/user/search_fuzzy?query=100000002
+status: 200
+
+{
+  "users": [
+    {
+      "id": 100000002,
+      "username": "orpheus",
+      "slack_username": null,
+      "github_username": "orpheus-gh",
+      "slack_avatar_url": null,
+      "github_avatar_url": null,
+      "email": "orpheus@example.com",
+      "rank_score": 1000
+    }
+  ]
+}

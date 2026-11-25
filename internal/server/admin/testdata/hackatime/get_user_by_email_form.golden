@@ -1,0 +1,8 @@
+# Hackatime user_utilities.rb get_user_by_email, form body, unknown email
+# POST /api/admin/v1/user/get_user_by_email
+# form: email=nobody%40example.com
+status: 404
+
+{
+  "error": "email not found"
+}

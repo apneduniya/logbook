@@ -1,0 +1,62 @@
+# Hackatime user_utilities.rb user_projects
+# GET /api/admin/v1/user/projects?id=100000002
+status: 200
+
+{
+  "user_id": 100000002,
+  "username": "Name orpheus",
+  "projects": [
+    {
+      "name": "logbook",
+      "total_heartbeats": 40,
+      "total_duration": 2340,
+      "first_heartbeat": 1781082000,
+      "last_heartbeat": 1781084340,
+      "languages": [
+        "Go"
+      ],
+      "repo": "https://github.com/orpheus/logbook",
+      "repo_mapping_id": null,
+      "archived": false,
+      "logbook": {
+        "credited_seconds": 1200,
+        "hidden": false
+      }
+    },
+    {
+      "name": "site",
+      "total_heartbeats": 2,
+      "total_duration": 30,
+      "first_heartbeat": 1781085600,
+      "last_heartbeat": 1781085630,
+      "languages": [
+        "Svelte"
+      ],
+      "repo": null,
+      "repo_mapping_id": null,
+      "archived": true,
+      "logbook": {
+        "credited_seconds": 0,
+        "hidden": false
+      }
+    },
+    {
+      "name": "secret",
+      "total_heartbeats": 1,
+      "total_duration": 0,
+      "first_heartbeat": 1781089200,
+      "last_heartbeat": 1781089200,
+      "languages": [
+        "Rust"
+      ],
+      "repo": null,
+      "repo_mapping_id": null,
+      "archived": false,
+      "logbook": {
+        "credited_seconds": 300,
+        "hidden": true
+      }
+    }
+  ],
+  "total_projects": 3
+}
