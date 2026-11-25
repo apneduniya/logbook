@@ -1,7 +1,12 @@
 <!--
   The signed-in header: wordmark, section tabs (active one an inverted block),
-  the agent's state, and the account menu. On phones the tabs wrap to their
-  own row and the account button shows only the identicon.
+  the agent's state, and the account menu. The tabs are the work (Today,
+  Projects, then Submissions, which are made from projects, then Apps, where
+  people register and review programs' apps), then the person's own Profile
+  and Settings. The account menu links Apps too. On phones the tabs wrap to their own
+  row, the Profile tab steps aside unless it is the open page (the account
+  menu has it; on that page Apps steps aside instead), and the account
+  button shows only the identicon.
 -->
 <script lang="ts">
 	import { resolve } from '$app/paths';
@@ -24,9 +29,23 @@
 			match: (p: string) => p.startsWith('/projects')
 		},
 		{
+			href: resolve('/submissions'),
+			label: 'Submissions',
+			match: (p: string) => p.startsWith('/submissions')
+		},
+		{
+			href: resolve('/apps'),
+			label: 'Apps',
+			match: (p: string) => p.startsWith('/apps'),
+			// On phones the open Profile tab takes its place (the menu has Apps).
+			aside: (p: string) => p === `/u/${user.username}`
+		},
+		{
 			href: resolve('/u/[username]', { username: encodeURIComponent(user.username) }),
 			label: 'Profile',
-			match: (p: string) => p === `/u/${user.username}`
+			match: (p: string) => p === `/u/${user.username}`,
+			// Six tabs don't fit a phone's row; the account menu links the profile.
+			wide: true
 		},
 		{
 			href: resolve('/settings'),
@@ -67,7 +86,13 @@
 	<a class="mark px" href={resolve('/')} aria-label="Logbook, today">LOGBOOK</a>
 	<nav class="tabs px" aria-label="Sections">
 		{#each tabs as t (t.href)}
-			<a class="tab" href={t.href} aria-current={t.match(page.url.pathname) ? 'page' : undefined}>
+			{@const current = t.match(page.url.pathname)}
+			<a
+				class="tab"
+				class:wide={('wide' in t && !current) || !!('aside' in t && t.aside?.(page.url.pathname))}
+				href={t.href}
+				aria-current={current ? 'page' : undefined}
+			>
 				{t.label}
 			</a>
 		{/each}
@@ -96,6 +121,7 @@
 				Public profile
 			</a>
 			<a href={resolve('/settings')} onclick={() => menu?.hidePopover()}>Settings</a>
+			<a href={resolve('/apps')} onclick={() => menu?.hidePopover()}>Apps</a>
 			<button type="button" onclick={signOut} disabled={signingOut}>
 				{signingOut ? 'Signing out…' : 'Sign out'}
 			</button>
@@ -219,9 +245,16 @@
 			grid-column: 1 / -1;
 			overflow-x: auto;
 		}
+		/* Five tabs fit a 375 px row: tight padding, no gap, a little less tracking. */
+		.tabs {
+			gap: 0;
+			letter-spacing: 0.06em;
+		}
 		.tab {
-			padding-top: 10px;
-			padding-bottom: 10px;
+			padding: 10px 6px;
+		}
+		.tab.wide {
+			display: none;
 		}
 		.who,
 		.acct svg:last-child {

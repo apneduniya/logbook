@@ -5,9 +5,11 @@
 	import { app, ME } from '#lib/app.svelte.ts';
 	import { ApiError } from '#lib/api.ts';
 	import { ago, dayLabel, todayIn } from '#lib/format.ts';
+	import { grantsSentence, scopeWords } from '#lib/grants.ts';
 	import Panel from '#lib/components/Panel.svelte';
 	import ConfirmButton from '#lib/components/ConfirmButton.svelte';
 	import HackatimeStatus from '#lib/components/HackatimeStatus.svelte';
+	import Identicon from '#lib/components/Identicon.svelte';
 	import InstallCommand from '#lib/components/InstallCommand.svelte';
 	import type { PageProps } from './$types';
 
@@ -176,6 +178,7 @@
 						</div>
 						<ConfirmButton
 							label="Revoke"
+							name="Revoke the key {k.name}"
 							ask="Revoke {k.name}? Its computer stops sending time."
 							confirm="Revoke"
 							run={() => act(() => app.api.revokeApiKey(k.id))}
@@ -207,6 +210,7 @@
 						{#if !d.revoked_at}
 							<ConfirmButton
 								label="Disconnect"
+								name="Disconnect {d.name}"
 								ask="Disconnect {d.name}? Its counted time stays."
 								confirm="Disconnect"
 								run={() => act(() => app.api.revokeDevice(d.id))}
@@ -237,6 +241,40 @@
 					/>
 				{/if}
 			</div>
+		{/if}
+	</Panel>
+
+	<Panel title="Apps with access" meta={String(data.grants.length)} anchor="apps">
+		<p class="mute">{grantsSentence(data.grants.length)}</p>
+		{#if data.grants.length}
+			<ul class="list mt-4">
+				{#each data.grants as g (g.app_id)}
+					<li>
+						<div class="app">
+							<Identicon seed={g.app_slug} size={24} />
+							<div class="min-w-0">
+								<div class="truncate">{g.app_name}</div>
+								<div class="lbl">
+									by {g.owner_username} · reads your {scopeWords(g.scopes)} ·
+									<span class="whitespace-nowrap">since {day(g.created_at)}</span>
+								</div>
+							</div>
+						</div>
+						<ConfirmButton
+							label="Revoke"
+							name="Revoke {g.app_name}"
+							ask="Revoke {g.app_name}’s access? It stops working at once."
+							confirm="Revoke"
+							run={() => act(() => app.api.revokeGrant(g.app_id))}
+						/>
+					</li>
+				{/each}
+			</ul>
+		{:else}
+			<p class="hint mt-1.5">
+				When you sign in to a program with Logbook, it shows up here, and you can take its access
+				back at any time.
+			</p>
 		{/if}
 	</Panel>
 
@@ -299,6 +337,12 @@
 		gap: 16px;
 		padding: 12px 0;
 		border-bottom: 1px solid var(--color-rule);
+	}
+	.app {
+		display: flex;
+		align-items: center;
+		gap: 12px;
+		min-width: 0;
 	}
 	.list li.revoked {
 		color: var(--color-ink-3);

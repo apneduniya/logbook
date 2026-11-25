@@ -1,17 +1,25 @@
-<!-- The header for signed-out visitors: wordmark, reading links, sign in. -->
+<!--
+  The header for signed-out visitors: wordmark, reading links, sign in.
+  `bare` keeps only the wordmark, for pages where one choice should be the
+  only thing on screen (the OAuth consent page), signed in or not.
+-->
 <script lang="ts">
 	import { resolve } from '$app/paths';
 	import { app } from '#lib/app.svelte.ts';
 	import { RULES_URL, REPO_URL } from '#lib/links.ts';
+
+	let { bare = false }: { bare?: boolean } = $props();
 </script>
 
 <header class="hdr">
 	<a class="mark px" href={resolve('/')}>LOGBOOK</a>
-	<nav aria-label="Site">
-		<a class="link hide-sm" href={RULES_URL} rel="external">How counting works</a>
-		<a class="link hide-sm" href={REPO_URL} rel="external">GitHub</a>
-		<button class="signin" type="button" onclick={() => app.signIn()}>Sign in</button>
-	</nav>
+	{#if !bare}
+		<nav aria-label="Site">
+			<a class="link hide-sm" href={RULES_URL} rel="external">How counting works</a>
+			<a class="link hide-sm" href={REPO_URL} rel="external">GitHub</a>
+			<button class="signin" type="button" onclick={() => app.signIn()}>Sign in</button>
+		</nav>
+	{/if}
 </header>
 
 <style>

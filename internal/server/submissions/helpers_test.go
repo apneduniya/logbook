@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -90,6 +91,26 @@ type env struct {
 	trust      *fakeTrust
 	mux        *http.ServeMux
 	clock      time.Time
+	// logs holds what the checker logged.
+	logs *logBuffer
+}
+
+// logBuffer is a log sink safe to read while the checker writes.
+type logBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *logBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *logBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
 
 func newEnv(t *testing.T, opts ...func(*submissions.Options)) *env {
@@ -99,12 +120,12 @@ func newEnv(t *testing.T, opts ...func(*submissions.Options)) *env {
 	if err != nil {
 		t.Fatal(err)
 	}
-	e := &env{t: t, st: st, box: box, clock: now, trust: &fakeTrust{st: st}}
+	e := &env{t: t, st: st, box: box, clock: now, trust: &fakeTrust{st: st}, logs: &logBuffer{}}
 	clock := func() time.Time { return e.clock }
 	e.oauth = oauth.NewService(st, oauth.Options{WebURL: webURL, Now: clock})
 	e.slots = submissions.NewDecodeSlots(1)
 	e.checker = submissions.NewChecker(st, ledger.NewService(st, ledger.WithClock(clock)),
-		submissions.CheckerOptions{DecodeSlots: e.slots, Now: clock})
+		submissions.CheckerOptions{DecodeSlots: e.slots, Now: clock, Logger: slog.New(slog.NewTextHandler(e.logs, nil))})
 	workers := river.NewWorkers()
 	if err := submissions.AddWorkers(workers, e.checker); err != nil {
 		t.Fatal(err)

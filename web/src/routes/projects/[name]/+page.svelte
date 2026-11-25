@@ -6,6 +6,7 @@
 	import { duration, instantLabel, percent, rangeLabel } from '#lib/format.ts';
 	import Panel from '#lib/components/Panel.svelte';
 	import DayBars from '#lib/components/DayBars.svelte';
+	import SubmitPanel from '#lib/project/SubmitPanel.svelte';
 	import { dailyBars } from '#lib/bars.ts';
 	import type { PageProps } from './$types';
 
@@ -122,6 +123,10 @@
 			</div>
 		{/if}
 	</Panel>
+</div>
+
+<div class="mt-3">
+	<SubmitPanel project={p.name} counted={p.credited_seconds} programs={data.programs} />
 </div>
 
 <div class="mt-3">

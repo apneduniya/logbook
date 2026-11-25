@@ -7,6 +7,7 @@
 	import { page } from '$app/state';
 	import { app } from '#lib/app.svelte.ts';
 	import { REPO_URL, RULES_URL } from '#lib/links.ts';
+	import MinuteStrip from '#lib/components/MinuteStrip.svelte';
 
 	type Kind = 'you' | 'agent' | 'idle';
 	interface Cut {
@@ -25,6 +26,8 @@
 		(_, i) => cuts.find((c) => i >= c.from && i < c.to)?.kind ?? 'you'
 	);
 	const counted = minutes.filter((k) => k === 'you').length;
+	// The same hour in the review packet's strip alphabet (#lib/strip.ts).
+	const strip = minutes.map((k) => ({ you: 'y', agent: 'a', idle: 'i' })[k]).join('');
 	const at = (m: number) => `14:${String(m).padStart(2, '0')}`;
 	const describe =
 		`An example hour from 14:00: ${counted} minutes counted. ` +
@@ -75,9 +78,7 @@
 		<span class="px big">{counted}m</span>
 		<span class="mute">counted out of 60 minutes in your editor</span>
 	</p>
-	<div class="strip" role="img" aria-label={describe}>
-		{#each minutes as k, i (i)}<i class={k}></i>{/each}
-	</div>
+	<MinuteStrip {strip} label={describe} start={14 * 60} tall />
 	<div class="notes" aria-hidden="true">
 		<span class="lbl start">14:00</span>
 		{#each cuts as c, i (c.from)}
@@ -166,27 +167,11 @@
 		font-size: var(--text-2xl);
 		line-height: 0.9;
 	}
-	.strip,
+	/* Same columns as MinuteStrip's cells, so each label sits under its minutes. */
 	.notes {
 		display: grid;
 		grid-template-columns: repeat(60, minmax(0, 1fr));
 		column-gap: 3px;
-	}
-	.strip i {
-		height: 44px;
-	}
-	.strip .you {
-		background: var(--color-ink);
-	}
-	.strip .agent {
-		background: var(--hatch);
-	}
-	.strip .idle {
-		background: var(--color-fill);
-		outline: 1px solid var(--color-ink-3);
-		outline-offset: -1px;
-	}
-	.notes {
 		grid-template-rows: auto;
 	}
 	.notes > * {
@@ -266,12 +251,8 @@
 		.points {
 			margin-top: 48px;
 		}
-		.strip,
 		.notes {
 			column-gap: 1px;
-		}
-		.strip i {
-			height: 32px;
 		}
 		.big {
 			font-size: var(--text-xl);

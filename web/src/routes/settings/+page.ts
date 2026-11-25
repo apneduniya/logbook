@@ -8,14 +8,15 @@ export const load: PageLoad = async ({ depends, url, parent }) => {
 	if (!app.session) redirect(307, `/?next=${encodeURIComponent(url.pathname)}`);
 	depends(ME);
 	try {
-		const [profile, keys, devices, hackatime] = await Promise.all([
+		const [profile, keys, devices, hackatime, grants] = await Promise.all([
 			app.api.profile(),
 			app.api.apiKeys(),
 			app.api.devices(),
-			app.api.hackatime()
+			app.api.hackatime(),
+			app.api.grants()
 		]);
 		app.devices = devices;
-		return { profile, keys, devices, hackatime };
+		return { profile, keys, devices, hackatime, grants };
 	} catch (err) {
 		loadFailed(err);
 	}

@@ -133,7 +133,7 @@ func (c *Checker) check(ctx context.Context, sub db.Submission) (outcome, error)
 	hasPart := make(map[uuid.UUID]bool, len(pr))
 	for _, r := range pr {
 		if r.Deleted {
-			return outcome{failed: evidenceDeleted}, nil
+			return c.fail(ctx, sub.ID, failDeleted, "a part's raw rows were deleted"), nil
 		}
 		hasPart[r.DeviceID] = true
 	}
@@ -181,15 +181,18 @@ func (c *Checker) check(ctx context.Context, sub db.Submission) (outcome, error)
 		if err != nil {
 			return outcome{}, err
 		}
+		if failed == evidenceDeleted {
+			return c.fail(ctx, sub.ID, failDeleted, "a part's raw rows were deleted", "device", id), nil
+		}
 		if failed != "" {
-			return outcome{failed: fmt.Sprintf("the part from device %q: %s", dev.Name, failed)}, nil
+			return c.fail(ctx, sub.ID, failPart(dev.Name), failed, "device", id), nil
 		}
 		in.Results = append(in.Results, checked.Results...)
 		in.Revealed = append(in.Revealed, submission.DeviceRows{DeviceID: id.String(), Rows: checked.Revealed})
 	}
 	if err := submission.CheckCap(sub.Project, all, capped, inputs); err != nil {
 		if errors.Is(err, submission.ErrMalformed) {
-			return outcome{failed: reason(err)}, nil
+			return c.fail(ctx, sub.ID, failCounts, reason(err)), nil
 		}
 		return outcome{}, err
 	}
@@ -205,12 +208,33 @@ func (c *Checker) check(ctx context.Context, sub db.Submission) (outcome, error)
 	}
 	p, err := submission.BuildPacket(in)
 	if errors.Is(err, submission.ErrMalformed) {
-		return outcome{failed: reason(err)}, nil
+		return c.fail(ctx, sub.ID, failCounts, reason(err)), nil
 	}
 	if err != nil {
 		return outcome{}, fmt.Errorf("building packet: %w", err)
 	}
 	return outcome{results: in.Results, packet: p}, nil
+}
+
+// The failure reasons the submitter reads (docs/api/submissions.md,
+// "The re-check job"): one short plain sentence each. What exactly failed,
+// with its hashes, minutes and keys, goes to the log instead.
+const (
+	failDeleted = "The evidence sent with it was deleted before it could be checked."
+	failCounts  = "The counted time sent with it doesn't add up when Logbook recounts it."
+)
+
+// failPart is the reason when a device's part doesn't verify.
+func failPart(device string) string {
+	return fmt.Sprintf("The evidence from %q doesn't match its signed records.", device)
+}
+
+// fail is the outcome of a submission that failed its check: the plain
+// reason is stored, and the detail is logged.
+func (c *Checker) fail(ctx context.Context, id uuid.UUID, plain, detail string, attrs ...any) outcome {
+	c.log.InfoContext(ctx, "submission failed its check",
+		append([]any{"submission", id, "reason", plain, "detail", detail}, attrs...)...)
+	return outcome{failed: plain}
 }
 
 // reason is a malformed-submission error without its generic prefix.
@@ -239,8 +263,8 @@ func (c *Checker) cap(ctx context.Context, id uuid.UUID) ([]submission.CappedMin
 	return capped, inputs, nil
 }
 
-// evidenceDeleted is the failure reason once a part's raw rows were
-// deleted, so the submission can't be checked any more.
+// evidenceDeleted is what verifyPart reports once a part's raw rows were
+// deleted, so the submission can't be checked any more (failDeleted).
 const evidenceDeleted = "the evidence was deleted"
 
 // verifyPart reads one device's stored part, decodes it and verifies it,
