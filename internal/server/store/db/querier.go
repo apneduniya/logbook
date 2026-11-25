@@ -242,12 +242,32 @@ type Querier interface {
 	ProgramHeartbeats(ctx context.Context, arg ProgramHeartbeatsParams) ([]ProgramHeartbeatsRow, error)
 	// The user's project settings rows that differ from the defaults.
 	ProgramProjectSettings(ctx context.Context, userID uuid.UUID) ([]ProgramProjectSettingsRow, error)
+	// Raw seconds per (project, language) as Hackatime computes them for a
+	// filtered request: the user's heartbeats are filtered first, then each is
+	// credited LEAST(its gap to the previous filtered heartbeat, 120 s), the
+	// first 0. Heartbeats count in [from_time, to_time). A NULL projects or
+	// categories array means no filter; exclude_categories is compared
+	// case-insensitively.
+	//
+	// With boundary (Hackatime's test_param, duration_seconds_boundary_aware)
+	// the filtered heartbeats at the latest time before from_time also take
+	// part, so the first heartbeat in range is credited its gap from them, and
+	// heartbeats at to_time count too; that applies to the total only.
+	//
+	// The rows are one per (project, language) with is_total false, then one
+	// row with is_total true carrying the total, rounded once as Hackatime
+	// rounds it (float8 to integer).
+	// LEAST ignores NULLs, so the first heartbeat's NULL gap is made 0
+	// explicitly, as Hackatime's with_capped_duration does.
+	ProgramRawTimeline(ctx context.Context, arg ProgramRawTimelineParams) ([]ProgramRawTimelineRow, error)
 	// Raw seconds per (project, language) in [from_time, to_time), with the
 	// first and last minute seen. A NULL projects or categories array means no
 	// filter; exclude_categories is compared case-insensitively.
 	ProgramRawTotals(ctx context.Context, arg ProgramRawTotalsParams) ([]ProgramRawTotalsRow, error)
-	// Raw seconds of category 'coding' across the given projects, each minute
-	// counted at most once (60 s), however many projects shared it.
+	// Hackatime's unique_heartbeat_seconds: the user's 'coding' heartbeats of
+	// the given projects in [from_time, to_time], ordered by (time, id), summing
+	// each gap to the previous one that is above 0 and at most 120 s, truncated
+	// to whole seconds.
 	ProgramRawUniqueCoding(ctx context.Context, arg ProgramRawUniqueCodingParams) (int64, error)
 	ProgramUserByID(ctx context.Context, id uuid.UUID) (ProgramUserByIDRow, error)
 	// Queries for the Hackatime-shaped program API (ADR 0021): user lookup by
@@ -255,10 +275,11 @@ type Querier interface {
 	// Every aggregate is keyed by one user id that the caller has already
 	// authorised.
 	//
-	// Raw time is heartbeat time from user_minutes (label 'you'); counted time is
-	// capped credited time from credited_project_minutes (ADR 0014). Hidden
-	// projects are excluded by name through exclude_projects, which callers fill
-	// for reads that aren't authorised by the user.
+	// Raw time is heartbeat time from user_minutes (label 'you'), or, for stats
+	// requests that filter heartbeats, Hackatime's durations over the filtered
+	// heartbeats (ProgramRawTimeline); counted time is capped credited time from
+	// credited_project_minutes (ADR 0014). Hidden projects are excluded by name
+	// through exclude_projects.
 	//
 	// Heartbeats store a missing project as '', which the rollup and every
 	// response call "Unknown" (package rollup). Queries on heartbeats compare

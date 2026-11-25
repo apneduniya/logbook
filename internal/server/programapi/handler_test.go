@@ -116,9 +116,10 @@ func TestCountedVersusRaw(t *testing.T) {
 	if got["total_seconds"] != float64(0) || got["credited_seconds"] != float64(0) || got["raw_seconds"] != float64(420) {
 		t.Errorf("no device = %v, want 0 counted and 420 raw", got)
 	}
-	// filter_by_category changes only raw figures, and only on this path.
+	// filter_by_category changes only raw figures, and only on this path:
+	// the two browsing heartbeats, 30 s apart, as Hackatime counts them.
 	got = get("/api/v1/users/orpheus/stats?total_seconds=true&filter_by_category=browsing")
-	if got["credited_seconds"] != float64(1470) || got["raw_seconds"] != float64(300) {
+	if got["credited_seconds"] != float64(1470) || got["raw_seconds"] != float64(30) {
 		t.Errorf("filter_by_category = %v", got)
 	}
 }
