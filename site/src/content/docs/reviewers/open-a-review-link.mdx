@@ -1,0 +1,59 @@
+---
+title: Open a review link
+description: Open a submission's review page, and sign in when you want to record a decision.
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+import Shot from '../../../components/Shot.astro';
+
+A review link looks like `https://logbook.boogles.dev/r/` followed by 22 letters and numbers. Anyone with the link can read the page. To record a decision, you sign in and must be a reviewer for the submission's program.
+
+## Read a submission
+
+<Steps>
+
+1. Open the link from your program's Airtable, form or inbox. It works in any browser, on a phone too.
+
+2. If the page says **( VERIFYING )**, wait. Logbook's server is recounting every minute from the signed logs. The page reloads by itself when it's done, usually within a few minutes.
+
+3. Read from the top: SUBMISSION (who, which days, which program), then HOURS. The rest of this guide walks through each part.
+
+</Steps>
+
+<Shot name="web-review-phone.png" alt="The top of the review page on a phone: the project name, submitter, dates and program, then the counted hours as the biggest figure" />
+
+All times and days on the page are in UTC, because reviewers and submitters sit in different time zones.
+
+## Sign in to decide
+
+<Steps>
+
+1. Ask the program's owner to add you as a reviewer. They need your Logbook username. You get one by signing in at [logbook.boogles.dev](https://logbook.boogles.dev) with your Hack Club account. You don't need to install anything. (Owners: see [Add reviewers](/programs/add-reviewers/).)
+
+2. On the review page, find the DECISION panel. It's in the right-hand column on a computer. Press **Sign in**.
+
+3. Sign in with Hack Club. You come straight back to the same review page.
+
+</Steps>
+
+## How to tell it worked
+
+Once you're signed in as a reviewer for the program, the DECISION panel shows **Approve**, **Adjust** and **Reject**. On a phone, the panel moves up to sit right under the hours.
+
+If you still see "No decision yet" and no buttons:
+
+- You aren't a reviewer for this submission's program yet. Ask the owner to add you, then reload.
+- You're the person who submitted it. Nobody can decide on their own submission.
+- The page says "This submission isn't addressed to a program". Then nobody decides on it: the link is evidence only.
+
+<Aside type="caution" title="Treat the link like a password">
+Anyone with the link can read the submission. Share it only where your program keeps its records. Logbook hides these pages from search engines.
+</Aside>
+
+## Other things you might see
+
+| The page says | What it means |
+|---|---|
+| There's no submission at this link | The link is wrong or cut short. Check you copied all of it. |
+| The submitter withdrew this submission | There's nothing to review, and no decision can be recorded. |
+| This submission failed its check | The evidence couldn't be verified, so there's nothing to review. The submitter has been told why and can submit again. |

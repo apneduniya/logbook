@@ -1,0 +1,47 @@
+---
+title: Logbook for reviewers
+description: What a Logbook review link shows and how to go from opening it to a recorded decision.
+---
+
+import { LinkCard, CardGrid } from '@astrojs/starlight/components';
+import Shot from '../../../components/Shot.astro';
+
+You review hours for a program. Someone sent their hours with Logbook, and you got a review link, usually in your program's Airtable. This guide shows you how to read that link and decide, quickly and fairly.
+
+<Shot name="web-review.png" alt="A full review page: the submission details and three hour figures at the top, then sections for what the hours are made of, cuts and flags, days and AI sessions, with a right-hand column for trust, the justification and the decision" />
+
+## What the review page gives you
+
+One page per submission, with everything you need on it:
+
+- **The hours.** Counted hours, time at the keyboard, and what the one-third AI rule would give, side by side.
+- **The evidence.** Whether Logbook's server could recount every minute from logs the submitter's computer signed on the day.
+- **Where time was taken off, and why.** Each cut and flag, with its rule in plain words and when it happened.
+- **Every day, minute by minute.** A strip for each day, with commits marked on it, and a table of AI sessions.
+- **Trust.** The submitter's Hackatime trust level when they submitted and now.
+- **A paragraph for Airtable**, with a copy button.
+- **Your decision.** Approve, adjust or reject, if you're a member of the program.
+
+You don't need to open any other tool to judge a submission.
+
+## The usual path
+
+1. [Open the review link](/reviewers/open-a-review-link/). Reading needs no account. Deciding needs you to sign in and be a reviewer for the program.
+2. [Read the hours](/reviewers/read-the-hours/), and the cuts and flags under them.
+3. Check [the evidence and trust](/reviewers/evidence-and-trust/).
+4. Look at [the days and AI sessions](/reviewers/days-and-ai-sessions/) when something needs a closer look.
+5. [Decide](/reviewers/decide/): approve, adjust or reject.
+6. [Paste the justification into Airtable](/reviewers/paste-into-airtable/).
+
+If you review a lot of submissions, work from [your inbox](/reviewers/inbox/) instead of single links.
+
+## A note on what Logbook decides
+
+Logbook counts and explains. It doesn't approve anything. Your program's rules decide what gets approved, and you apply them. Logbook gives you the numbers and the reasons behind them.
+
+<CardGrid>
+	<LinkCard title="Open a review link" href="/reviewers/open-a-review-link/" description="Open the page and get ready to decide." />
+	<LinkCard title="Common questions" href="/reviewers/faq/" description="Short answers for reviewers." />
+</CardGrid>
+
+Running the program, not just reviewing? See [I run a program](/programs/). Curious how teens send their hours? See [Submit your hours](/users/submit/).

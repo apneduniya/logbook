@@ -1,0 +1,86 @@
+---
+title: Decide
+description: Approve, adjust or reject a submission from its review page, and check that your decision was recorded.
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+import Shot from '../../../components/Shot.astro';
+
+You decide in the DECISION panel. On a computer it's in the right-hand column and stays in view as you scroll. On a phone it sits right under the hours.
+
+You need to be signed in as the program's owner or one of its reviewers. If you don't see the buttons, see [Open a review link](/reviewers/open-a-review-link/#how-to-tell-it-worked).
+
+The submitter sees your decision and your reason, so write reasons for them.
+
+## Approve
+
+Use this when the counted hours are right.
+
+<Steps>
+
+1. Press **Approve**.
+2. The panel asks "Approve all 12.4 h?" with the submission's counted hours. Press **Approve** again to confirm.
+
+</Steps>
+
+Approving takes no reason.
+
+## Adjust
+
+Use this to approve fewer hours than were counted.
+
+<Steps>
+
+1. Press **Adjust**. A short form opens in the panel.
+2. In **Hours to approve**, type the hours, such as `11.5`. It must be less than the counted hours. To accept all of them, approve instead.
+3. In **Reason**, say what you took off and why. For example: "Took off the 2 days with unbacked minutes."
+4. Press **Adjust** to confirm, or **Cancel** to back out.
+
+</Steps>
+
+<Shot name="web-review-adjust.png" alt="The Adjust form open in the DECISION panel: an Hours to approve field with a hint saying less than the counted hours, a Reason box with a character count, and Adjust and Cancel buttons" />
+
+## Reject
+
+Use this when the hours shouldn't be approved at all.
+
+<Steps>
+
+1. Press **Reject**.
+2. In **Reason**, say why, so the submitter can fix it.
+3. Press **Reject** to confirm, or **Cancel** to back out.
+
+</Steps>
+
+Reasons can be up to 500 characters. The counter under the box shows how many you've used.
+
+## How to tell it worked
+
+The buttons are replaced by a stamp: **APPROVED**, **ADJUSTED** with the approved hours (for example **ADJUSTED 11.5 h**), or **REJECTED**. Under it are your username, the date and time in UTC, and the reason.
+
+<Shot name="web-review-decided.png" alt="The DECISION panel after approving: an APPROVED stamp in inverted ink, with the reviewer's username and the time in UTC under it" />
+
+The submitter sees the same stamp on their review page and in their list of submissions. Your program's inbox moves it out of **To review**.
+
+## Change a decision
+
+Under the stamp, press **Record a new decision** and decide again. The newest decision is the one that counts. Earlier ones are kept in Logbook's audit log. Press **Keep the current decision** to back out.
+
+## When Logbook refuses a decision
+
+The message appears by the button you pressed. What you typed stays.
+
+| Message | What to do |
+|---|---|
+| This submission was checked again since you read it | Another of the submitter's computers sent its logs, and the numbers changed. Press **Reload**, read the new numbers, then decide. |
+| Your sign-in ended | Press **Sign in again**, then decide. You come back to the same page. |
+| A sentence about a banned or changed Hackatime account | You can't approve or adjust right now. You can still reject. See [Evidence and trust](/reviewers/evidence-and-trust/#warnings-that-change-what-you-can-do). |
+| The submitter withdrew this submission | There's nothing left to decide. |
+
+<Aside title="Once you decide, the submission is locked in">
+After a decision is recorded, the submitter can't withdraw the submission, and its review link keeps working for your program and for later checks.
+</Aside>
+
+## Next
+
+[Paste the justification into Airtable](/reviewers/paste-into-airtable/).
