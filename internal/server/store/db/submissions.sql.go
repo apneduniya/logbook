@@ -48,7 +48,7 @@ func (q *Queries) SubmissionBlockDays(ctx context.Context, arg SubmissionBlockDa
 }
 
 const submissionByTokenHash = `-- name: SubmissionByTokenHash :one
-SELECT id, user_id, project, from_day, to_day, program_app_id, status, error, token_hash, token_enc, trust_at_submission, packet, verified_minutes, mismatch_minutes, unbacked_minutes, counted_seconds, raw_seconds, parts_version, created_at, verified_at, decided_at, withdrawn_at FROM submissions WHERE token_hash = $1
+SELECT id, user_id, project, from_day, to_day, program_app_id, status, error, token_hash, token_enc, trust_at_submission, hackatime_user_id, packet, verified_minutes, mismatch_minutes, unbacked_minutes, counted_seconds, raw_seconds, parts_version, created_at, verified_at, decided_at, withdrawn_at FROM submissions WHERE token_hash = $1
 `
 
 func (q *Queries) SubmissionByTokenHash(ctx context.Context, tokenHash []byte) (Submission, error) {
@@ -66,6 +66,7 @@ func (q *Queries) SubmissionByTokenHash(ctx context.Context, tokenHash []byte) (
 		&i.TokenHash,
 		&i.TokenEnc,
 		&i.TrustAtSubmission,
+		&i.HackatimeUserID,
 		&i.Packet,
 		&i.VerifiedMinutes,
 		&i.MismatchMinutes,
@@ -429,7 +430,7 @@ func (q *Queries) SubmissionFrozenMinutesOfDevice(ctx context.Context, arg Submi
 }
 
 const submissionGet = `-- name: SubmissionGet :one
-SELECT id, user_id, project, from_day, to_day, program_app_id, status, error, token_hash, token_enc, trust_at_submission, packet, verified_minutes, mismatch_minutes, unbacked_minutes, counted_seconds, raw_seconds, parts_version, created_at, verified_at, decided_at, withdrawn_at FROM submissions WHERE id = $1
+SELECT id, user_id, project, from_day, to_day, program_app_id, status, error, token_hash, token_enc, trust_at_submission, hackatime_user_id, packet, verified_minutes, mismatch_minutes, unbacked_minutes, counted_seconds, raw_seconds, parts_version, created_at, verified_at, decided_at, withdrawn_at FROM submissions WHERE id = $1
 `
 
 // One submission by id, for the re-check job (which got the id from a job
@@ -449,6 +450,7 @@ func (q *Queries) SubmissionGet(ctx context.Context, id uuid.UUID) (Submission, 
 		&i.TokenHash,
 		&i.TokenEnc,
 		&i.TrustAtSubmission,
+		&i.HackatimeUserID,
 		&i.Packet,
 		&i.VerifiedMinutes,
 		&i.MismatchMinutes,
@@ -466,10 +468,10 @@ func (q *Queries) SubmissionGet(ctx context.Context, id uuid.UUID) (Submission, 
 
 const submissionInsert = `-- name: SubmissionInsert :exec
 INSERT INTO submissions (id, user_id, project, from_day, to_day, program_app_id, token_hash, token_enc,
-                         trust_at_submission, created_at)
+                         trust_at_submission, hackatime_user_id, created_at)
 VALUES ($1, $2, $3, $4, $5,
         $6, $7, $8,
-        $9, $10::timestamptz)
+        $9, $10, $11::timestamptz)
 `
 
 type SubmissionInsertParams struct {
@@ -482,6 +484,7 @@ type SubmissionInsertParams struct {
 	TokenHash         []byte
 	TokenEnc          []byte
 	TrustAtSubmission pgtype.Text
+	HackatimeUserID   pgtype.Int8
 	CreatedAt         time.Time
 }
 
@@ -496,6 +499,7 @@ func (q *Queries) SubmissionInsert(ctx context.Context, arg SubmissionInsertPara
 		arg.TokenHash,
 		arg.TokenEnc,
 		arg.TrustAtSubmission,
+		arg.HackatimeUserID,
 		arg.CreatedAt,
 	)
 	return err
@@ -550,7 +554,7 @@ func (q *Queries) SubmissionLatestDecisions(ctx context.Context, ids []uuid.UUID
 }
 
 const submissionLock = `-- name: SubmissionLock :one
-SELECT id, user_id, project, from_day, to_day, program_app_id, status, error, token_hash, token_enc, trust_at_submission, packet, verified_minutes, mismatch_minutes, unbacked_minutes, counted_seconds, raw_seconds, parts_version, created_at, verified_at, decided_at, withdrawn_at FROM submissions WHERE id = $1 FOR UPDATE
+SELECT id, user_id, project, from_day, to_day, program_app_id, status, error, token_hash, token_enc, trust_at_submission, hackatime_user_id, packet, verified_minutes, mismatch_minutes, unbacked_minutes, counted_seconds, raw_seconds, parts_version, created_at, verified_at, decided_at, withdrawn_at FROM submissions WHERE id = $1 FOR UPDATE
 `
 
 func (q *Queries) SubmissionLock(ctx context.Context, id uuid.UUID) (Submission, error) {
@@ -568,6 +572,7 @@ func (q *Queries) SubmissionLock(ctx context.Context, id uuid.UUID) (Submission,
 		&i.TokenHash,
 		&i.TokenEnc,
 		&i.TrustAtSubmission,
+		&i.HackatimeUserID,
 		&i.Packet,
 		&i.VerifiedMinutes,
 		&i.MismatchMinutes,
@@ -584,7 +589,7 @@ func (q *Queries) SubmissionLock(ctx context.Context, id uuid.UUID) (Submission,
 }
 
 const submissionLockByTokenHash = `-- name: SubmissionLockByTokenHash :one
-SELECT id, user_id, project, from_day, to_day, program_app_id, status, error, token_hash, token_enc, trust_at_submission, packet, verified_minutes, mismatch_minutes, unbacked_minutes, counted_seconds, raw_seconds, parts_version, created_at, verified_at, decided_at, withdrawn_at FROM submissions WHERE token_hash = $1 FOR UPDATE
+SELECT id, user_id, project, from_day, to_day, program_app_id, status, error, token_hash, token_enc, trust_at_submission, hackatime_user_id, packet, verified_minutes, mismatch_minutes, unbacked_minutes, counted_seconds, raw_seconds, parts_version, created_at, verified_at, decided_at, withdrawn_at FROM submissions WHERE token_hash = $1 FOR UPDATE
 `
 
 func (q *Queries) SubmissionLockByTokenHash(ctx context.Context, tokenHash []byte) (Submission, error) {
@@ -602,6 +607,7 @@ func (q *Queries) SubmissionLockByTokenHash(ctx context.Context, tokenHash []byt
 		&i.TokenHash,
 		&i.TokenEnc,
 		&i.TrustAtSubmission,
+		&i.HackatimeUserID,
 		&i.Packet,
 		&i.VerifiedMinutes,
 		&i.MismatchMinutes,
@@ -618,7 +624,7 @@ func (q *Queries) SubmissionLockByTokenHash(ctx context.Context, tokenHash []byt
 }
 
 const submissionLockOfUser = `-- name: SubmissionLockOfUser :one
-SELECT id, user_id, project, from_day, to_day, program_app_id, status, error, token_hash, token_enc, trust_at_submission, packet, verified_minutes, mismatch_minutes, unbacked_minutes, counted_seconds, raw_seconds, parts_version, created_at, verified_at, decided_at, withdrawn_at FROM submissions WHERE id = $1 AND user_id = $2 FOR UPDATE
+SELECT id, user_id, project, from_day, to_day, program_app_id, status, error, token_hash, token_enc, trust_at_submission, hackatime_user_id, packet, verified_minutes, mismatch_minutes, unbacked_minutes, counted_seconds, raw_seconds, parts_version, created_at, verified_at, decided_at, withdrawn_at FROM submissions WHERE id = $1 AND user_id = $2 FOR UPDATE
 `
 
 type SubmissionLockOfUserParams struct {
@@ -642,6 +648,7 @@ func (q *Queries) SubmissionLockOfUser(ctx context.Context, arg SubmissionLockOf
 		&i.TokenHash,
 		&i.TokenEnc,
 		&i.TrustAtSubmission,
+		&i.HackatimeUserID,
 		&i.Packet,
 		&i.VerifiedMinutes,
 		&i.MismatchMinutes,
@@ -658,7 +665,7 @@ func (q *Queries) SubmissionLockOfUser(ctx context.Context, arg SubmissionLockOf
 }
 
 const submissionOfProgram = `-- name: SubmissionOfProgram :one
-SELECT id, user_id, project, from_day, to_day, program_app_id, status, error, token_hash, token_enc, trust_at_submission, packet, verified_minutes, mismatch_minutes, unbacked_minutes, counted_seconds, raw_seconds, parts_version, created_at, verified_at, decided_at, withdrawn_at FROM submissions WHERE id = $1 AND program_app_id = $2
+SELECT id, user_id, project, from_day, to_day, program_app_id, status, error, token_hash, token_enc, trust_at_submission, hackatime_user_id, packet, verified_minutes, mismatch_minutes, unbacked_minutes, counted_seconds, raw_seconds, parts_version, created_at, verified_at, decided_at, withdrawn_at FROM submissions WHERE id = $1 AND program_app_id = $2
 `
 
 type SubmissionOfProgramParams struct {
@@ -681,6 +688,7 @@ func (q *Queries) SubmissionOfProgram(ctx context.Context, arg SubmissionOfProgr
 		&i.TokenHash,
 		&i.TokenEnc,
 		&i.TrustAtSubmission,
+		&i.HackatimeUserID,
 		&i.Packet,
 		&i.VerifiedMinutes,
 		&i.MismatchMinutes,
@@ -697,7 +705,7 @@ func (q *Queries) SubmissionOfProgram(ctx context.Context, arg SubmissionOfProgr
 }
 
 const submissionOfUser = `-- name: SubmissionOfUser :one
-SELECT id, user_id, project, from_day, to_day, program_app_id, status, error, token_hash, token_enc, trust_at_submission, packet, verified_minutes, mismatch_minutes, unbacked_minutes, counted_seconds, raw_seconds, parts_version, created_at, verified_at, decided_at, withdrawn_at FROM submissions WHERE id = $1 AND user_id = $2
+SELECT id, user_id, project, from_day, to_day, program_app_id, status, error, token_hash, token_enc, trust_at_submission, hackatime_user_id, packet, verified_minutes, mismatch_minutes, unbacked_minutes, counted_seconds, raw_seconds, parts_version, created_at, verified_at, decided_at, withdrawn_at FROM submissions WHERE id = $1 AND user_id = $2
 `
 
 type SubmissionOfUserParams struct {
@@ -720,6 +728,7 @@ func (q *Queries) SubmissionOfUser(ctx context.Context, arg SubmissionOfUserPara
 		&i.TokenHash,
 		&i.TokenEnc,
 		&i.TrustAtSubmission,
+		&i.HackatimeUserID,
 		&i.Packet,
 		&i.VerifiedMinutes,
 		&i.MismatchMinutes,
@@ -1269,7 +1278,7 @@ func (q *Queries) SubmissionWithdraw(ctx context.Context, arg SubmissionWithdraw
 }
 
 const submissionsOfProgram = `-- name: SubmissionsOfProgram :many
-SELECT s.id, s.user_id, s.project, s.from_day, s.to_day, s.program_app_id, s.status, s.error, s.token_hash, s.token_enc, s.trust_at_submission, s.packet, s.verified_minutes, s.mismatch_minutes, s.unbacked_minutes, s.counted_seconds, s.raw_seconds, s.parts_version, s.created_at, s.verified_at, s.decided_at, s.withdrawn_at FROM submissions s
+SELECT s.id, s.user_id, s.project, s.from_day, s.to_day, s.program_app_id, s.status, s.error, s.token_hash, s.token_enc, s.trust_at_submission, s.hackatime_user_id, s.packet, s.verified_minutes, s.mismatch_minutes, s.unbacked_minutes, s.counted_seconds, s.raw_seconds, s.parts_version, s.created_at, s.verified_at, s.decided_at, s.withdrawn_at FROM submissions s
 LEFT JOIN LATERAL (
     SELECT d.value FROM submission_decisions d
     WHERE d.submission_id = s.id
@@ -1321,6 +1330,7 @@ func (q *Queries) SubmissionsOfProgram(ctx context.Context, arg SubmissionsOfPro
 			&i.TokenHash,
 			&i.TokenEnc,
 			&i.TrustAtSubmission,
+			&i.HackatimeUserID,
 			&i.Packet,
 			&i.VerifiedMinutes,
 			&i.MismatchMinutes,
@@ -1344,7 +1354,7 @@ func (q *Queries) SubmissionsOfProgram(ctx context.Context, arg SubmissionsOfPro
 }
 
 const submissionsOfUser = `-- name: SubmissionsOfUser :many
-SELECT id, user_id, project, from_day, to_day, program_app_id, status, error, token_hash, token_enc, trust_at_submission, packet, verified_minutes, mismatch_minutes, unbacked_minutes, counted_seconds, raw_seconds, parts_version, created_at, verified_at, decided_at, withdrawn_at FROM submissions WHERE user_id = $1 ORDER BY created_at DESC, id
+SELECT id, user_id, project, from_day, to_day, program_app_id, status, error, token_hash, token_enc, trust_at_submission, hackatime_user_id, packet, verified_minutes, mismatch_minutes, unbacked_minutes, counted_seconds, raw_seconds, parts_version, created_at, verified_at, decided_at, withdrawn_at FROM submissions WHERE user_id = $1 ORDER BY created_at DESC, id
 `
 
 func (q *Queries) SubmissionsOfUser(ctx context.Context, userID uuid.UUID) ([]Submission, error) {
@@ -1368,6 +1378,7 @@ func (q *Queries) SubmissionsOfUser(ctx context.Context, userID uuid.UUID) ([]Su
 			&i.TokenHash,
 			&i.TokenEnc,
 			&i.TrustAtSubmission,
+			&i.HackatimeUserID,
 			&i.Packet,
 			&i.VerifiedMinutes,
 			&i.MismatchMinutes,

@@ -12,11 +12,13 @@ import (
 	"github.com/apneduniya/logbook/internal/server/store/db"
 )
 
-// trustState is a user's stored Hackatime trust level, unmasked.
+// trustState is a user's stored Hackatime trust level, unmasked, and the
+// Hackatime account it belongs to.
 type trustState struct {
-	Linked    bool
-	Level     hackatime.TrustLevel
-	CheckedAt *time.Time
+	Linked      bool
+	HackatimeID int64
+	Level       hackatime.TrustLevel
+	CheckedAt   *time.Time
 }
 
 // banned reports whether the user may not submit or be approved (ADR 0020).
@@ -31,7 +33,17 @@ func readTrust(ctx context.Context, q db.Querier, user uuid.UUID) (trustState, e
 	if err != nil {
 		return trustState{}, fmt.Errorf("reading hackatime link: %w", err)
 	}
-	return trustState{Linked: true, Level: hackatime.TrustLevel(link.TrustLevel), CheckedAt: link.TrustCheckedAt}, nil
+	return trustState{
+		Linked: true, HackatimeID: link.HackatimeUserID, Level: hackatime.TrustLevel(link.TrustLevel), CheckedAt: link.TrustCheckedAt,
+	}, nil
+}
+
+// switchedAccount reports whether the submitter was linked to a Hackatime
+// account at submission and isn't linked to that same account now
+// (unlinked, or linked to another one): the level read now isn't the
+// level of the account the hours were submitted under.
+func switchedAccount(sub db.Submission, now trustState) bool {
+	return sub.HackatimeUserID.Valid && (!now.Linked || now.HackatimeID != sub.HackatimeUserID.Int64)
 }
 
 // freshTrust is readTrust after re-reading the level from Hackatime when

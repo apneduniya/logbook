@@ -26,6 +26,10 @@ CREATE TABLE submissions (
     -- The submitter's unmasked Hackatime trust level when it was made;
     -- null when Hackatime wasn't linked.
     trust_at_submission  text CHECK (trust_at_submission IN ('unknown', 'blue', 'red', 'green', 'yellow')),
+    -- The Hackatime account linked when it was made (hackatime_links
+    -- .hackatime_user_id); null when Hackatime wasn't linked. Approving
+    -- needs the submitter still linked to this same account.
+    hackatime_user_id    bigint,
     packet               jsonb,
     verified_minutes     integer NOT NULL DEFAULT 0,
     mismatch_minutes     integer NOT NULL DEFAULT 0,
@@ -38,7 +42,8 @@ CREATE TABLE submissions (
     decided_at           timestamptz,
     withdrawn_at         timestamptz,
     CHECK ((status = 'withdrawn') = (withdrawn_at IS NOT NULL)),
-    CHECK (status <> 'withdrawn' OR decided_at IS NULL)
+    CHECK (status <> 'withdrawn' OR decided_at IS NULL),
+    CHECK ((hackatime_user_id IS NULL) = (trust_at_submission IS NULL))
 );
 CREATE INDEX submissions_user_idx ON submissions (user_id, created_at DESC, id);
 CREATE INDEX submissions_program_idx ON submissions (program_app_id, created_at DESC, id)

@@ -288,6 +288,7 @@ type Submission struct {
 	TokenHash         []byte
 	TokenEnc          []byte
 	TrustAtSubmission pgtype.Text
+	HackatimeUserID   pgtype.Int8
 	Packet            []byte
 	VerifiedMinutes   int32
 	MismatchMinutes   int32

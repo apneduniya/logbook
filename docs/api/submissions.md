@@ -154,7 +154,7 @@ Auth: none (the token is the credential). `Cache-Control: no-store`, `Referrer-P
     "rules_version": "v1",
     "counted_seconds": 44640,
     "trust": {"at_submission": "green", "now": "green", "checked_at": "…", "hackatime_linked": true,
-              "hackatime_linked_now": true},
+              "hackatime_linked_now": true, "hackatime_account_changed": false},
     "raw_seconds": 61200,
     "raw_ai_seconds": 9000,
     "one_third_rule_seconds": 55200,
@@ -177,7 +177,7 @@ Auth: none (the token is the credential). `Cache-Control: no-store`, `Referrer-P
 ```
 The packet is `submission.Packet`, built by `submission.BuildPacket` (pure, so re-running the job gives the same packet). Field by field:
 - `strip`: one character per minute of the UTC day, for every day of the range: `y` counted, `a` AI ran alone, `c` cut (counted label but 0 credit), `i` idle or nothing, `u` counted but unbacked, `m` mismatch. Precedence: `m` when any of the minute's frozen rows mismatches; else, when the minute is counted (capped seconds above 0, or a row with credit), `u` if a row with credit is unbacked and `y` otherwise; else `c` for a `you` row with no credit and a cut; else `a` for an `agent` row; else `i`.
-- `counted_seconds` and everything derived from it use the frozen **capped** seconds (ADR 0020). Each day also has its own `counted_seconds` and `raw_seconds`. `trust` levels are masked as Hackatime masks them publicly (`yellow` and `unknown` show as `blue`). `trust.now`, `checked_at` and `hackatime_linked_now` are read when the response is made; the stored packet has only `at_submission` and `hackatime_linked` (whether Hackatime was linked at submission). A submitter who has unlinked since shows `now` as `blue` (as any unlinked user) with `hackatime_linked_now: false`.
+- `counted_seconds` and everything derived from it use the frozen **capped** seconds (ADR 0020). Each day also has its own `counted_seconds` and `raw_seconds`. `trust` levels are masked as Hackatime masks them publicly (`yellow` and `unknown` show as `blue`). `trust.now`, `checked_at` and `hackatime_linked_now` are read when the response is made; the stored packet has only `at_submission` and `hackatime_linked` (whether Hackatime was linked at submission). A submitter who has unlinked since shows `now` as `blue` (as any unlinked user) with `hackatime_linked_now: false`. The submission records the Hackatime account (its user id) linked when it was made; when Hackatime was linked then, `hackatime_account_changed` is set when served: `true` when the submitter is linked now to another Hackatime account, so `now` is that other account's level, not the level of the account they submitted under. It is absent when Hackatime wasn't linked at submission.
 - `rules_version` is the frozen rows' rules version (several are joined with `, `).
 - `minutes` counts distinct submitted minutes, every label (cut and idle minutes too, since the re-check verifies cuts as well): a minute is `mismatch` when any of its rows (one per device) mismatches, else `unbacked` when any is unbacked, else `verified`.
 - `devices` are the devices with frozen rows. `gaps` are the range's days, from the device's first sealed day on, that it has no evidence record for (every day when it has sealed none).
@@ -211,7 +211,7 @@ Auth: session + CSRF; the caller must be a member (owner or reviewer, ADR 0021) 
 ```
 - `approved`: no other field (`approved_seconds` or a non-blank `reason` is `400`). `adjusted`: `approved_seconds` from 0 to below the frozen `counted_seconds`, and a `reason`. `rejected`: a `reason`, no `approved_seconds`. A reason is trimmed, then 1–500 characters.
 - `version` is optional: the review's `submission.version` the reviewer read. When given and a part has been added since, the decision is `409` ("reload it"). The web UI sends it. Without it the decision applies to the packet as it is when recorded.
-- Before recording, the submitter's trust level is re-read from Hackatime when it is more than 24 hours old (the last known level decides if Hackatime can't be reached); approving or adjusting while it is `red` is refused, rejecting is allowed. Approving or adjusting is also refused when the submitter was linked at submission and has unlinked Hackatime since: a ban could no longer be checked (unlinking only refuses a stored `red`, which can be up to a day old). Linking again restores it.
+- Before recording, the submitter's trust level is re-read from Hackatime when it is more than 24 hours old (the last known level decides if Hackatime can't be reached); approving or adjusting while it is `red` is refused, rejecting is allowed. Approving or adjusting is also refused when the submitter was linked at submission and isn't linked to that same Hackatime account now: they unlinked it, or linked another account (`hackatime_account_changed`). Either way a ban of the account they submitted under could no longer be checked: unlinking or switching accounts is refused only for a stored `red`, which can be up to a day old. Linking the original account again restores it. A submitter who wasn't linked at submission has no account to compare, so linking one later changes nothing here.
 - Adds a decision; the newest is the one shown. Every decision is kept (`submission_decisions`) and audited (`submission.decide`, by the reviewer, with the value, approved seconds, reason, counted seconds, program and the submitter's trust level).
 - Raw rows are then kept for a year after the newest decision.
 
@@ -221,7 +221,7 @@ Auth: session + CSRF; the caller must be a member (owner or reviewer, ADR 0021) 
 | `400` | The body breaks the rules above. |
 | `403` | Not a member, the submitter, a submission with no program (it takes no decisions), or a deleted program. |
 | `404` | Unknown token. |
-| `409` | Status isn't `ready`, the given `version` is no longer current, or approving/adjusting while the submitter's Hackatime account is banned now or was unlinked since submitting. |
+| `409` | Status isn't `ready`, the given `version` is no longer current, or approving/adjusting while the submitter's Hackatime account is banned now, or isn't the account they submitted under (unlinked or switched since submitting). |
 | `410` | Withdrawn. |
 
 ## The program's inbox

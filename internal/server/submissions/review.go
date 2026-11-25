@@ -137,8 +137,9 @@ func (in DecisionInput) check(counted int64) (string, error) {
 // the reviewer read when the input gives one (ErrConflict). The
 // submitter's trust level is refreshed first when it is more than 24 hours
 // old, and approving or adjusting is ErrConflict while they are banned or,
-// when they were linked at submission, after they unlinked Hackatime: their
-// trust can't be checked any more.
+// when they were linked at submission, while they aren't linked to that
+// same Hackatime account now (unlinked, or switched to another account):
+// the level read now isn't the level of the account they submitted under.
 // Every decision is kept, the newest wins, and each is audited
 // submission.decide.
 func (s *Service) Decide(ctx context.Context, reviewer uuid.UUID, token string, in DecisionInput) (Decision, error) {
@@ -177,9 +178,12 @@ func (s *Service) Decide(ctx context.Context, reviewer uuid.UUID, token string, 
 		switch {
 		case trust.banned():
 			return Decision{}, fmt.Errorf("%w: the submitter's Hackatime account is banned now, so the hours can only be rejected", ErrConflict)
-		case sub.TrustAtSubmission.Valid && !trust.Linked:
+		case switchedAccount(sub, trust) && !trust.Linked:
 			return Decision{}, fmt.Errorf("%w: the submitter unlinked Hackatime after submitting, so their trust level "+
 				"can't be checked; the hours can only be rejected until they link it again", ErrConflict)
+		case switchedAccount(sub, trust):
+			return Decision{}, fmt.Errorf("%w: the submitter linked another Hackatime account after submitting, so the "+
+				"account they submitted under can't be checked; the hours can only be rejected until they link it again", ErrConflict)
 		}
 	}
 	err = s.st.InTx(ctx, func(q *db.Queries) error {
@@ -214,6 +218,7 @@ func (s *Service) Decide(ctx context.Context, reviewer uuid.UUID, token string, 
 		return audit(ctx, q, reviewer, "submission.decide", sub.ID, map[string]any{
 			"value": in.Value, "approved_seconds": in.ApprovedSeconds, "reason": reason,
 			"counted_seconds": sub.CountedSeconds, "program_id": app, "submitter_trust": string(trust.Level),
+			"submitter_hackatime_id": hackatimeID(trust),
 		})
 	})
 	if err != nil {
@@ -224,6 +229,15 @@ func (s *Service) Decide(ctx context.Context, reviewer uuid.UUID, token string, 
 		return Decision{}, err
 	}
 	return *ds[sub.ID], nil
+}
+
+// hackatimeID is the linked Hackatime account for the audit log, nil when
+// there is none.
+func hackatimeID(t trustState) *int64 {
+	if !t.Linked {
+		return nil
+	}
+	return &t.HackatimeID
 }
 
 // current is ErrConflict unless sub is ready and, when version isn't nil,

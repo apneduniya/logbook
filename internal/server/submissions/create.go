@@ -83,8 +83,10 @@ func (s *Service) Create(ctx context.Context, user uuid.UUID, up submission.Uplo
 		return Accepted{}, err
 	}
 	var trustAt pgtype.Text
+	var hackatimeID pgtype.Int8
 	if trust.Linked {
 		trustAt = pgtype.Text{String: string(trust.Level), Valid: true}
+		hackatimeID = pgtype.Int8{Int64: trust.HackatimeID, Valid: true}
 	}
 	now := s.now()
 	err = pgx.BeginTxFunc(ctx, s.st.Pool, pgx.TxOptions{IsoLevel: pgx.RepeatableRead}, func(tx pgx.Tx) error {
@@ -107,7 +109,8 @@ func (s *Service) Create(ctx context.Context, user uuid.UUID, up submission.Uplo
 		}
 		if err := q.SubmissionInsert(ctx, db.SubmissionInsertParams{
 			ID: id, UserID: user, Project: project, FromDay: pgDate(rg.From), ToDay: pgDate(rg.To),
-			ProgramAppID: program, TokenHash: tokenHash(token), TokenEnc: enc, TrustAtSubmission: trustAt, CreatedAt: now,
+			ProgramAppID: program, TokenHash: tokenHash(token), TokenEnc: enc, TrustAtSubmission: trustAt,
+			HackatimeUserID: hackatimeID, CreatedAt: now,
 		}); err != nil {
 			return fmt.Errorf("inserting submission: %w", err)
 		}

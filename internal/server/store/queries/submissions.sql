@@ -55,10 +55,10 @@ WHERE device_id = sqlc.arg(device_id)
 
 -- name: SubmissionInsert :exec
 INSERT INTO submissions (id, user_id, project, from_day, to_day, program_app_id, token_hash, token_enc,
-                         trust_at_submission, created_at)
+                         trust_at_submission, hackatime_user_id, created_at)
 VALUES (sqlc.arg(id), sqlc.arg(user_id), sqlc.arg(project), sqlc.arg(from_day), sqlc.arg(to_day),
         sqlc.narg(program_app_id), sqlc.arg(token_hash), sqlc.arg(token_enc),
-        sqlc.narg(trust_at_submission), sqlc.arg(created_at)::timestamptz);
+        sqlc.narg(trust_at_submission), sqlc.narg(hackatime_user_id), sqlc.arg(created_at)::timestamptz);
 
 -- name: SubmissionFreezeMinutes :execrows
 -- Freezes the user's rows of the submission's project and range, every

@@ -208,3 +208,65 @@ func TestDecisionAfterUnlinking(t *testing.T) {
 		t.Fatalf("trust after linking again = %+v", tr)
 	}
 }
+
+// A submitter whose Hackatime account was banned after submitting can't
+// dodge the ban by linking another account: approving or adjusting is
+// refused while the link isn't to the account they submitted under, and
+// the review page says the account changed. Rejecting is still allowed;
+// linking the original account again restores approvals.
+func TestDecisionAfterSwitchingHackatimeAccount(t *testing.T) {
+	t.Parallel()
+	w := newWorld(t)
+	created, token := w.submit("terra")
+	w.verify(created.ID)
+	if n := w.count(`SELECT count(*) FROM submissions WHERE id = $1 AND hackatime_user_id = 4321`, created.ID); n != 1 {
+		t.Fatal("the submission doesn't record the Hackatime account it was made under")
+	}
+	r := decode[review](t, w.expect(call{target: "/api/v1/review/" + token}, http.StatusOK))
+	if tr := r.Packet.Trust; tr.HackatimeAccountChanged == nil || *tr.HackatimeAccountChanged {
+		t.Fatalf("trust before switching = %+v", tr)
+	}
+
+	// Account 4321 is banned; within a day, alice links a green account
+	// 9999 instead (allowed while the stored level isn't red yet).
+	w.exec(`UPDATE hackatime_links SET hackatime_user_id = 9999, trust_level = 'green', trust_checked_at = $2
+		WHERE user_id = $1`, w.alice, now)
+
+	r = decode[review](t, w.expect(call{target: "/api/v1/review/" + token}, http.StatusOK))
+	if tr := r.Packet.Trust; tr.HackatimeAccountChanged == nil || !*tr.HackatimeAccountChanged ||
+		tr.HackatimeLinkedNow == nil || !*tr.HackatimeLinkedNow || tr.Now != "green" {
+		t.Fatalf("trust after switching = %+v", tr)
+	}
+	body := w.decide(w.rita, token, `{"value": "approved"}`, http.StatusConflict)
+	if !strings.Contains(string(body), "another Hackatime account") {
+		t.Fatalf("refusal = %s", body)
+	}
+	w.decide(w.rita, token, fmt.Sprintf(`{"value": "adjusted", "approved_seconds": %d, "reason": "x"}`, w.counted(created.ID)-1),
+		http.StatusConflict)
+	w.decide(w.rita, token, `{"value": "rejected", "reason": "switched Hackatime accounts"}`, http.StatusOK)
+
+	// Back on the original account, approvals work again.
+	w.exec(`UPDATE hackatime_links SET hackatime_user_id = 4321 WHERE user_id = $1`, w.alice)
+	w.decide(w.fiona, token, `{"value": "approved"}`, http.StatusOK)
+	r = decode[review](t, w.expect(call{target: "/api/v1/review/" + token}, http.StatusOK))
+	if tr := r.Packet.Trust; tr.HackatimeAccountChanged == nil || *tr.HackatimeAccountChanged {
+		t.Fatalf("trust back on the original account = %+v", tr)
+	}
+}
+
+// A submitter who wasn't linked at submission has no account to compare:
+// linking one later doesn't block approvals, and the packet has no
+// hackatime_account_changed.
+func TestDecisionLinkedAfterSubmitting(t *testing.T) {
+	t.Parallel()
+	w := newWorld(t)
+	w.exec(`DELETE FROM hackatime_links`)
+	created, token := w.submit("terra")
+	w.verify(created.ID)
+	w.link(w.alice, 4321, "green", now)
+	r := decode[review](t, w.expect(call{target: "/api/v1/review/" + token}, http.StatusOK))
+	if tr := r.Packet.Trust; tr.HackatimeLinked || tr.HackatimeAccountChanged != nil {
+		t.Fatalf("trust = %+v", tr)
+	}
+	w.decide(w.rita, token, `{"value": "approved"}`, http.StatusOK)
+}

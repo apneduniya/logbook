@@ -51,14 +51,18 @@ type Packet struct {
 
 // Trust is the submitter's Hackatime trust level, masked as Hackatime
 // masks it publicly. Only AtSubmission and HackatimeLinked (whether
-// Hackatime was linked at submission) are stored; Now, CheckedAt and
-// HackatimeLinkedNow are set when the packet is served.
+// Hackatime was linked at submission) are stored; Now, CheckedAt,
+// HackatimeLinkedNow and HackatimeAccountChanged are set when the packet
+// is served. HackatimeAccountChanged is true when the submitter is linked
+// now to another Hackatime account than at submission: Now is that
+// account's level.
 type Trust struct {
-	AtSubmission       string     `json:"at_submission"`
-	Now                string     `json:"now,omitempty"`
-	CheckedAt          *time.Time `json:"checked_at,omitempty"`
-	HackatimeLinked    bool       `json:"hackatime_linked"`
-	HackatimeLinkedNow *bool      `json:"hackatime_linked_now,omitempty"`
+	AtSubmission            string     `json:"at_submission"`
+	Now                     string     `json:"now,omitempty"`
+	CheckedAt               *time.Time `json:"checked_at,omitempty"`
+	HackatimeLinked         bool       `json:"hackatime_linked"`
+	HackatimeLinkedNow      *bool      `json:"hackatime_linked_now,omitempty"`
+	HackatimeAccountChanged *bool      `json:"hackatime_account_changed,omitempty"`
 }
 
 // Counts counts the submitted minutes by result. A minute counts once,
