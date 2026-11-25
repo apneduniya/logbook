@@ -1,6 +1,9 @@
 <!--
   A hairline HUD panel: a head with the title in pixel caps and optional meta
   on the right, then the body. Doop component "PanelHead" (tab off).
+  `heading={false}` sets the title as a paragraph with the same look and
+  label, for a page's first panel whose h1 is inside it, so the outline
+  starts with the h1.
 -->
 <script lang="ts">
 	import type { Snippet } from 'svelte';
@@ -17,16 +20,31 @@
 		anchor?: string;
 		/** Pad the body (default true). Lists that run edge to edge pass false. */
 		padded?: boolean;
+		/** Set the title as an h2 (default) or, with false, a plain paragraph. */
+		heading?: boolean;
 		children: Snippet;
 	}
 
-	let { title, meta, head, class: cls = '', anchor, padded = true, children }: Props = $props();
+	let {
+		title,
+		meta,
+		head,
+		class: cls = '',
+		anchor,
+		padded = true,
+		heading = true,
+		children
+	}: Props = $props();
 	const id = $props.id();
 </script>
 
 <section class="panel {cls}" id={anchor} aria-labelledby={id}>
 	<header class="ph">
-		<h2 class="t" {id}>{title}</h2>
+		{#if heading}
+			<h2 class="t" {id}>{title}</h2>
+		{:else}
+			<p class="t" {id}>{title}</p>
+		{/if}
 		{#if head}
 			{@render head()}
 		{:else if meta}

@@ -71,7 +71,7 @@
 
 <div class="sheet">
 	{#if data.state === 'broken'}
-		<Panel title="Authorize" meta="link error">
+		<Panel heading={false} title="Authorize" meta="link error">
 			<h1 class="say">This app’s link is broken. Tell the program.</h1>
 			<p class="hint mt-2">
 				{data.problem === 'invalid_client'
@@ -80,7 +80,7 @@
 			</p>
 		</Panel>
 	{:else if data.state === 'missing'}
-		<Panel title="Authorize">
+		<Panel heading={false} title="Authorize">
 			<h1 class="say">There’s nothing to allow at this address.</h1>
 			<p class="hint mt-2">
 				Apps send you here when they ask to use your Logbook account. Go back to the app and start
@@ -88,7 +88,7 @@
 			</p>
 		</Panel>
 	{:else if data.state === 'signedout'}
-		<Panel title="Authorize">
+		<Panel heading={false} title="Authorize">
 			<h1 class="say">An app wants to use your Logbook account.</h1>
 			<p class="hint mt-2">
 				Sign in first. You’ll come straight back here to see what it asks for, and choose.
@@ -104,14 +104,14 @@
 			</div>
 		</Panel>
 	{:else if data.state === 'expired' || gone}
-		<Panel title="Authorize" meta="ended">
+		<Panel heading={false} title="Authorize" meta="ended">
 			<h1 class="say">This request has ended.</h1>
 			<p class="hint mt-2">
 				Requests last 10 minutes and can be answered once. Go back to the app and start again.
 			</p>
 		</Panel>
 	{:else if req && (auto || leaving)}
-		<Panel title="Authorize">
+		<Panel heading={false} title="Authorize">
 			<h1 class="say">
 				{busy === 'deny'
 					? 'Denied.'
@@ -123,7 +123,7 @@
 			<p class="hint mt-2">Going to <code class="mono host">{host}</code>.</p>
 		</Panel>
 	{:else if req}
-		<Panel title="Authorize" meta="expires {clock(req.expires_at, app.timezone)}">
+		<Panel heading={false} title="Authorize" meta="expires {clock(req.expires_at, app.timezone)}">
 			<div class="marks" aria-hidden="true">
 				<Identicon seed={req.app.slug} size={40} />
 				<span class="to">→</span>
