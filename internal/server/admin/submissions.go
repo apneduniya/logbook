@@ -393,7 +393,7 @@ func (h *Handler) submissionBundle(w http.ResponseWriter, r *http.Request, c *ca
 	w.Header().Set("Content-Type", "application/gzip")
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="submission-%s.json.gz"`, id))
 	w.WriteHeader(http.StatusOK)
-	zw := gzip.NewWriter(w)
+	zw := gzip.NewWriter(&deadlineWriter{w: w, rc: http.NewResponseController(w), timeout: h.exportWriteTimeout})
 	err = h.svc.ev.WriteBundle(ctx, id, zw)
 	if err == nil {
 		err = zw.Close()
@@ -405,4 +405,20 @@ func (h *Handler) submissionBundle(w http.ResponseWriter, r *http.Request, c *ca
 		panic(http.ErrAbortHandler)
 	}
 	return nil
+}
+
+// deadlineWriter gives every write to a bundle download its own deadline,
+// so a client that stops reading loses its export slot (and connection)
+// instead of holding it for as long as the connection stays open.
+type deadlineWriter struct {
+	w       http.ResponseWriter
+	rc      *http.ResponseController
+	timeout time.Duration
+}
+
+func (d *deadlineWriter) Write(p []byte) (int, error) {
+	if err := d.rc.SetWriteDeadline(time.Now().Add(d.timeout)); err != nil && !errors.Is(err, http.ErrNotSupported) {
+		return 0, fmt.Errorf("setting write deadline: %w", err)
+	}
+	return d.w.Write(p)
 }

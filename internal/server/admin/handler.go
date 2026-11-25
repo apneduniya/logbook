@@ -48,7 +48,14 @@ type HandlerOptions struct {
 	// BundleExports is how many submission bundles may be exported at
 	// once, server-wide; 0 means DefaultBundleExports.
 	BundleExports int
+	// ExportWriteTimeout is how long one write of a bundle download may
+	// wait for the client to read; 0 means DefaultExportWriteTimeout.
+	ExportWriteTimeout time.Duration
 }
+
+// DefaultExportWriteTimeout ends a bundle download whose client stopped
+// reading, freeing its export slot.
+const DefaultExportWriteTimeout = 30 * time.Second
 
 // DefaultBundleExports bounds concurrent bundle exports. Each holds one
 // stored part's compressed bytes (up to an upload's 32 MiB) for as long as
@@ -70,6 +77,8 @@ type Handler struct {
 	clientKey func(*http.Request) string
 	// exports holds one token per bundle export running.
 	exports chan struct{}
+	// exportWriteTimeout is HandlerOptions.ExportWriteTimeout.
+	exportWriteTimeout time.Duration
 }
 
 // NewHandler returns a Handler.
@@ -86,9 +95,12 @@ func NewHandler(svc *Service, auth Auditor, opts HandlerOptions) *Handler {
 	if opts.BundleExports <= 0 {
 		opts.BundleExports = DefaultBundleExports
 	}
+	if opts.ExportWriteTimeout <= 0 {
+		opts.ExportWriteTimeout = DefaultExportWriteTimeout
+	}
 	return &Handler{
 		svc: svc, auth: auth, limiter: opts.Limiter, fails: opts.FailLimiter, clientKey: opts.ClientKey,
-		exports: make(chan struct{}, opts.BundleExports),
+		exports: make(chan struct{}, opts.BundleExports), exportWriteTimeout: opts.ExportWriteTimeout,
 	}
 }
 

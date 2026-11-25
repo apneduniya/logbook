@@ -1,8 +1,12 @@
 package admin_test
 
 import (
+	"bufio"
 	"context"
+	cryptorand "crypto/rand"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -100,5 +104,67 @@ func (s *slowBundles) WriteBundle(_ context.Context, _ uuid.UUID, w io.Writer) e
 }
 
 func (s *slowBundles) PartRows(context.Context, uuid.UUID, uuid.UUID, int, int) ([]submissions.EvidenceRow, int, error) {
+	return nil, 0, nil
+}
+
+// A client that stops reading a bundle download loses its export slot once
+// a write waits longer than the write timeout, instead of holding it for
+// as long as its connection stays open.
+func TestStalledExportFreesItsSlot(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	id := uuid.New()
+	g := *f
+	g.mux = http.NewServeMux()
+	reads := oneSubmission{Store: f.st, id: id, user: f.orpheus}
+	admin.NewHandler(admin.NewService(reads, bigBundles{}, nil), f.keys,
+		admin.HandlerOptions{BundleExports: 1, ExportWriteTimeout: 200 * time.Millisecond}).Register(g.mux)
+	srv := httptest.NewServer(g.mux)
+	defer srv.Close()
+	target := "/api/admin/v1/submissions/" + id.String() + "/bundle"
+
+	// The stalled client reads the status line, then nothing more.
+	conn, err := net.Dial("tcp", srv.Listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	fmt.Fprintf(conn, "GET %s HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer %s\r\n\r\n", target, f.key)
+	if line, err := bufio.NewReader(conn).ReadString('\n'); err != nil || line != "HTTP/1.1 200 OK\r\n" {
+		t.Fatalf("stalled client got %q, %v", line, err)
+	}
+
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		r, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, srv.URL+target, nil)
+		r.Header.Set("Authorization", "Bearer "+f.key)
+		resp, err := http.DefaultClient.Do(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode == http.StatusOK {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("export still %d while the stalled client holds its connection", resp.StatusCode)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// bigBundles writes 64 MiB of incompressible bytes, more than socket
+// buffers hold, so a client that stops reading blocks the writer.
+type bigBundles struct{}
+
+func (bigBundles) CheckBundle(context.Context, uuid.UUID) error { return nil }
+
+func (bigBundles) WriteBundle(_ context.Context, _ uuid.UUID, w io.Writer) error {
+	_, err := io.CopyN(w, cryptorand.Reader, 64<<20)
+	return err
+}
+
+func (bigBundles) PartRows(context.Context, uuid.UUID, uuid.UUID, int, int) ([]submissions.EvidenceRow, int, error) {
 	return nil, 0, nil
 }

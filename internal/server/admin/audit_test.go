@@ -320,4 +320,12 @@ func TestAuditRowsAreBounded(t *testing.T) {
 			t.Fatalf("%d rows, %d bytes: %s", len(rows), len(b), b[:min(len(b), 300)])
 		}
 	}
+
+	// A padded path (an unknown one, audited with its 404) is cut too.
+	before = len(audit(t, f.st, "admin.read"))
+	f.expect(t, call{target: "/api/admin/v1/" + strings.Repeat("a", 100_000)}, http.StatusNotFound)
+	rows = audit(t, f.st, "admin.read")[before:]
+	if len(rows) != 1 || len(rows[0].Data["path"].(string)) > 1024 || rows[0].Data["path_truncated"] != true {
+		t.Fatalf("padded path audited as %d rows, path %d bytes", len(rows), len(rows[0].Data["path"].(string)))
+	}
 }

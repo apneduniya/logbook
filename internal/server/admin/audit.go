@@ -31,6 +31,7 @@ type ReadRecord struct {
 // of them.
 const (
 	maxAuditValue  = 1 << 10
+	maxAuditMethod = 16
 	maxAuditParams = 4 << 10
 	maxParamCopies = 10
 )
@@ -40,7 +41,11 @@ const (
 // the key holding the parameters when it read more than maxParamCopies
 // users. Every row has the request's id.
 func (k *Keys) AuditRead(ctx context.Context, a Admin, subjects []uuid.UUID, rec ReadRecord) error {
-	base := map[string]any{"method": rec.Method, "path": rec.Path, "key": a.KeyPrefix, "request": uuid.NewString()}
+	path, method := cutUTF8(rec.Path, maxAuditValue), cutUTF8(rec.Method, maxAuditMethod)
+	base := map[string]any{"method": method, "path": path, "key": a.KeyPrefix, "request": uuid.NewString()}
+	if len(path) < len(rec.Path) || len(method) < len(rec.Method) {
+		base["path_truncated"] = true
+	}
 	if rec.Status != 0 {
 		base["status"] = rec.Status
 	}
@@ -132,6 +137,9 @@ func auditParams(p map[string]string) (out map[string]string, cut bool) {
 
 // cutUTF8 is s cut to at most n bytes without splitting a character.
 func cutUTF8(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
 	for n > 0 && !utf8.RuneStart(s[n]) {
 		n--
 	}
