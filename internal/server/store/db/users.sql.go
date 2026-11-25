@@ -13,7 +13,7 @@ import (
 )
 
 const getUserByHCAID = `-- name: GetUserByHCAID :one
-SELECT id, hca_id, username, display_name, email, avatar_url, timezone, profile_public, role, created_at, updated_at FROM users WHERE hca_id = $1
+SELECT id, hca_id, username, display_name, email, avatar_url, timezone, profile_public, role, created_at, updated_at, public_id FROM users WHERE hca_id = $1
 `
 
 func (q *Queries) GetUserByHCAID(ctx context.Context, hcaID string) (User, error) {
@@ -31,12 +31,13 @@ func (q *Queries) GetUserByHCAID(ctx context.Context, hcaID string) (User, error
 		&i.Role,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.PublicID,
 	)
 	return i, err
 }
 
 const getUserByID = `-- name: GetUserByID :one
-SELECT id, hca_id, username, display_name, email, avatar_url, timezone, profile_public, role, created_at, updated_at FROM users WHERE id = $1
+SELECT id, hca_id, username, display_name, email, avatar_url, timezone, profile_public, role, created_at, updated_at, public_id FROM users WHERE id = $1
 `
 
 func (q *Queries) GetUserByID(ctx context.Context, id uuid.UUID) (User, error) {
@@ -54,12 +55,13 @@ func (q *Queries) GetUserByID(ctx context.Context, id uuid.UUID) (User, error) {
 		&i.Role,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.PublicID,
 	)
 	return i, err
 }
 
 const getUserByUsername = `-- name: GetUserByUsername :one
-SELECT id, hca_id, username, display_name, email, avatar_url, timezone, profile_public, role, created_at, updated_at FROM users WHERE username = $1
+SELECT id, hca_id, username, display_name, email, avatar_url, timezone, profile_public, role, created_at, updated_at, public_id FROM users WHERE username = $1
 `
 
 func (q *Queries) GetUserByUsername(ctx context.Context, username string) (User, error) {
@@ -77,6 +79,7 @@ func (q *Queries) GetUserByUsername(ctx context.Context, username string) (User,
 		&i.Role,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.PublicID,
 	)
 	return i, err
 }

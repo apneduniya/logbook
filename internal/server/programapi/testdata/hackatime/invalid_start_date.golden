@@ -1,0 +1,8 @@
+# a bad date
+# GET /api/v1/users/orpheus/stats?start_date=yesterday
+status: 422
+cache-control: 
+
+{
+  "error": "Invalid start_date"
+}

@@ -21,7 +21,7 @@ laptop                                     server (Go + Postgres)
 
 | Path | Responsibility |
 |---|---|
-| `cmd/logbook-server` | Wires config, database, HTTP server and jobs. No logic |
+| `cmd/logbook-server` | Builds config, database, services and jobs, and serves `router.New`. No logic |
 | `cmd/logbook` | Agent daemon and CLI (`logbook login`, `status`, `submit`, ...) |
 | `pkg/wire` | Wire types shared by server and agent (heartbeats, minute batches, evidence) |
 | `pkg/struggle` | Pure rules engine: events in, labelled minutes and cuts out |
@@ -31,18 +31,20 @@ laptop                                     server (Go + Postgres)
 | `internal/server/config` | Typed env config |
 | `internal/server/store` | sqlc-generated queries and transaction helpers |
 | `internal/server/auth` | HCA sign-in, sessions, API keys, CSRF |
-| `internal/server/hackatime` | Hackatime client: OAuth, trust level, history import |
+| `internal/server/hackatime` | Hackatime client: OAuth, trust level (and its history), history import |
 | `internal/server/ingest` | Heartbeat validation, dedup, rollups |
-| `internal/server/stats` | Dashboard and program-API aggregates |
+| `internal/server/stats` | Dashboard aggregates and streaks (the program API reuses the streak) |
+| `internal/server/programapi` | The Hackatime-shaped program read API (ADR 0021): `authenticated/*`, `users/{id}/*`, `my/heartbeats`; identifier resolution, trust masking, counted versus raw time. Credentials come through an injected `Authenticator` |
 | `internal/server/devices` | Agent device keys: register, list, revoke |
 | `internal/server/credited` | Credited-minute uploads from the agent |
 | `internal/server/ledger` | Signed daily evidence chain per device: checks uploads (signature, chain and seq continuity) and reads stored records for the submission re-check |
 | `internal/server/live` | SSE fan-out |
 | `internal/server/submissions` | Submission upload, the re-check job, review packets, review links and decisions (ADR 0020) |
-| `internal/server/oauth` | OAuth 2 provider: apps, consent requests, codes, tokens, grants (ADR 0021) |
-| `internal/server/programs` | Program members (reviewers) and the submissions addressed to a program |
+| `internal/server/oauth` | OAuth 2 provider: apps (programs) and their members (owner, reviewers), consent requests, codes, tokens, grants, and the bearer middleware (`RequireScope`, `OptionalScope`) the program API uses (ADR 0021) |
+| `internal/server/programs` | The submissions addressed to a program, for its members (membership itself lives in `oauth`) |
 | `internal/server/admin` | Read-only admin API for Fraud Squad, admin keys (ADR 0022) |
 | `internal/server/httpapi` | HTTP handlers and middleware; thin, calls services |
+| `internal/server/router` | The server's whole route set on one mux, the global middleware and the CORS skip list; adapts OAuth tokens and API keys to the program API's `Authenticator`. End-to-end tests of the program flow run against it |
 | `internal/server/jobs` | River workers |
 | `internal/agent/...` | Agent: proxy, sensors, harness plugins, git, local store (an append-only event log, ADR 0017), crediting, uploader, tray |
 | `internal/e2e` | Tests only: the agent's crediting pipeline against the real minutes and evidence-day endpoints and Postgres, ending each test with the ADR 0017 checks (agent, server and replays at each minute's key agree; sealed blocks re-hash), plus the ADR 0019 checks (stored block fields and seq continuity; agent proofs verify against stored records, prove windows complete and replay to the stored rows). The one place importing both sides |

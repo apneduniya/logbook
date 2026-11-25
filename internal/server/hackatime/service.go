@@ -174,6 +174,9 @@ func (s *Service) storeLink(ctx context.Context, userID uuid.UUID, token string,
 			return fmt.Errorf("saving hackatime link: %w", err)
 		}
 		today := s.now()
+		if err := recordTrust(ctx, q, userID, me.Trust, today); err != nil {
+			return err
+		}
 		if _, err := q.StartHackatimeImport(ctx, db.StartHackatimeImportParams{
 			UserID:     userID,
 			FromDate:   pgDate(s.importFrom),

@@ -260,6 +260,44 @@ func (q *Queries) ListHackatimeLinksDueForTrustCheck(ctx context.Context, arg Li
 	return items, nil
 }
 
+const listHackatimeTrustHistory = `-- name: ListHackatimeTrustHistory :many
+SELECT level, checked_at FROM hackatime_trust_history
+WHERE user_id = $1
+ORDER BY checked_at DESC, id DESC
+LIMIT $2
+`
+
+type ListHackatimeTrustHistoryParams struct {
+	UserID uuid.UUID
+	Limit  int32
+}
+
+type ListHackatimeTrustHistoryRow struct {
+	Level     string
+	CheckedAt time.Time
+}
+
+// The user's newest trust readings, newest first.
+func (q *Queries) ListHackatimeTrustHistory(ctx context.Context, arg ListHackatimeTrustHistoryParams) ([]ListHackatimeTrustHistoryRow, error) {
+	rows, err := q.db.Query(ctx, listHackatimeTrustHistory, arg.UserID, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListHackatimeTrustHistoryRow{}
+	for rows.Next() {
+		var i ListHackatimeTrustHistoryRow
+		if err := rows.Scan(&i.Level, &i.CheckedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listStalledHackatimeImports = `-- name: ListStalledHackatimeImports :many
 SELECT i.user_id FROM hackatime_imports i
 JOIN hackatime_links l ON l.user_id = i.user_id
@@ -313,6 +351,38 @@ func (q *Queries) LockHackatimeLink(ctx context.Context, userID uuid.UUID) (Hack
 		&i.LinkedAt,
 	)
 	return i, err
+}
+
+const recordHackatimeTrust = `-- name: RecordHackatimeTrust :exec
+WITH latest AS (
+    SELECT id, level FROM hackatime_trust_history
+    WHERE user_id = $1
+    ORDER BY checked_at DESC, id DESC
+    LIMIT 1
+),
+moved AS (
+    UPDATE hackatime_trust_history h SET checked_at = $3
+    FROM latest
+    WHERE h.id = latest.id AND latest.level = $2::text
+    RETURNING h.id
+)
+INSERT INTO hackatime_trust_history (user_id, level, checked_at)
+SELECT $1, $2::text, $3
+WHERE NOT EXISTS (SELECT 1 FROM moved)
+`
+
+type RecordHackatimeTrustParams struct {
+	UserID    uuid.UUID
+	Level     string
+	CheckedAt time.Time
+}
+
+// Adds a level read for the user to hackatime_trust_history: when the newest
+// row has the same level, its checked_at moves forward; otherwise (a change,
+// or the first read) a new row starts.
+func (q *Queries) RecordHackatimeTrust(ctx context.Context, arg RecordHackatimeTrustParams) error {
+	_, err := q.db.Exec(ctx, recordHackatimeTrust, arg.UserID, arg.Level, arg.CheckedAt)
+	return err
 }
 
 const setHackatimeImportStatus = `-- name: SetHackatimeImportStatus :execrows

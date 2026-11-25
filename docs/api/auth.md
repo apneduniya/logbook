@@ -1,6 +1,6 @@
 # Auth API
 
-Owned by `internal/server/auth`. Covers sign-in with Hack Club Auth (HCA), browser sessions, CSRF, API keys and the localhost-only dev sign-in.
+Owned by `internal/server/auth`. Covers sign-in with Hack Club Auth (HCA), browser sessions, CSRF, API keys and the localhost-only dev sign-in. Logbook's own OAuth provider for programs (apps, tokens, grants) is in `docs/api/programs.md`.
 
 ## Conventions
 
@@ -29,7 +29,7 @@ For paths under `/api/` the API answers CORS for exactly the web origin:
 - Preflight (`OPTIONS` with `Access-Control-Request-Method`): `204` with `Access-Control-Allow-Origin: <web origin>`, `Access-Control-Allow-Credentials: true`, `Access-Control-Allow-Methods: GET, POST, PATCH, DELETE`, `Access-Control-Allow-Headers: Content-Type, X-CSRF-Token` and `Access-Control-Max-Age: 600`. Any other origin, method or header gets `403`.
 - Actual requests from the web origin get `Access-Control-Allow-Origin`, `Access-Control-Allow-Credentials: true` and `Access-Control-Expose-Headers: Retry-After, X-Request-Id`. Requests from other origins are served without CORS headers, so the browser hides the response from the page.
 - Every `/api/` response carries `Vary: Origin`.
-- There is no CORS on `/auth/*`, `/healthz`, heartbeat ingest (`/api/v1/users/current/heartbeats*`, `/api/v1/users/current/statusbar/*`, `/api/hackatime/*`) or the agent's device endpoints (`/api/v1/devices*`). Browsers never call them cross-origin.
+- There is no CORS on `/auth/*`, `/oauth/*` (the OAuth provider's authorize, token and revoke endpoints; programs call the last two from their servers), `/healthz`, heartbeat ingest (`/api/v1/users/current/heartbeats*`, `/api/v1/users/current/statusbar/*`, `/api/hackatime/*`) the agent's device endpoints (`/api/v1/devices*`) or the program API (`/api/v1/authenticated/*`, `/api/v1/my/*`, and `/api/v1/users/{id}/stats`, `trust_factor`, `heartbeats/*`, `projects*`, `project/*`; [programs.md](programs.md#the-program-api)). Browsers never call them cross-origin. The list lives in `internal/server/router` (`corsSkip`); an entry like `/api/v1/users/{id}/stats` matches whole path segments, so `/api/v1/users/{username}/profile` and `/live` keep CORS.
 - CSRF protection is unchanged: state-changing session requests still need `X-CSRF-Token`, which a page on another origin can't send without passing CORS.
 
 ## Browser sign-in (HCA)
@@ -66,6 +66,10 @@ Every callback clears the state cookie in the browser. The state itself is not r
 
 **New users:** the username comes from the HCA first and last name (`Fiona Hackworth` becomes `fiona-hackworth`). Names already taken get a numeric suffix (`fiona-hackworth2`). If the name isn't usable (for example it has no Latin letters, or the name scope wasn't granted), the username is `hacker` plus six random digits (`hacker402913`). The email address is never used, because usernames are public. The username never changes on later sign-ins.
 
+**Reserved username:** `my` (in any case) can't be a username: the program API reads `/api/v1/users/my/...` as the token's own user (ADR 0021). A name that sanitises to `my` gets the next candidate (`my2`). The database refuses it too (`users_username_not_reserved`).
+
+**Public id:** every user also has a numeric `public_id` (from `100000001` up, never reused), which Hackatime-shaped responses use as `id` (see [programs.md](programs.md#the-program-api)). It isn't shown on `GET /api/v1/session`.
+
 ### `POST /auth/logout`
 
 | | |
@@ -84,7 +88,7 @@ This route exists only when `LOGBOOK_DEV_LOGIN=true` **and** `LOGBOOK_BASE_URL` 
 | Auth | none |
 | Request | Either JSON or a form. **JSON** (`Content-Type: application/json`, for scripts): `{"username": "orpheus"}`. A cross-site page can't send it without a CORS preflight, and `/auth/*` answers none. **Form** (`application/x-www-form-urlencoded`, for the web UI on its own origin): `username` and an optional `next` path. Forms can be posted from any site, so the request's `Origin` header must be exactly the web origin. The username is lowercased and must match `[a-z0-9_-]{2,32}`. |
 | Response | JSON: `200`, the same body as `GET /api/v1/session`, plus the `logbook_session` cookie. Form: `303` to `LOGBOOK_WEB_URL` plus the safe `next` path (default `/`), plus the cookie. The user is created on first use with `hca_id = "dev:<username>"`. |
-| Errors | `404` disabled or not from loopback, `403` form from any origin other than the web origin, `415` other content types, `400` invalid username, JSON or form, `429` rate-limited. |
+| Errors | `404` disabled or not from loopback, `403` form from any origin other than the web origin, `415` other content types, `400` invalid or reserved (`my`) username, JSON or form, `429` rate-limited. |
 
 ## Session
 
@@ -184,3 +188,17 @@ Routes guarded by `RequireAPIKey` (WakaTime-compatible ingest, agent endpoints) 
 If an `Authorization` header is present, it is the only form checked. A bad key, a malformed key, a revoked key or no key gets `401 {"error": "invalid API key"}`. Each client (IPv4 address or IPv6 `/64`) may make 60 failed attempts in a burst, refilled at 60 per minute. Past that, further **failed** attempts from that client get `429` with `Retry-After` instead of `401`. A request with a valid key always succeeds, even from a client that is over its failure budget, so one misconfigured editor on a shared network can't block everyone else's heartbeats.
 
 Behind a reverse proxy, set `LOGBOOK_TRUST_PROXY=true` so rate limits use the last `X-Forwarded-For` hop instead of the proxy's address.
+
+## Which credential works where
+
+Three kinds of credential reach the API, and each is accepted only by its own middleware:
+
+| Credential | Accepted by | Never accepted by |
+|---|---|---|
+| `logbook_session` cookie (+ `X-CSRF-Token` on writes) | `RequireSession`, `OptionalSession` (web UI routes, `/api/v1/me/*`, consent) | API-key and OAuth routes |
+| API key (UUID) | `RequireAPIKey` (ingest, agent) | session routes, OAuth routes (`RequireScope`) |
+| OAuth access token (`lbo_…`, programs.md) | the program API (`authenticated/*`, `users/{id}/*`, `my/heartbeats`, through `router.ProgramCredentials`); `oauth.RequireScope` / `OptionalScope` (Logbook's own bearer routes) | session routes, API-key routes |
+
+`httpapi.CurrentUser.Via` is `session`, `api_key` or `oauth` accordingly. An OAuth token never matches the API-key format, and session middleware reads only the cookie, so a token sent to the wrong kind of route is `401`. Tests in `internal/server/oauth` (`TestCredentialsDontCross`) pin this with the real middleware, and `internal/server/router` (`TestCredentialsWorkOnlyWhereDocumented`) on the real routes.
+
+The program API also takes a user API key where Hackatime takes its own: `users/{id}/*` (`Bearer` only) and `my/heartbeats` (`Bearer` or `Basic base64(key)`). It looks keys up through `auth.Service.APIKeyOwner` and applies its own rate limit (see [programs.md](programs.md#the-program-api)); `authenticated/*` never accepts an API key.

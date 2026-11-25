@@ -2,6 +2,7 @@ package auth_test
 
 import (
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"net/http"
 	"regexp"
@@ -160,15 +161,23 @@ func TestRevokedAPIKeyIsRejected(t *testing.T) {
 	e := newEnv(t)
 	b := e.login(fiona)
 	k := createKey(t, e, b, "old")
-	auth := map[string]string{"Authorization": "Bearer " + k.Key}
-	if rec := e.do(req{target: "/api/v1/probe/key", header: auth}); rec.Code != http.StatusOK {
+	hdr := map[string]string{"Authorization": "Bearer " + k.Key}
+	if rec := e.do(req{target: "/api/v1/probe/key", header: hdr}); rec.Code != http.StatusOK {
 		t.Fatalf("before revoke = %d", rec.Code)
+	}
+	if id, err := e.svc.APIKeyOwner(t.Context(), k.Key); err != nil || id.String() != b.userID {
+		t.Fatalf("APIKeyOwner before revoke = %v, %v; want %s", id, err, b.userID)
 	}
 	if rec := b.send(e, http.MethodDelete, "/api/v1/api_keys/"+k.ID, ""); rec.Code != http.StatusNoContent {
 		t.Fatalf("revoke = %d", rec.Code)
 	}
-	if rec := e.do(req{target: "/api/v1/probe/key", header: auth}); rec.Code != http.StatusUnauthorized {
+	if rec := e.do(req{target: "/api/v1/probe/key", header: hdr}); rec.Code != http.StatusUnauthorized {
 		t.Fatalf("after revoke = %d, want 401", rec.Code)
+	}
+	for _, key := range []string{k.Key, "not-a-key", ""} {
+		if _, err := e.svc.APIKeyOwner(t.Context(), key); !errors.Is(err, auth.ErrInvalidAPIKey) {
+			t.Fatalf("APIKeyOwner(%q) err = %v, want ErrInvalidAPIKey", key, err)
+		}
 	}
 	if rec := b.send(e, http.MethodDelete, "/api/v1/api_keys/"+k.ID, ""); rec.Code != http.StatusNotFound {
 		t.Fatalf("second revoke = %d, want 404", rec.Code)

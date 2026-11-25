@@ -1,0 +1,8 @@
+# spans with filter_by_project of only commas
+# GET /api/v1/users/100000001/heartbeats/spans?start_date=2026-06-01&filter_by_project=,
+status: 200
+cache-control: no-store
+
+{
+  "spans": []
+}

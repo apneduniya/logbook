@@ -1,0 +1,22 @@
+# any OAuth program, user without a Hackatime link
+# GET /api/v1/authenticated/me
+# Authorization: Bearer <pat-read-app2 token>
+status: 200
+cache-control: no-store
+
+{
+  "id": 100000002,
+  "emails": [
+    "pat@example.com"
+  ],
+  "slack_id": null,
+  "github_username": null,
+  "trust_factor": {
+    "trust_level": "blue",
+    "trust_value": 0
+  },
+  "logbook": {
+    "username": "pat",
+    "trust_verified": false
+  }
+}

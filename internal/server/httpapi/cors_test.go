@@ -144,3 +144,26 @@ func TestCORSWithoutOriginAllowsNothing(t *testing.T) {
 		t.Fatalf("status = %d, want 403", rec.Code)
 	}
 }
+
+func TestSkipMatches(t *testing.T) {
+	tests := []struct {
+		path, prefix string
+		want         bool
+	}{
+		{"/api/v1/devices/abc/minutes", "/api/v1/devices", true},
+		{"/api/v1/devicesx", "/api/v1/devices", true}, // plain entries are string prefixes
+		{"/api/v1/users/orpheus/stats", "/api/v1/users/{id}/stats", true},
+		{"/api/v1/users/42/heartbeats/spans", "/api/v1/users/{id}/heartbeats", true},
+		{"/api/v1/users/42/projects/details", "/api/v1/users/{id}/projects", true},
+		{"/api/v1/users/orpheus/profile", "/api/v1/users/{id}/stats", false},
+		{"/api/v1/users/orpheus/live", "/api/v1/users/{id}/project", false},
+		{"/api/v1/users/orpheus/projects", "/api/v1/users/{id}/project", false}, // whole segments
+		{"/api/v1/users//stats", "/api/v1/users/{id}/stats", false},
+		{"/api/v1/users/orpheus", "/api/v1/users/{id}/stats", false},
+	}
+	for _, tc := range tests {
+		if got := skipMatches(tc.path, tc.prefix); got != tc.want {
+			t.Errorf("skipMatches(%q, %q) = %v, want %v", tc.path, tc.prefix, got, tc.want)
+		}
+	}
+}

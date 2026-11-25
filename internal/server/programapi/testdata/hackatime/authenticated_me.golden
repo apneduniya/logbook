@@ -1,0 +1,23 @@
+# 16 OAuth programs (Stardance, Flavortown, Save Point, 3am-ysws, ...)
+# GET /api/v1/authenticated/me
+# Authorization: Bearer <orpheus-profile-read token>
+status: 200
+cache-control: no-store
+
+{
+  "id": 100000001,
+  "emails": [
+    "orpheus@example.com"
+  ],
+  "slack_id": null,
+  "github_username": "orpheus-gh",
+  "trust_factor": {
+    "trust_level": "green",
+    "trust_value": 2
+  },
+  "logbook": {
+    "username": "orpheus",
+    "hackatime_id": 4242,
+    "trust_verified": true
+  }
+}

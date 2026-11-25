@@ -22,6 +22,14 @@ type ApiKey struct {
 	RevokedAt  *time.Time
 }
 
+type AppMember struct {
+	AppID     uuid.UUID
+	UserID    uuid.UUID
+	Role      string
+	AddedBy   pgtype.UUID
+	CreatedAt time.Time
+}
+
 type AuditLog struct {
 	ID          int64
 	ActorUserID pgtype.UUID
@@ -106,6 +114,13 @@ type HackatimeLink struct {
 	LinkedAt          time.Time
 }
 
+type HackatimeTrustHistory struct {
+	ID        int64
+	UserID    uuid.UUID
+	Level     string
+	CheckedAt time.Time
+}
+
 type Heartbeat struct {
 	ID               int64
 	UserID           uuid.UUID
@@ -176,6 +191,71 @@ type HeartbeatsDefault struct {
 	CreatedAt        time.Time
 }
 
+type OauthApp struct {
+	ID              uuid.UUID
+	OwnerID         uuid.UUID
+	Name            string
+	Slug            string
+	RedirectUris    []string
+	HomepageUrl     string
+	Public          bool
+	SecretHash      []byte
+	SecretRotatedAt *time.Time
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+	DeletedAt       *time.Time
+}
+
+type OauthCode struct {
+	CodeHash            []byte
+	AppID               uuid.UUID
+	UserID              uuid.UUID
+	RedirectUri         string
+	Scopes              []string
+	CodeChallenge       string
+	CodeChallengeMethod string
+	FamilyID            uuid.UUID
+	CreatedAt           time.Time
+	ExpiresAt           time.Time
+	UsedAt              *time.Time
+}
+
+type OauthGrant struct {
+	UserID    uuid.UUID
+	AppID     uuid.UUID
+	Scopes    []string
+	CreatedAt time.Time
+	UpdatedAt time.Time
+	RevokedAt *time.Time
+}
+
+type OauthRequest struct {
+	IDHash              []byte
+	AppID               uuid.UUID
+	UserID              pgtype.UUID
+	RedirectUri         string
+	Scopes              []string
+	State               string
+	CodeChallenge       string
+	CodeChallengeMethod string
+	CreatedAt           time.Time
+	ExpiresAt           time.Time
+}
+
+type OauthToken struct {
+	ID               uuid.UUID
+	AccessHash       []byte
+	RefreshHash      []byte
+	AppID            uuid.UUID
+	UserID           pgtype.UUID
+	Scopes           []string
+	FamilyID         uuid.UUID
+	CreatedAt        time.Time
+	ExpiresAt        time.Time
+	RefreshExpiresAt *time.Time
+	RevokedAt        *time.Time
+}
+
 type Project struct {
 	ID        uuid.UUID
 	UserID    uuid.UUID
@@ -208,6 +288,7 @@ type User struct {
 	Role          string
 	CreatedAt     time.Time
 	UpdatedAt     time.Time
+	PublicID      int64
 }
 
 type UserMinute struct {

@@ -1,0 +1,60 @@
+# stats with raw=true and limit=1
+# GET /api/v1/users/orpheus/stats?features=languages,projects&raw=true&limit=1
+status: 200
+cache-control: no-store
+
+{
+  "data": {
+    "username": "Name orpheus",
+    "user_id": "100000001",
+    "is_coding_activity_visible": true,
+    "is_other_usage_visible": true,
+    "status": "ok",
+    "start": "2016-07-01T12:00:00Z",
+    "end": "2026-07-01T23:59:59Z",
+    "range": "all_time",
+    "human_readable_range": "All Time",
+    "total_seconds": 3000,
+    "daily_average": 0,
+    "human_readable_total": "50m",
+    "human_readable_daily_average": "",
+    "languages": [
+      {
+        "name": "Go",
+        "total_seconds": 2400,
+        "text": "40m",
+        "hours": 0,
+        "minutes": 40,
+        "percent": 80,
+        "digital": "00:40:00",
+        "color": "#888888"
+      }
+    ],
+    "projects": [
+      {
+        "name": "logbook",
+        "total_seconds": 2400,
+        "text": "40m",
+        "hours": 0,
+        "minutes": 40,
+        "percent": 80,
+        "digital": "00:40:00",
+        "credited_seconds": 1200,
+        "raw_seconds": 2400
+      }
+    ],
+    "streak": 0,
+    "credited_seconds": 1470,
+    "raw_seconds": 3000
+  },
+  "trust_factor": {
+    "trust_level": "green",
+    "trust_value": 2
+  },
+  "logbook": {
+    "trust_verified": true,
+    "notes": [
+      "languages are time at the keyboard (raw heartbeat time): counted time is kept per project only"
+    ]
+  }
+}

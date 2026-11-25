@@ -1,0 +1,78 @@
+# Flavortown: public stats with projects
+# GET /api/v1/users/100000001/stats?features=projects&start_date=2025-12-15&test_param=true
+status: 200
+cache-control: no-store
+
+{
+  "data": {
+    "username": "Name orpheus",
+    "user_id": "100000001",
+    "is_coding_activity_visible": true,
+    "is_other_usage_visible": true,
+    "status": "ok",
+    "start": "2025-12-15T00:00:00Z",
+    "end": "2026-07-01T23:59:59Z",
+    "range": "all_time",
+    "human_readable_range": "All Time",
+    "total_seconds": 1470,
+    "daily_average": 7,
+    "human_readable_total": "24m 30s",
+    "human_readable_daily_average": "7s",
+    "projects": [
+      {
+        "name": "logbook",
+        "total_seconds": 1200,
+        "text": "20m",
+        "hours": 0,
+        "minutes": 20,
+        "percent": 81.63,
+        "digital": "00:20:00",
+        "credited_seconds": 1200,
+        "raw_seconds": 2400
+      },
+      {
+        "name": "agent-only",
+        "total_seconds": 180,
+        "text": "3m",
+        "hours": 0,
+        "minutes": 3,
+        "percent": 12.24,
+        "digital": "00:03:00",
+        "credited_seconds": 180,
+        "raw_seconds": 0
+      },
+      {
+        "name": "site",
+        "total_seconds": 90,
+        "text": "1m",
+        "hours": 0,
+        "minutes": 1,
+        "percent": 6.12,
+        "digital": "00:01:30",
+        "credited_seconds": 90,
+        "raw_seconds": 0
+      },
+      {
+        "name": "old",
+        "total_seconds": 0,
+        "text": "0m",
+        "hours": 0,
+        "minutes": 0,
+        "percent": 0,
+        "digital": "00:00:00",
+        "credited_seconds": 0,
+        "raw_seconds": 300
+      }
+    ],
+    "streak": 0,
+    "credited_seconds": 1470,
+    "raw_seconds": 2700
+  },
+  "trust_factor": {
+    "trust_level": "green",
+    "trust_value": 2
+  },
+  "logbook": {
+    "trust_verified": true
+  }
+}

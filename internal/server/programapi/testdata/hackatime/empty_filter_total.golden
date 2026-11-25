@@ -1,0 +1,10 @@
+# filter_by_project of only commas
+# GET /api/v1/users/100000001/stats?total_seconds=true&filter_by_project=,&start_date=2026-06-01
+status: 200
+cache-control: no-store
+
+{
+  "total_seconds": 0,
+  "credited_seconds": 0,
+  "raw_seconds": 0
+}

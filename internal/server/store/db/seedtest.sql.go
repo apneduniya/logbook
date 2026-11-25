@@ -110,6 +110,98 @@ func (q *Queries) SeedTestDevice(ctx context.Context, arg SeedTestDeviceParams) 
 	return id, err
 }
 
+const seedTestHackatimeLink = `-- name: SeedTestHackatimeLink :exec
+INSERT INTO hackatime_links (user_id, hackatime_user_id, hackatime_username, access_token_enc,
+                             trust_level, trust_checked_at)
+VALUES ($1, $2, $3, '\x00',
+        $4, now())
+`
+
+type SeedTestHackatimeLinkParams struct {
+	UserID            uuid.UUID
+	HackatimeUserID   int64
+	HackatimeUsername string
+	TrustLevel        string
+}
+
+func (q *Queries) SeedTestHackatimeLink(ctx context.Context, arg SeedTestHackatimeLinkParams) error {
+	_, err := q.db.Exec(ctx, seedTestHackatimeLink,
+		arg.UserID,
+		arg.HackatimeUserID,
+		arg.HackatimeUsername,
+		arg.TrustLevel,
+	)
+	return err
+}
+
+const seedTestHeartbeat = `-- name: SeedTestHeartbeat :exec
+INSERT INTO heartbeats (user_id, time, fields_hash, source, entity, category, project, language, editor)
+VALUES ($1, $2, $3, 'editor', $4,
+        $5, $6, $7, $8)
+`
+
+type SeedTestHeartbeatParams struct {
+	UserID     uuid.UUID
+	Time       time.Time
+	FieldsHash []byte
+	Entity     string
+	Category   string
+	Project    string
+	Language   string
+	Editor     string
+}
+
+func (q *Queries) SeedTestHeartbeat(ctx context.Context, arg SeedTestHeartbeatParams) error {
+	_, err := q.db.Exec(ctx, seedTestHeartbeat,
+		arg.UserID,
+		arg.Time,
+		arg.FieldsHash,
+		arg.Entity,
+		arg.Category,
+		arg.Project,
+		arg.Language,
+		arg.Editor,
+	)
+	return err
+}
+
+const seedTestProjectSettings = `-- name: SeedTestProjectSettings :exec
+INSERT INTO projects (user_id, name, repo_url, hidden, archived)
+VALUES ($1, $2, $3, $4, $5)
+ON CONFLICT (user_id, name) DO UPDATE SET
+    repo_url = EXCLUDED.repo_url, hidden = EXCLUDED.hidden, archived = EXCLUDED.archived
+`
+
+type SeedTestProjectSettingsParams struct {
+	UserID   uuid.UUID
+	Name     string
+	RepoUrl  string
+	Hidden   bool
+	Archived bool
+}
+
+func (q *Queries) SeedTestProjectSettings(ctx context.Context, arg SeedTestProjectSettingsParams) error {
+	_, err := q.db.Exec(ctx, seedTestProjectSettings,
+		arg.UserID,
+		arg.Name,
+		arg.RepoUrl,
+		arg.Hidden,
+		arg.Archived,
+	)
+	return err
+}
+
+const seedTestPublicID = `-- name: SeedTestPublicID :one
+SELECT public_id FROM users WHERE id = $1
+`
+
+func (q *Queries) SeedTestPublicID(ctx context.Context, id uuid.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, seedTestPublicID, id)
+	var public_id int64
+	err := row.Scan(&public_id)
+	return public_id, err
+}
+
 const seedTestUser = `-- name: SeedTestUser :one
 
 INSERT INTO users (hca_id, username, display_name, email, timezone, profile_public)
