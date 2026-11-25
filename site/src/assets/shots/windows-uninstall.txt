@@ -1,0 +1,8 @@
+PS C:\Users\runneradmin> & "$env:LOCALAPPDATA\Programs\Logbook\logbook.exe" uninstall
+Uninstalling Logbook
+  autostart  removed HKCU\Software\Microsoft\Windows\CurrentVersion\Run\Logbook and stopped the daemon
+  wakatime   removed C:\Users\runneradmin\.wakatime.cfg (Logbook had created it)
+  binary     removed C:\Users\runneradmin\AppData\Local\Programs\Logbook\logbook.exe
+  data       kept C:\Users\runneradmin\AppData\Roaming\logbook (use --purge --yes to delete it)
+
+Done. Restart your editors so their WakaTime plugins pick up the restored settings.

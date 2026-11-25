@@ -1,0 +1,20 @@
+~ % curl -fsSL https://raw.githubusercontent.com/apneduniya/logbook/main/scripts/install.sh | sh
+Downloading Logbook (latest, darwin/arm64)...
+Checksum verified.
+Installing Logbook v0.2.0
+  config     saved /Users/runner/Library/Application Support/logbook/config.json (server http://127.0.0.1:8080)
+  binary     installed /Users/runner/Library/Application Support/Logbook/bin/logbook
+  wakatime   pointed /Users/runner/.wakatime.cfg at Logbook
+  mirror     off (no previous WakaTime or Hackatime key found)
+  hooks      claude-code not found, skipped
+  hooks      codex not found, skipped
+  hooks      gemini-cli not found, skipped
+  hooks      opencode not found, skipped
+  hooks      cursor not found, skipped
+  hooks      copilot not found, skipped
+  autostart  starts at login via /Users/runner/Library/LaunchAgents/dev.boogles.logbook.plist
+  undo       autostart reverted
+  undo       wakatime config reverted
+  undo       binary reverted
+  undo       config reverted
+logbook install: starting the daemon: starting LaunchAgent: launchctl kickstart -k gui/501/dev.boogles.logbook: signal: killed:

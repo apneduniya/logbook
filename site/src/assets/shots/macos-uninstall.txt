@@ -1,0 +1,8 @@
+~ % logbook uninstall
+Uninstalling Logbook
+  autostart  removed /Users/runner/Library/LaunchAgents/dev.boogles.logbook.plist and stopped the daemon
+  wakatime   removed /Users/runner/.wakatime.cfg (Logbook had created it)
+  binary     removed /Users/runner/Library/Application Support/Logbook/bin/logbook
+  data       kept /Users/runner/Library/Application Support/logbook (use --purge --yes to delete it)
+
+Done. Restart your editors so their WakaTime plugins pick up the restored settings.
