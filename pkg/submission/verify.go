@@ -145,6 +145,7 @@ func VerifyPart(part Part, dev Device, frozen []Minute) (Checked, error) {
 		rules string
 	}
 	runs := map[run][]int{}
+	backed := map[replay.Key]string{} // keys are UTC, so equal keys compare equal
 	for i, row := range frozen {
 		out.Results[i] = RowResult{Row: row}
 		key, ok := row.Key()
@@ -155,7 +156,12 @@ func VerifyPart(part Part, dev Device, frozen []Minute) (Checked, error) {
 		case !listed[row.Minute.UTC()]:
 			reason = ReasonNotListed
 		default:
-			reason = ev.backs(key)
+			r, seen := backed[key]
+			if !seen {
+				r = ev.backs(key)
+				backed[key] = r
+			}
+			reason = r
 		}
 		if reason != "" {
 			out.Results[i].Result, out.Results[i].Reason = ResultUnbacked, reason
