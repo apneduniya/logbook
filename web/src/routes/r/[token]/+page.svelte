@@ -1,9 +1,14 @@
 <!--
   The review page (ADR 0020, docs/web.md "Review page"): an audited timesheet
   read top to bottom like an invoice. On desktop the document takes 8 columns
-  and a rail of 4 holds trust, the justification and the decision; on phones
-  everything stacks, and for program members the decision moves up under the
-  hours. No ultramarine: nothing here is live except the verifying spinner.
+  and a rail of 4 holds trust, the justification and the decision; the rail
+  stays in view while the document scrolls, on windows tall enough to hold
+  it. On phones everything stacks in source order, and the one thing a
+  viewer came for comes up under the hours: the decision for program
+  members, the justification for the submitter. Those are rendered there as
+  phone-only copies (the rail's copy is hidden), so what people see and what
+  the keyboard reaches come in the same order. No ultramarine: nothing here
+  is live except the verifying spinner.
   The token never appears in the title, in a link or in print.
 -->
 <script lang="ts">
@@ -20,6 +25,7 @@
 	import CutsPanel from '#lib/review/CutsPanel.svelte';
 	import DaysPanel from '#lib/review/DaysPanel.svelte';
 	import DecisionPanel from '#lib/review/DecisionPanel.svelte';
+	import type { Decision } from '#lib/types.ts';
 	import type { PageProps } from './$types';
 
 	let { data }: PageProps = $props();
@@ -30,6 +36,13 @@
 	const meta = $derived(review ? submissionMeta(review) : []);
 	const view = $derived(review?.packet ? packetView(review.packet) : null);
 	const member = $derived(data.state === 'ok' && data.viewer.kind === 'member');
+	const submitter = $derived(data.state === 'ok' && data.viewer.kind === 'submitter');
+	// The decision on screen: the loaded one, or the one just recorded. Both
+	// copies of the DECISION panel show it.
+	let decided = $derived<Decision | null>(review?.decision ?? null);
+	const record = (d: Decision) => {
+		decided = d;
+	};
 
 	// While the re-check runs, look again every 10 s and reload once it is done.
 	$effect(() => {
@@ -66,25 +79,25 @@
 
 {#if data.state === 'missing'}
 	<div class="narrow">
-		<Panel title="Review" meta="404">
+		<Panel title="Review" meta="404" heading={false}>
 			<h1 class="text-lg font-normal">There’s no submission at this link.</h1>
 			<p class="hint mt-2">Check that you copied all of it. Links end after 22 characters.</p>
 		</Panel>
 	</div>
 {:else if data.state === 'withdrawn'}
 	<div class="narrow">
-		<Panel title="Review" meta="410">
+		<Panel title="Review" meta="410" heading={false}>
 			<h1 class="text-lg font-normal">The submitter withdrew this submission.</h1>
 			<p class="hint mt-2">There’s nothing to review, and no decision can be recorded.</p>
 		</Panel>
 	</div>
 {:else if review && status === 'verifying'}
 	<div class="narrow">
-		<Panel title="Submission" meta="v{review.submission.version}">
+		<Panel title="Submission" meta="v{review.submission.version}" heading={false}>
 			<h1 class="px name">{review.submission.project}</h1>
 			<div class="mt-4"><LiveBadge label="( verifying )" /></div>
 			<p class="hint mt-3">
-				Logbook is re-computing every minute on the server from the signed device logs. This page
+				Logbook is recounting each minute of this submission from the signed device logs. This page
 				updates on its own when that’s done, usually within a few minutes.
 			</p>
 			<dl class="meta mt-5">
@@ -97,7 +110,7 @@
 	</div>
 {:else if review && status === 'failed'}
 	<div class="narrow">
-		<Panel title="Submission" meta="failed">
+		<Panel title="Submission" meta="failed" heading={false}>
 			<h1 class="px name">{review.submission.project}</h1>
 			{#if data.state === 'ok' && data.viewer.kind === 'submitter'}
 				<p class="mt-4">
@@ -123,12 +136,12 @@
 		</Panel>
 	</div>
 {:else if review && view && data.state === 'ok'}
-	<div class="review" class:member>
+	<div class="review">
 		<div class="doc">
 			<div class="head">
-				<Panel title="Submission" meta="v{review.submission.version}">
+				<Panel title="Submission" meta="v{review.submission.version}" heading={false}>
 					<h1 class="px name">{review.submission.project}</h1>
-					<dl class="meta mt-4">
+					<dl class="meta pairs mt-4">
 						{#each meta as r (r.k)}
 							<dt class="lbl">{r.k}</dt>
 							<dd class:mono={r.mono}>{r.v}</dd>
@@ -152,19 +165,31 @@
 						</div>
 					</div>
 					<p class="hint pad">
-						Counted is what the rules credit. The one-third rule is time at the keyboard with AI
-						coding time counted at a third, for comparison.
+						Counted is what the rules credit. The one-third AI rule takes time at the keyboard and
+						counts the minutes with AI at a third, for comparison.
 					</p>
 					<div class="evidence">
 						<p>{view.evidence.sentence}</p>
 						{#if view.evidence.clean}
 							<span class="tag">VERIFIED</span>
 						{:else}
-							<a class="tag" href="#not-verified">{view.evidence.tag}</a>
+							<a class="tag" href="#not-verified">
+								{view.evidence.tag} <span aria-hidden="true">↓</span>
+							</a>
 						{/if}
 					</div>
 				</Panel>
 			</div>
+
+			{#if member}
+				<div class="phone-only">
+					{@render decision()}
+				</div>
+			{:else if submitter && view.justification}
+				<div class="phone-only">
+					{@render justification(view.justification)}
+				</div>
+			{/if}
 
 			<div class="body">
 				<Panel title="Made of" meta={duration(madeTotal)}>
@@ -225,7 +250,10 @@
 										<td>
 											<span class="block">{s.harness}</span>
 											{#if s.model}<span class="lbl block">{s.model}</span>{/if}
-											<span class="lbl phone block">{s.when}</span>
+											<span class="lbl phone block">
+												{s.when} · {s.prompts}
+												{s.prompts === 1 ? 'prompt' : 'prompts'} · {s.alone} agent alone
+											</span>
 										</td>
 										<td class="mono when">{s.when}</td>
 										<td class="mono r opt">{s.prompts}</td>
@@ -291,7 +319,7 @@
 		</div>
 
 		<div class="rail">
-			<Panel title="Trust" meta="Hackatime" class="trust">
+			<Panel title="Trust" meta="Hackatime">
 				<dl class="meta">
 					{#each view.trust.rows as r (r.k)}
 						<dt class="lbl">{r.k}</dt>
@@ -304,28 +332,38 @@
 			</Panel>
 
 			{#if view.justification}
-				<Panel title="Justification" class="just">
-					<CopyField
-						value={view.justification.copy}
-						display={view.justification.display}
-						label="Justification"
-						wrap
-					/>
-					<p class="hint mt-2">
-						For the program’s justification field. Copy includes the full review link.
-					</p>
-				</Panel>
+				<div class="slot" class:desk-only={submitter}>
+					{@render justification(view.justification)}
+				</div>
 			{/if}
 
+			<div class="slot" class:desk-only={member}>
+				{@render decision()}
+			</div>
+		</div>
+	</div>
+
+	{#snippet justification(j: { copy: string; display: string })}
+		<Panel title="Justification">
+			<CopyField value={j.copy} display={j.display} label="Justification" wrap />
+			<p class="hint mt-2">
+				For the program’s justification field. Copy includes the full review link.
+			</p>
+		</Panel>
+	{/snippet}
+
+	{#snippet decision()}
+		{#if data.state === 'ok'}
 			<DecisionPanel
-				class="decision"
 				{token}
 				{review}
 				viewer={data.viewer}
 				appsError={data.appsError}
+				current={decided}
+				ondecided={record}
 			/>
-		</div>
-	</div>
+		{/if}
+	{/snippet}
 {/if}
 
 <style>
@@ -349,6 +387,12 @@
 	}
 	.meta dd {
 		overflow-wrap: anywhere;
+	}
+	/* The SUBMISSION block on desktop: two label/value pairs to a row. */
+	@media (min-width: 901px) {
+		.meta.pairs {
+			grid-template-columns: max-content minmax(0, 1fr) max-content minmax(0, 1fr);
+		}
 	}
 
 	.review {
@@ -398,10 +442,12 @@
 	.pad {
 		padding: 0 16px 16px;
 	}
+	/* The tag sits on the right edge, under the head's rules version. */
 	.evidence {
 		display: flex;
 		flex-wrap: wrap;
 		align-items: center;
+		justify-content: space-between;
 		gap: 10px 16px;
 		padding: 12px 16px;
 		border-top: 1px solid var(--color-rule);
@@ -480,8 +526,17 @@
 	.rows .when {
 		white-space: nowrap;
 	}
-	.phone {
+	.phone,
+	.phone-only {
 		display: none;
+	}
+	/* Keep the decision beside the evidence while the document scrolls, when
+	   the window can hold the rail (an open Adjust form included). */
+	@media (min-width: 901px) and (min-height: 760px) {
+		.rail {
+			position: sticky;
+			top: 12px;
+		}
 	}
 
 	.warn {
@@ -491,8 +546,8 @@
 	}
 
 	@media (max-width: 900px) {
-		/* One column. The wrappers step aside so each block can take its place:
-		   the decision comes up under the hours for members. */
+		/* One column, in source order: the wrappers step aside, the phone-only
+		   copy under the hours shows and the rail's copy of it hides. */
 		.review {
 			display: flex;
 			flex-direction: column;
@@ -502,23 +557,11 @@
 		.rail {
 			display: contents;
 		}
-		.head {
-			order: 1;
+		.phone-only {
+			display: block;
 		}
-		.body {
-			order: 3;
-		}
-		.rail > :global(.trust) {
-			order: 4;
-		}
-		.rail > :global(.just) {
-			order: 5;
-		}
-		.rail > :global(.decision) {
-			order: 6;
-		}
-		.review.member .rail > :global(.decision) {
-			order: 2;
+		.desk-only {
+			display: none;
 		}
 	}
 	@media (max-width: 640px) {

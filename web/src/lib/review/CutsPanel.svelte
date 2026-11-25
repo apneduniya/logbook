@@ -1,8 +1,9 @@
 <!--
   The review page's CUTS AND FLAGS panel, as invoice line items: the rule
   in plain words with its amount on the right, and where it happened under
-  it (UTC ranges). Cuts took time off; flags are for the reviewer and took
-  nothing off. Long range lists show their first few with "Show all".
+  it (UTC ranges), then the rule's code from STRUGGLE-RULES.md, quiet at the
+  end. Cuts took time off; flags are for the reviewer and took nothing off.
+  Long range lists show their first few, then "…" and "Show all".
 -->
 <script lang="ts">
 	import type { LineItem } from '#lib/review.ts';
@@ -52,10 +53,10 @@
 								</span>
 							</div>
 							<p class="lbl sub">
-								<span>{it.code}</span>
 								{#if shown.length}
-									· {shown.join(', ')}
+									{shown.join(', ')}{shown.length < it.ranges.length ? ', …' : ''} ·
 								{/if}
+								<span class="code">{it.code}</span>
 								{#if it.ranges.length > FIRST}
 									<button
 										class="link more"
@@ -120,12 +121,18 @@
 	.sub {
 		line-height: 1.6;
 	}
+	.code {
+		color: var(--color-ink-3);
+	}
+	/* A button, so the sans voice: it must not read as one more range. */
 	.more {
 		margin-left: 8px;
 		background: none;
 		border: 0;
 		padding: 0;
 		cursor: pointer;
-		font: inherit;
+		font-family: var(--font-sans);
+		font-size: var(--text-xs);
+		letter-spacing: 0;
 	}
 </style>

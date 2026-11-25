@@ -74,13 +74,16 @@ Don't make the whole UI pixel or mono; hierarchy comes from the contrast between
 - A chart whose numbers appear only on hover also carries a visually hidden table, so screen readers get the numbers.
 - Copy never promises an interaction the device lacks: hover hints are hidden on touch screens.
 - On phones the year grid scrolls with fixed columns, and its window is sized to whole columns so the edge never cuts a dot in half.
-- **Minute strips** (`MinuteStrip`) use the review packet's alphabet: counted is ink, agent alone hatched, cut and idle fill, unbacked outlined, and a mismatch is ink with a notch (a shorter bar). Up to two hours draw a cell per minute; a day draws runs. Commits are ticks above the strip whose detail line shows under it on hover, focus or tap. Every strip has a hidden table of its runs.
+- **Minute strips** (`MinuteStrip`) use the review packet's alphabet: counted is ink, agent alone hatched, cut and idle fill, unbacked outlined, and a mismatch is ink with a notch (a shorter bar). Up to two hours draw a cell per minute; longer windows draw runs. Commits are ticks above the strip whose detail line shows under it on hover, focus or tap. Every strip has a hidden table of its runs.
 
 ## Review page
 
 - An audited timesheet read like an invoice: the SUBMISSION meta block, three figures with counted the biggest, a one-sentence evidence line with its tag, then itemised panels.
 - On desktop it uses the 8/4 grid, with a rail of TRUST, JUSTIFICATION and DECISION. On phones it is one column, and for program members the decision moves up under the figures.
 - Times are UTC and say so. Hours are programs' one-decimal hours (`12.4 h`). Line amounts and day totals use the usual `4h 00m`.
+- The decided stamp is inverted ink with a second hairline rule 3 px outside it, like a rubber stamp, so it never reads as a solid ink button. The small stamp in list rows has no rule.
+- On desktop the rail stays in view (sticky) while the document scrolls, on windows at least 760 px tall. On phones the page stacks in source order; the decision (for members) or the justification (for the submitter) is rendered again under the figures and the rail's copy hides, so tab order matches what people see.
+- Days strips share one window of the day: the active hours with at least half an hour either side, on whole hours. Commit ticks closer than a 24 px target share one button whose detail lists each commit.
 - Warnings (a banned or switched Hackatime account) are sans sentences with a 2 px ink rule on the left. They are never coloured.
 
 ## Submissions

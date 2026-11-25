@@ -3,6 +3,8 @@
   ink block (APPROVED, ADJUSTED 11.1 h, REJECTED), never a coloured pill and
   never the accent (web/DESIGN.md). The large form adds who decided, when
   (UTC) and the reason; the small one is the stamp alone, for list rows.
+  The large stamp has a second rule around it, like a rubber stamp, so it
+  doesn't read as a solid ink button such as COPY.
 
   Props: decision (#lib/types.ts Decision), size ('lg' | 'sm', default 'lg').
 -->
@@ -51,6 +53,11 @@
 		background: var(--color-ink);
 		padding: 8px 12px 7px;
 		white-space: nowrap;
+	}
+	.stamp:not(.sm) {
+		outline: 1px solid var(--color-ink);
+		outline-offset: 3px;
+		margin: 4px;
 	}
 	.stamp.sm {
 		font-size: var(--text-xs);

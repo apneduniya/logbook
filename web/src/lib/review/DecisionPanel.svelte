@@ -5,8 +5,13 @@
   Adjust takes hours below the counted time and a reason, Reject a reason.
   Every decision sends the packet version the page read, so a packet checked
   again since is refused (409) and the panel offers a reload instead.
+  After a decision, focus moves to the stamp, so a screen reader reads the
+  verdict. The page may hold two copies (rail and, on phones, under the
+  hours), so the recorded decision lives with the page (`current`,
+  `ondecided`).
 -->
 <script lang="ts">
+	import { tick } from 'svelte';
 	import { invalidate } from '$app/navigation';
 	import { app, REVIEW } from '#lib/app.svelte.ts';
 	import { ApiError } from '#lib/api.ts';
@@ -24,28 +29,33 @@
 		viewer: Viewer;
 		/** Why membership couldn't be checked, if it couldn't. */
 		appsError: string | null;
+		/** The decision on screen: the loaded one, or the one just recorded. */
+		current: Decision | null;
+		ondecided: (d: Decision) => void;
 		class?: string;
 	}
-	let { token, review, viewer, appsError, class: cls = '' }: Props = $props();
+	let { token, review, viewer, appsError, current, ondecided, class: cls = '' }: Props = $props();
 
 	const sub = $derived(review.submission);
 	const counted = $derived(review.packet?.counted_seconds ?? 0);
 	const program = $derived(sub.program?.name ?? '');
 
-	// The decision on screen: the loaded one, or the one just recorded.
-	let current = $derived<Decision | null>(review.decision ?? null);
 	let changing = $state(false);
 	let open = $state<'approve' | 'adjust' | 'reject' | null>(null);
 	let stale = $state(false);
 	let signedOut = $state(false);
 	let reloading = $state(false);
+	let stampEl = $state<HTMLElement | null>(null);
+	let actsEl = $state<HTMLElement | null>(null);
+	let recordEl = $state<HTMLButtonElement | null>(null);
 
 	const member = $derived(viewer.kind === 'member');
 	const controls = $derived(member && sub.status === 'ready' && (!current || changing));
 
 	async function decide(input: DecisionInput): Promise<void> {
 		try {
-			current = await app.api.decide(token, { ...input, version: sub.version });
+			const d = await app.api.decide(token, { ...input, version: sub.version });
+			ondecided(d);
 			changing = false;
 			open = null;
 		} catch (err) {
@@ -60,6 +70,20 @@
 				err instanceof ApiError ? err.retryAfter : null
 			);
 		}
+		await tick();
+		stampEl?.focus();
+	}
+
+	async function change() {
+		changing = true;
+		await tick();
+		actsEl?.querySelector('button')?.focus();
+	}
+
+	async function keep() {
+		changing = false;
+		await tick();
+		recordEl?.focus();
 	}
 
 	async function reload() {
@@ -88,9 +112,11 @@
 		{#if !sub.program}
 			<p class="hint">This submission isn’t addressed to a program, so nobody decides on it.</p>
 		{:else if current && !changing}
-			<DecisionStamp decision={current} />
+			<div tabindex="-1" bind:this={stampEl} class="outline-none">
+				<DecisionStamp decision={current} />
+			</div>
 			{#if member && sub.status === 'ready'}
-				<button class="link justify-self-start" type="button" onclick={() => (changing = true)}>
+				<button bind:this={recordEl} class="btn justify-self-start" type="button" onclick={change}>
 					Record a new decision
 				</button>
 			{/if}
@@ -118,7 +144,7 @@
 				{current ? 'The newest decision is the one that counts. ' : ''}The submitter sees your
 				decision and reason.
 			</p>
-			<div class="acts">
+			<div class="acts" bind:this={actsEl}>
 				{#if open === null || open === 'approve'}
 					<ConfirmButton
 						label="Approve"
@@ -156,7 +182,7 @@
 				{/if}
 			</div>
 			{#if changing && open === null}
-				<button class="link justify-self-start" type="button" onclick={() => (changing = false)}>
+				<button class="link justify-self-start" type="button" onclick={keep}>
 					Keep the current decision
 				</button>
 			{/if}
