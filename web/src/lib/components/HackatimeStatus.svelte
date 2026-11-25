@@ -39,13 +39,13 @@
 		Link your Hackatime account to bring your history over. It shows as time at the keyboard; only
 		the agent can count time from now on.
 	</p>
-	<a class="btn mt-3" href={linkUrl} rel="external">Link Hackatime</a>
+	<a class="btn mt-3 self-start" href={linkUrl} rel="external">Link Hackatime</a>
 {:else if view.kind === 'relink'}
 	<p class="mute">
 		Logbook can’t reach your Hackatime account any more, usually because access was revoked on
 		Hackatime.
 	</p>
-	<a class="btn mt-3" href={linkUrl} rel="external">Link again</a>
+	<a class="btn mt-3 self-start" href={linkUrl} rel="external">Link again</a>
 {:else if view.kind === 'pending'}
 	<p class="mute">Linked. The import starts in a moment.</p>
 {:else if view.kind === 'running'}
@@ -67,7 +67,7 @@
 	</div>
 {:else if view.kind === 'failed'}
 	<p class="mute">The import stopped: {view.error || 'Hackatime didn’t answer.'}</p>
-	<a class="btn mt-3" href={linkUrl} rel="external">Link again to resume</a>
+	<a class="btn mt-3 self-start" href={linkUrl} rel="external">Link again to resume</a>
 {:else}
 	<p class="mute">
 		<span class="mono text-ink">{view.heartbeats.toLocaleString('en')}</span> heartbeats imported,
