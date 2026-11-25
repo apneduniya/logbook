@@ -62,11 +62,11 @@ Session. The pending request for the consent page:
  "scopes": [{"name": "profile", "description": "See your basic profile: …"}, {"name": "read", "description": "See your coding activity: …"}],
  "redirect_uri": "https://stardance.example/auth/hackatime/callback", "already_granted": false, "expires_at": "2026-11-25T12:10:00Z"}
 ```
-`already_granted` is true when the user granted these scopes to the app before (for example, they signed in after starting); the page may then approve without asking. `404` for unknown, expired, decided or other users' requests.
+`already_granted` is true when the user granted these scopes to the app before (for example, they signed in after starting); the page may then approve without asking. `404` for unknown, expired, decided or other users' requests, and when the app was deleted or no longer registers the request's `redirect_uri` (the owner removed it after the request started).
 
 ### `POST /api/v1/oauth/requests/{id}`
 
-Session + CSRF. `{"approve": true|false}` (required). Returns `{"redirect": "<redirect_uri>?code=…&state=…"}` or, when denied, `{"redirect": "<redirect_uri>?error=access_denied&error_description=…&state=…"}`. Single use (`404` after). Approving records the grant (its scopes add to any granted before) and is audited `oauth.grant`.
+Session + CSRF. `{"approve": true|false}` (required). Returns `{"redirect": "<redirect_uri>?code=…&state=…"}` or, when denied, `{"redirect": "<redirect_uri>?error=access_denied&error_description=…&state=…"}`. Single use (`404` after). Approving records the grant (its scopes add to any granted before) and is audited `oauth.grant`. `404`, with nothing recorded, when the app was deleted or no longer registers the request's `redirect_uri`: the browser is never sent, even with `access_denied`, to a URI the app doesn't register now.
 
 Codes are single use, valid 10 minutes, and bound to the app, user, redirect URI, scopes and PKCE challenge.
 
@@ -95,7 +95,7 @@ RFC 7009. No CORS. Same body and client authentication as `/oauth/token`, with `
 Session; `DELETE` needs CSRF. Browser endpoints with the usual `/api/` CORS.
 
 - `GET /api/v1/me/grants`: `{"grants": [{app_id, app_name, app_slug, homepage_url, owner_username, scopes, created_at, updated_at}]}`, the user's active grants to live apps, newest first.
-- `DELETE /api/v1/me/grants/{app_id}`: `204`. Every token and unused code the app holds for this user stops working at once, and the next authorize asks again. `404` if there is no active grant. Audited `oauth.revoke`.
+- `DELETE /api/v1/me/grants/{app_id}`: `204`. Every token and unused code the app holds for this user stops working at once, and the next authorize asks again. A code exchange or refresh running at the same moment is ordered against the revoke (the exchange locks the code, the refresh locks the grant), so a token it issues is revoked too. `404` if there is no active grant. Audited `oauth.revoke`.
 
 ### Bearer tokens
 
@@ -198,9 +198,9 @@ Rules:
 - A private profile without a `read` token from that user: Hackatime's `403` body.
 
 Details that follow Hackatime exactly (pinned by the contract goldens):
-- `start_date`/`end_date`: dates (`2025-12-15`, midnight UTC), RFC 3339 times or `YYYY-MM-DD HH:MM[:SS]` (UTC). Defaults: ten years ago and the end of today (UTC). Unparsable: `422 {"error": "Invalid start_date"}`. Bounds are truncated to whole seconds.
+- `start_date`/`end_date`: dates (`2025-12-15`, midnight UTC), RFC 3339 times or `YYYY-MM-DD HH:MM[:SS]` (UTC). An offset may also be written without a colon (`+0530`) or after a space, and a trailing ` UTC` is accepted, so Ruby's `Time#to_s` (`2026-06-10 10:00:00 UTC`, `2026-06-10 10:00:00 +0000`), which Ruby clients send when they put a `Time` in a query, parses as on Hackatime. The same forms apply to every time parameter on the program API. Defaults: ten years ago and the end of today (UTC). Unparsable: `422 {"error": "Invalid start_date"}`. Bounds are truncated to whole seconds.
 - `features`: a comma list; Hackatime builds only `languages` and `projects` (others are ignored). Absent means `languages`; present but empty means neither.
-- `filter_by_project`: a comma list, or `filter_by_project[]=a&filter_by_project[]=b` (Rails splits an array on `,` elements; Stardance sends that).
+- `filter_by_project`: a comma list, or `filter_by_project[]=a&filter_by_project[]=b` (Rails splits an array on `,` elements; Stardance sends that). Blank or absent means no filter. A value of only commas (`filter_by_project=,`) is an empty filter that matches nothing, as Ruby's `",".split(",")` is `[]`: totals are `0`, `projects` is empty, and `features=projects` still adds `unique_total_seconds: 0`. The same holds for `filter_by_category` and for spans' `filter_by_project`.
 - `test_param=true`: raw time leaves out the categories `browsing`, `meeting` and `communicating`. `no_ai_coding=true` also leaves out `ai coding` (with or without `test_param`).
 - `filter_by_category` applies only to `total_seconds=true` without `test_param`, as on Hackatime (the summary path ignores it).
 - `limit`: keep the first N rows of each breakdown; `0`, negative or absent means all.
