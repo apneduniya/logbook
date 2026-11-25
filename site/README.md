@@ -142,3 +142,18 @@ Or from this folder: `pnpm install`, then `pnpm dev` or `pnpm build`.
 - `public/fonts/`: Departure Mono, Geist and Geist Mono, self-hosted under the SIL Open Font License 1.1 (licence files beside them).
 
 Plugins: [starlight-sidebar-topics](https://starlight-sidebar-topics.netlify.app/) for one sidebar per audience, [starlight-image-zoom](https://starlight-image-zoom.vercel.app/) for zoomable screenshots, and [starlight-links-validator](https://starlight-links-validator.vercel.app/) to fail the build on broken links. Search is Starlight's built-in Pagefind.
+
+## Publish an update
+
+Publishing is a manual Cloudflare Pages deploy. Editing or merging a page on GitHub does not deploy it automatically.
+
+With Cloudflare credentials already available in your environment, run from the repository root:
+
+```sh
+make docs-check
+wrangler pages deploy site/dist --project-name logbook-docs --branch main
+```
+
+The project serves `https://docs.logbook.boogles.dev` and `https://logbook-docs-e0o.pages.dev`. The `main` argument selects the Pages production deployment; it does not push or merge a Git branch.
+
+The initial documentation source is on `docs/site`. The **Edit page** URL in `astro.config.mjs` points to that branch; change it to `main` when the docs are merged there. Publishing source changes to GitHub and deploying site updates need the maintainer's approval under the repository rules.

@@ -14,7 +14,7 @@ export default defineConfig({
 			title: 'Logbook docs',
 			description: 'How to use Logbook, the coding time tracker for Hack Club.',
 			social: [{ icon: 'github', label: 'GitHub', href: 'https://github.com/apneduniya/logbook' }],
-			editLink: { baseUrl: 'https://github.com/apneduniya/logbook/edit/main/site/' },
+			editLink: { baseUrl: 'https://github.com/apneduniya/logbook/edit/docs/site/site/' },
 			lastUpdated: true,
 			customCss: ['./src/styles/fonts.css', './src/styles/theme.css'],
 			head: [

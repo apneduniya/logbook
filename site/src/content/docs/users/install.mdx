@@ -49,8 +49,10 @@ Logbook is not added to your `PATH` on Windows. The last lines print the full pa
 <TabItem label="macOS">
 
 <Aside type="caution" title="Known problem in v0.2.0">
-On macOS, the v0.2.0 installer gets through every step and then fails while starting the agent, with an error like `launchctl kickstart -k gui/501/dev.boogles.logbook: signal: killed`. It then undoes everything, so nothing is left installed. A fix is not released yet. Until it is, Logbook can't be installed on macOS. Watch the [releases page](https://github.com/apneduniya/logbook/releases) for a newer version.
+On our macOS 15 GitHub runner, the v0.2.0 installer failed while starting the agent, with `launchctl kickstart -k gui/501/dev.boogles.logbook: signal: killed`. It then undoes everything, so nothing is left installed. This was reproduced on the runner; installation on other Macs has not been verified by this guide. Watch the [releases page](https://github.com/apneduniya/logbook/releases) for a newer version.
 </Aside>
+
+<Shot name="macos-install-failure.png" alt="Terminal showing the macOS runner install failure at launchctl kickstart, followed by rollback" caption="The unmodified v0.2.0 installer on our macOS 15 runner." />
 
 Open **Terminal**, paste the command and press Enter. It looks like this, with your own key:
 

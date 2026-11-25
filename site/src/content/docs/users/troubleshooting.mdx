@@ -44,7 +44,7 @@ Each line is `[OK  ]`, a warning or a failure. It exits with an error if any che
 
 ### macOS: install fails at "starting the daemon"
 
-In v0.2.0 the installer stops with `launchctl kickstart -k gui/.../dev.boogles.logbook: signal: killed` and undoes every step. This is a known bug in v0.2.0, and retrying gives the same result. There is no fix released yet; watch the [releases page](https://github.com/apneduniya/logbook/releases).
+On our macOS 15 GitHub runner, the v0.2.0 installer stopped with `launchctl kickstart -k gui/.../dev.boogles.logbook: signal: killed` and undoes every step. The runner reproduced this failure. We have not verified whether other Macs are affected. Check the the [releases page](https://github.com/apneduniya/logbook/releases).
 
 ### "--key is required"
 
