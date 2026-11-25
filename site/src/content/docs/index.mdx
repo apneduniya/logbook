@@ -1,0 +1,22 @@
+---
+title: Logbook docs
+description: Logbook tracks your coding time, tells your own work apart from time an AI agent spent alone, and backs counted hours with evidence a reviewer can check.
+template: splash
+---
+
+import { CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+Logbook is a coding time tracker for Hack Club that knows when an AI agent did the work, so the hours you submit are hours a reviewer can trust.
+
+## Start here
+
+<CardGrid>
+	<LinkCard title="I code" description="Install Logbook, see your time and submit your hours." href="/users/" />
+	<LinkCard title="I review submissions" description="Open a review link, read the hours and decide." href="/reviewers/" />
+	<LinkCard title="I run a program" description="Register an app, add reviewers and receive submissions." href="/programs/" />
+	<LinkCard title="I'm on Fraud Squad" description="Use the admin API, verify bundles and read the audit log." href="/fraud-squad/" />
+</CardGrid>
+
+## What counts
+
+Not every minute in your editor is counted. [Read how Logbook decides what counts](/users/what-counts/).
