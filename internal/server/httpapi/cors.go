@@ -31,7 +31,10 @@ type CORSConfig struct {
 	// "https://logbook.boogles.dev": scheme, host and optional port, no path.
 	Origin string
 	// Skip lists path prefixes under /api/ that are never called from a
-	// browser (heartbeat ingest, agent uploads). They get no CORS headers.
+	// browser (heartbeat ingest, agent uploads, the program API). They get
+	// no CORS headers. An entry with a "{name}" segment matches whole
+	// segments, "{name}" standing for any one, so "/api/v1/users/{id}/stats"
+	// skips every user's stats but not "/api/v1/users/{id}/profile".
 	Skip []string
 }
 
@@ -83,7 +86,30 @@ func corsApplies(path string, skip []string) bool {
 		return false
 	}
 	for _, p := range skip {
-		if strings.HasPrefix(path, p) {
+		if skipMatches(path, p) {
+			return false
+		}
+	}
+	return true
+}
+
+// skipMatches reports whether path is covered by the Skip entry prefix.
+// Without a "{name}" segment that is a plain string prefix. With one, the
+// entry is compared segment by segment: "{name}" matches any non-empty
+// segment, every other segment must be equal, and path may go on after the
+// last one.
+func skipMatches(path, prefix string) bool {
+	if !strings.Contains(prefix, "{") {
+		return strings.HasPrefix(path, prefix)
+	}
+	want := strings.Split(prefix, "/")
+	got := strings.Split(path, "/")
+	if len(got) < len(want) {
+		return false
+	}
+	for i, w := range want {
+		wild := strings.HasPrefix(w, "{") && strings.HasSuffix(w, "}")
+		if (wild && got[i] == "") || (!wild && got[i] != w) {
 			return false
 		}
 	}
